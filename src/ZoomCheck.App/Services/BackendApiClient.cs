@@ -68,4 +68,28 @@ public sealed class BackendApiClient
         var response = await _httpClient.GetAsync("health", cancellationToken);
         return response.IsSuccessStatusCode;
     }
+
+    public async Task<ZoomRecoveryRunResponse> RunRecoveryAsync(CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.PostAsync("api/zoom/recovery/run", null, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<ZoomRecoveryRunResponse>(_jsonOptions, cancellationToken);
+        return result ?? new ZoomRecoveryRunResponse(false, 0, 0, 0, Array.Empty<ZoomRecoveredMeetingResponse>(), Array.Empty<string>(), "Recovery response was empty.");
+    }
+
+    public string BackendBaseUrl => _httpClient.BaseAddress?.ToString() ?? string.Empty;
 }
+
+public sealed record ZoomRecoveryRunResponse(
+    bool Executed,
+    int UsersDiscovered,
+    int MeetingsDiscovered,
+    int AddedParticipants,
+    IReadOnlyList<ZoomRecoveredMeetingResponse> Meetings,
+    IReadOnlyList<string> Warnings,
+    string? Error);
+
+public sealed record ZoomRecoveredMeetingResponse(
+    string MeetingId,
+    int DiscoveredParticipants,
+    int AddedEvents);

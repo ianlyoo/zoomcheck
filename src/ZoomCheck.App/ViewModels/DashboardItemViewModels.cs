@@ -112,6 +112,25 @@ public sealed class RosterOptionViewModel
     public string DisplayName { get; }
 }
 
+public sealed class LiveMeetingOptionViewModel
+{
+    public LiveMeetingOptionViewModel(string meetingId, string displayName, int discoveredParticipants, int addedEvents)
+    {
+        MeetingId = meetingId;
+        DisplayName = displayName;
+        DiscoveredParticipants = discoveredParticipants;
+        AddedEvents = addedEvents;
+    }
+
+    public string MeetingId { get; }
+
+    public string DisplayName { get; }
+
+    public int DiscoveredParticipants { get; }
+
+    public int AddedEvents { get; }
+}
+
 public sealed class ConfidenceBucketViewModel
 {
     public ConfidenceBucketViewModel(string label, string count, string detail, IBrush accentBrush)
