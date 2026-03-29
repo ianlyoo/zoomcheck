@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using ZoomCheck.Core.Enums;
 using ZoomCheck.Core.Models;
 
 namespace ZoomCheck.App.Services;
@@ -65,6 +66,18 @@ public sealed class BackendApiClient
         return await response.Content.ReadAsStringAsync(cancellationToken);
     }
 
+    public async Task PostParticipantEventsAsync(string meetingId, IReadOnlyList<ObservedParticipantEventRequest> events, CancellationToken cancellationToken = default)
+    {
+        if (events.Count == 0)
+        {
+            return;
+        }
+
+        using var content = JsonContent.Create(events, options: _jsonOptions);
+        var response = await _httpClient.PostAsync($"api/meetings/{Uri.EscapeDataString(meetingId)}/events", content, cancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task<bool> IsHealthyAsync(CancellationToken cancellationToken = default)
     {
         var response = await _httpClient.GetAsync("health", cancellationToken);
@@ -110,3 +123,11 @@ public sealed record ZoomSettingsStatusResponse(
     bool TokenAvailable,
     DateTimeOffset? TokenExpiresAt,
     IReadOnlyList<string> MissingFields);
+
+public sealed record ObservedParticipantEventRequest(
+    ParticipantEventType EventType,
+    string ParticipantName,
+    string? ParticipantEmail,
+    string Source,
+    string RawPayload,
+    DateTimeOffset? OccurredAt);

@@ -6,8 +6,10 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Media;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using ZoomCheck.App.Models;
 using ZoomCheck.App.Services;
 using ZoomCheck.Core.Enums;
 using ZoomCheck.Core.Models;
@@ -23,6 +25,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private static readonly IBrush UnmatchedBrush = CreateBrush("#F36F7F");
     private readonly BackendApiClient _apiClient;
     private readonly BackendBootstrapper _bootstrapper;
+    private readonly IParticipantPanelWatcher _participantPanelWatcher;
     private CancellationTokenSource? _autoRefreshCts;
 
     [ObservableProperty]
@@ -61,20 +64,31 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty]
     private LiveMeetingOptionViewModel? selectedLiveMeeting;
 
-    private DateTimeOffset? _lastRecoveryAt;
-    private ZoomSettingsStatusResponse? _zoomSettingsStatus;
+    [ObservableProperty]
+    private string participantPanelStatusText = "Zoom participant panel not attached";
+
+    [ObservableProperty]
+    private bool isParticipantPanelAttached;
+
+    [ObservableProperty]
+    private bool isParticipantPanelMonitoring;
+
+    [ObservableProperty]
+    private int visiblePanelParticipantCount;
 
     public MainWindowViewModel()
         : this(
             new BackendApiClient(new System.Net.Http.HttpClient { BaseAddress = new Uri("http://127.0.0.1:5078/") }),
-            new BackendBootstrapper(new System.Net.Http.HttpClient { BaseAddress = new Uri("http://127.0.0.1:5078/") }, new Models.AppRuntimeOptions()))
+            new BackendBootstrapper(new System.Net.Http.HttpClient { BaseAddress = new Uri("http://127.0.0.1:5078/") }, new Models.AppRuntimeOptions()),
+            new NoOpParticipantPanelWatcher())
     {
     }
 
-    public MainWindowViewModel(BackendApiClient apiClient, BackendBootstrapper bootstrapper)
+    public MainWindowViewModel(BackendApiClient apiClient, BackendBootstrapper bootstrapper, IParticipantPanelWatcher participantPanelWatcher)
     {
         _apiClient = apiClient;
         _bootstrapper = bootstrapper;
+        _participantPanelWatcher = participantPanelWatcher;
         SummaryCards = new ObservableCollection<SummaryMetricViewModel>();
         Participants = new ObservableCollection<ParticipantItemViewModel>();
         ConfidenceBuckets = new ObservableCollection<ConfidenceBucketViewModel>();
@@ -82,11 +96,13 @@ public partial class MainWindowViewModel : ViewModelBase
         ReviewQueue = new ObservableCollection<ReviewQueueItemViewModel>();
         RosterOptions = new ObservableCollection<RosterOptionViewModel>();
         LiveMeetings = new ObservableCollection<LiveMeetingOptionViewModel>();
+
+        _participantPanelWatcher.StatusChanged += OnParticipantPanelStatusChanged;
     }
 
     public string HeaderTitle { get; } = "Attendance workspace";
 
-    public string HeaderSubtitle { get; } = "Live coverage and recent activity stay on the left. Meeting setup, refresh controls, and review actions stay on the right.";
+    public string HeaderSubtitle { get; } = "Keep the Zoom participant panel open on the host or co-host PC. ZoomCheck watches that panel, compares names to the roster, and keeps the review queue current.";
 
     public string LiveCoverageLabel { get; private set; } = "Waiting for your first meeting refresh";
 
@@ -129,6 +145,12 @@ public partial class MainWindowViewModel : ViewModelBase
         : LiveMeetings.Count == 1
             ? $"1 live Zoom meeting detected. ZoomCheck can attach to it automatically."
             : $"{LiveMeetings.Count} live Zoom meetings detected. Choose the one you want to track.";
+
+    public string ParticipantPanelSummary => !IsParticipantPanelAttached
+        ? "Attach the visible Zoom participant panel first."
+        : IsParticipantPanelMonitoring
+            ? $"Watching the participant panel now · {VisiblePanelParticipantCount} visible name(s) in the latest scan."
+            : $"Panel attached · {VisiblePanelParticipantCount} visible name(s) in the last scan.";
 
     public string AutoRefreshStatus => AutoRefreshEnabled
         ? $"Auto refresh is on every {SelectedAutoRefreshIntervalSeconds} seconds while this window stays open."
@@ -200,8 +222,6 @@ public partial class MainWindowViewModel : ViewModelBase
 
             if (healthy)
             {
-                await UpdateZoomSettingsStatusAsync();
-                await DetectLiveMeetingCoreAsync(autoAttachSingleMeeting: true, updateStatusBanner: false);
                 await LoadRosterOptionsAsync();
                 if (RosterOptions.Count > 0)
                 {
@@ -224,9 +244,7 @@ public partial class MainWindowViewModel : ViewModelBase
             await _apiClient.ImportRosterAsync(RosterFilePath);
             await LoadRosterOptionsAsync();
             ActiveSessionLabel = $"Roster loaded · {RosterOptions.Count} people ready";
-            StatusBanner = $"Roster loaded from {Path.GetFileName(RosterFilePath)} with {RosterOptions.Count} people. If Zoom is already open, you can refresh now to see who is present.";
-            await DetectLiveMeetingCoreAsync(autoAttachSingleMeeting: true, updateStatusBanner: false);
-            await RefreshAsync();
+            StatusBanner = $"Roster loaded from {Path.GetFileName(RosterFilePath)} with {RosterOptions.Count} people. Attach the Zoom participant panel, then start a scan or turn on watching.";
         });
     }
 
@@ -235,7 +253,51 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         await SafeExecuteAsync(async () =>
         {
-            await DetectLiveMeetingCoreAsync(autoAttachSingleMeeting: true, updateStatusBanner: true);
+            var result = await _participantPanelWatcher.AttachAsync();
+            StatusBanner = result.Message;
+            if (result.Success)
+            {
+                ActiveSessionLabel = "Participant panel attached";
+            }
+        });
+    }
+
+    [RelayCommand]
+    private async Task StartWatchingPanelAsync()
+    {
+        await SafeExecuteAsync(async () =>
+        {
+            var result = await _participantPanelWatcher.StartMonitoringAsync(MeetingId);
+            StatusBanner = result.Message;
+            if (result.Success && !AutoRefreshEnabled)
+            {
+                AutoRefreshEnabled = true;
+            }
+            await RefreshBoardCoreAsync(updateStatusBanner: false);
+        });
+    }
+
+    [RelayCommand]
+    private async Task StopWatchingPanelAsync()
+    {
+        await SafeExecuteAsync(async () =>
+        {
+            await _participantPanelWatcher.StopMonitoringAsync();
+            StatusBanner = "Participant panel watching stopped. You can still scan manually or refresh the board.";
+        });
+    }
+
+    [RelayCommand]
+    private async Task ScanParticipantPanelAsync()
+    {
+        await SafeExecuteAsync(async () =>
+        {
+            var result = await _participantPanelWatcher.ScanOnceAsync(MeetingId);
+            StatusBanner = result.Message;
+            if (result.Success)
+            {
+                await RefreshBoardCoreAsync(updateStatusBanner: false);
+            }
         });
     }
 
@@ -404,11 +466,6 @@ public partial class MainWindowViewModel : ViewModelBase
             throw new InvalidOperationException("Enter the meeting ID from Zoom before refreshing.");
         }
 
-        if (ShouldRunRecovery())
-        {
-            await DetectLiveMeetingCoreAsync(autoAttachSingleMeeting: false, updateStatusBanner: false);
-        }
-
         var board = await _apiClient.GetBoardAsync(MeetingId);
         ApplyBoard(board);
         ActiveSessionLabel = $"Meeting {MeetingId} · last checked {DateTime.Now:h:mm tt}";
@@ -473,112 +530,16 @@ public partial class MainWindowViewModel : ViewModelBase
         _autoRefreshCts = null;
     }
 
-    private bool ShouldRunRecovery()
+    private void OnParticipantPanelStatusChanged(object? sender, ParticipantPanelStatus status)
     {
-        if (_lastRecoveryAt is null)
+        Dispatcher.UIThread.Post(() =>
         {
-            return true;
-        }
-
-        return DateTimeOffset.UtcNow - _lastRecoveryAt.Value >= TimeSpan.FromMinutes(2);
-    }
-
-    private async Task DetectLiveMeetingCoreAsync(bool autoAttachSingleMeeting, bool updateStatusBanner)
-    {
-        await UpdateZoomSettingsStatusAsync();
-
-        if (_zoomSettingsStatus is not null && !_zoomSettingsStatus.OAuthConfigured)
-        {
-            ReplaceWith(LiveMeetings, Array.Empty<LiveMeetingOptionViewModel>());
-            OnPropertyChanged(nameof(HasLiveMeetingCandidates));
-            OnPropertyChanged(nameof(LiveMeetingStatus));
-
-            if (updateStatusBanner)
-            {
-                var oauthMissing = _zoomSettingsStatus.MissingFields
-                    .Where(field => !string.Equals(field, "Zoom:WebhookSecretToken", StringComparison.Ordinal))
-                    .ToArray();
-                var missing = string.Join(", ", oauthMissing);
-                StatusBanner = string.IsNullOrWhiteSpace(missing)
-                    ? "Live Zoom detection is not configured yet. Add your Zoom OAuth credentials first."
-                    : $"Live Zoom detection needs OAuth configuration first: {missing}.";
-            }
-
-            return;
-        }
-
-        var recovery = await _apiClient.RunRecoveryAsync();
-        _lastRecoveryAt = DateTimeOffset.UtcNow;
-
-        ReplaceWith(LiveMeetings, recovery.Meetings.Select(meeting => new LiveMeetingOptionViewModel(
-            meeting.MeetingId,
-            $"Meeting {meeting.MeetingId} · participants {meeting.DiscoveredParticipants} · recovered {meeting.AddedEvents}",
-            meeting.DiscoveredParticipants,
-            meeting.AddedEvents)));
-
-        if (LiveMeetings.Count == 1 && autoAttachSingleMeeting)
-        {
-            SelectedLiveMeeting = LiveMeetings[0];
-            MeetingId = SelectedLiveMeeting.MeetingId;
-        }
-        else if (LiveMeetings.Count > 1)
-        {
-            if (!string.IsNullOrWhiteSpace(MeetingId))
-            {
-                SelectedLiveMeeting = LiveMeetings.FirstOrDefault(item => item.MeetingId == MeetingId) ?? LiveMeetings.FirstOrDefault();
-            }
-            else
-            {
-                SelectedLiveMeeting = LiveMeetings.FirstOrDefault();
-            }
-        }
-
-        OnPropertyChanged(nameof(HasLiveMeetingCandidates));
-        OnPropertyChanged(nameof(LiveMeetingStatus));
-
-        if (!updateStatusBanner)
-        {
-            return;
-        }
-
-        if (!recovery.Executed)
-        {
-            StatusBanner = recovery.Error ?? recovery.Warnings.FirstOrDefault() ?? "Live Zoom meeting detection could not run.";
-            return;
-        }
-
-        if (recovery.Warnings.Count > 0 && LiveMeetings.Count == 0)
-        {
-            StatusBanner = recovery.Warnings.First();
-            return;
-        }
-
-        if (LiveMeetings.Count == 0)
-        {
-            StatusBanner = "No live Zoom meeting was detected yet. Start or join the Zoom meeting, then try Detect live meeting again.";
-            return;
-        }
-
-        if (LiveMeetings.Count == 1)
-        {
-            var meeting = LiveMeetings[0];
-            StatusBanner = $"Live Zoom meeting {meeting.MeetingId} detected. Recovered {meeting.AddedEvents} current attendee event(s) so tracking can continue mid-meeting.";
-            return;
-        }
-
-        StatusBanner = $"{LiveMeetings.Count} live Zoom meetings were detected. Choose the correct one, then keep refreshing the board.";
-    }
-
-    private async Task UpdateZoomSettingsStatusAsync()
-    {
-        try
-        {
-            _zoomSettingsStatus = await _apiClient.GetZoomSettingsStatusAsync();
-        }
-        catch
-        {
-            _zoomSettingsStatus = null;
-        }
+            ParticipantPanelStatusText = status.Message;
+            IsParticipantPanelAttached = status.IsAttached;
+            IsParticipantPanelMonitoring = status.IsMonitoring;
+            VisiblePanelParticipantCount = status.VisibleParticipantCount;
+            OnPropertyChanged(nameof(ParticipantPanelSummary));
+        });
     }
 
     private static string BuildDurationText(BoardPersonStatus person)
@@ -607,12 +568,12 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         if (RosterOptions.Count > 0 && Participants.Count == 0)
         {
-            return $"Roster is loaded with {RosterOptions.Count} people. No one has been pulled in yet, so check the meeting ID, open the Zoom meeting, and refresh again.";
+            return $"Roster is loaded with {RosterOptions.Count} people. Attach the Zoom participant panel and scan it to bring current attendees into the board.";
         }
 
         if (Participants.Count == 0)
         {
-            return "No one has been pulled in yet. Make sure the Zoom meeting is open and the meeting ID is correct, then press Refresh again.";
+            return "No one has been pulled in yet. Keep the Zoom participant panel visible, scan or start watching, then refresh again.";
         }
 
         if (ReviewQueue.Count == 0)

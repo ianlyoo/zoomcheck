@@ -30,7 +30,7 @@
 
                 <Border Grid.Column="1" Classes="calloutPanel">
                     <StackPanel Spacing="6">
-                        <TextBlock Classes="metricLabel" Text="Session status"/>
+                        <TextBlock Classes="metricLabel" Text="Workspace status"/>
                         <TextBlock Classes="sectionTitle" Text="{Binding ActiveSessionLabel}"/>
                         <TextBlock Classes="sectionHint"
                                    Text="{Binding StatusBanner}"
@@ -69,9 +69,9 @@
                     <Grid RowDefinitions="Auto,Auto,*" RowSpacing="16">
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
                             <StackPanel Spacing="4">
-                                <TextBlock Classes="sectionTitle" Text="Live participant list"/>
+                                <TextBlock Classes="sectionTitle" Text="Attendance board"/>
                                 <TextBlock Classes="sectionHint"
-                                           Text="Track the current meeting board here after each refresh."
+                                           Text="Track the roster board here after panel scans and board refreshes."
                                            TextWrapping="Wrap"/>
                             </StackPanel>
 
@@ -87,7 +87,7 @@
 
                         <Grid ColumnDefinitions="2.1*,1.7*,1.2*,1*" ColumnSpacing="14">
                             <TextBlock Classes="metricLabel" Text="Roster match"/>
-                            <TextBlock Classes="metricLabel" Grid.Column="1" Text="Zoom identity"/>
+                            <TextBlock Classes="metricLabel" Grid.Column="1" Text="Panel name"/>
                             <TextBlock Classes="metricLabel" Grid.Column="2" Text="Confidence"/>
                             <TextBlock Classes="metricLabel" Grid.Column="3" Text="Timeline"/>
                         </Grid>
@@ -96,9 +96,9 @@
                                 Classes="calloutPanel"
                                 IsVisible="{Binding ShowParticipantEmptyState}">
                             <StackPanel Spacing="8" VerticalAlignment="Center">
-                                <TextBlock Classes="emptyTitle" Text="No live people yet"/>
+                                <TextBlock Classes="emptyTitle" Text="No scanned participants yet"/>
                                 <TextBlock Classes="emptyDetail"
-                                           Text="Once the meeting is active and the board refreshes, participants will appear here."
+                                           Text="Attach the visible Zoom participant panel, run a scan or start watching, then refresh the board to fill this list."
                                            TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
@@ -164,9 +164,9 @@
                 <Border Grid.Row="2" Classes="card">
                     <Grid RowDefinitions="Auto,*" RowSpacing="16">
                         <StackPanel Spacing="4">
-                            <TextBlock Classes="sectionTitle" Text="Recent join / leave events"/>
+                            <TextBlock Classes="sectionTitle" Text="Recent attendance events"/>
                             <TextBlock Classes="sectionHint"
-                                       Text="Watch incoming meeting activity and reconnects here."
+                                       Text="Watch recent joins, leaves, and rechecks captured in the attendance board."
                                        TextWrapping="Wrap"/>
                         </StackPanel>
 
@@ -174,9 +174,9 @@
                                 Classes="calloutPanel"
                                 IsVisible="{Binding ShowRecentEventsEmptyState}">
                             <StackPanel Spacing="8" VerticalAlignment="Center">
-                                <TextBlock Classes="emptyTitle" Text="No meeting activity pulled in yet"/>
+                                <TextBlock Classes="emptyTitle" Text="No attendance activity yet"/>
                                 <TextBlock Classes="emptyDetail"
-                                           Text="Recent join and leave events will appear here after the board refreshes."
+                                           Text="Recent joins and leaves will appear here after you scan the participant panel and refresh the board."
                                            TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
@@ -216,27 +216,17 @@
 
             <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*" RowSpacing="20">
                 <Border Classes="card">
-                    <Grid RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="18">
+                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="18">
                         <StackPanel Spacing="4">
-                            <TextBlock Classes="sectionTitle" Text="Controls and setup"/>
+                            <TextBlock Classes="sectionTitle" Text="Operator controls"/>
                             <TextBlock Classes="sectionHint"
-                                       Text="Connect the meeting, load the roster, then refresh, export, or run demo events from this panel."
+                                       Text="Work from the host or co-host PC: confirm the meeting ID, load the roster, attach the Zoom participant panel, then scan or watch it."
                                        TextWrapping="Wrap"/>
                         </StackPanel>
 
                         <StackPanel Grid.Row="1" Spacing="10">
                             <TextBlock Classes="metricLabel" Text="Meeting ID"/>
-                            <TextBox Text="{Binding MeetingId}" Watermark="Zoom meeting ID or class code"/>
-                            <Button Classes="actionGhost"
-                                    Content="Detect live Zoom meeting"
-                                    Command="{Binding DetectLiveMeetingCommand}"/>
-                            <ComboBox ItemsSource="{Binding LiveMeetings}"
-                                      SelectedItem="{Binding SelectedLiveMeeting}"
-                                      DisplayMemberBinding="{Binding DisplayName}"
-                                      IsVisible="{Binding HasLiveMeetingCandidates}"/>
-                            <TextBlock Classes="helperCopy"
-                                       Text="{Binding LiveMeetingStatus}"
-                                       TextWrapping="Wrap"/>
+                            <TextBox Text="{Binding MeetingId}" Watermark="Zoom meeting ID from the host/co-host view"/>
                         </StackPanel>
 
                         <StackPanel Grid.Row="2" Spacing="10">
@@ -245,15 +235,84 @@
                                 <TextBox Text="{Binding RosterFilePath}" Watermark="Choose roster Excel file"/>
                                 <Button Grid.Column="1" Classes="actionGhost" Content="Browse" Click="BrowseRosterFile_OnClick"/>
                             </Grid>
-                            <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="12">
-                                <Button Classes="actionSecondary" Content="Load roster" Command="{Binding LoadRosterCommand}"/>
-                                <Button Grid.Column="1" Classes="actionPrimary" Content="Refresh board" Command="{Binding RefreshCommand}"/>
-                                <Button Grid.Row="1" Classes="actionSecondary" Content="Export CSV" Click="Export_OnClick"/>
-                                <Button Grid.Row="1" Grid.Column="1" Classes="actionGhost" Content="Demo events" Command="{Binding SeedDemoCommand}"/>
-                            </Grid>
+                            <Button Classes="actionSecondary" Content="Load roster" Command="{Binding LoadRosterCommand}"/>
                         </StackPanel>
 
                         <Border Grid.Row="3" Classes="calloutPanel">
+                            <StackPanel Spacing="12">
+                                <StackPanel Spacing="4">
+                                    <TextBlock Classes="metricLabel" Text="Participant panel"/>
+                                    <TextBlock Classes="sectionTitle"
+                                               Text="{Binding ParticipantPanelSummary}"
+                                               TextWrapping="Wrap"/>
+                                    <TextBlock Classes="helperCopy"
+                                               Text="{Binding ParticipantPanelStatusText}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <Grid ColumnDefinitions="*,*,*" ColumnSpacing="10">
+                                    <Border Classes="listRow" Padding="12">
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Classes="metricLabel" Text="Panel attached"/>
+                                            <CheckBox IsChecked="{Binding IsParticipantPanelAttached}"
+                                                      IsEnabled="False"
+                                                      Content="Attached"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Grid.Column="1" Classes="listRow" Padding="12">
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Classes="metricLabel" Text="Watching"/>
+                                            <CheckBox IsChecked="{Binding IsParticipantPanelMonitoring}"
+                                                      IsEnabled="False"
+                                                      Content="Watching"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Grid.Column="2" Classes="listRow" Padding="12">
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Classes="metricLabel" Text="Visible names"/>
+                                            <TextBlock Text="{Binding VisiblePanelParticipantCount}" FontWeight="SemiBold"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="12" RowSpacing="12">
+                                    <Button Classes="actionSecondary"
+                                            Content="Attach participant panel"
+                                            Command="{Binding DetectLiveMeetingCommand}"/>
+                                    <Button Grid.Column="1"
+                                            Classes="actionGhost"
+                                            Content="Scan once"
+                                            Command="{Binding ScanParticipantPanelCommand}"
+                                            IsEnabled="{Binding IsParticipantPanelAttached}"/>
+
+                                    <Button Grid.Row="1"
+                                            Classes="actionPrimary"
+                                            Content="Start watching"
+                                            Command="{Binding StartWatchingPanelCommand}"
+                                            IsEnabled="{Binding IsParticipantPanelAttached}"/>
+                                    <Button Grid.Row="1"
+                                            Grid.Column="1"
+                                            Classes="actionGhost"
+                                            Content="Stop watching"
+                                            Command="{Binding StopWatchingPanelCommand}"
+                                            IsEnabled="{Binding IsParticipantPanelMonitoring}"/>
+
+                                    <Button Grid.Row="2"
+                                            Classes="actionPrimary"
+                                            Content="Refresh board"
+                                            Command="{Binding RefreshCommand}"/>
+                                    <Button Grid.Row="2"
+                                            Grid.Column="1"
+                                            Classes="actionSecondary"
+                                            Content="Export"
+                                            Click="Export_OnClick"/>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="4" Classes="calloutPanel">
                             <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
                                 <CheckBox IsChecked="{Binding AutoRefreshEnabled}" VerticalAlignment="Center"/>
                                 <StackPanel Grid.Column="1" Spacing="2">

@@ -34,7 +34,11 @@ public partial class App : Application
             {
                 BaseAddress = new Uri(runtimeOptions.BackendBaseUrl)
             };
+            var backendApiClient = new BackendApiClient(httpClient);
             _backendBootstrapper = new BackendBootstrapper(httpClient, runtimeOptions);
+            IParticipantPanelWatcher panelWatcher = OperatingSystem.IsWindows()
+                ? new ZoomParticipantPanelWatcher(backendApiClient)
+                : new NoOpParticipantPanelWatcher();
 
             desktop.ShutdownRequested += async (_, _) =>
             {
@@ -42,11 +46,13 @@ public partial class App : Application
                 {
                     await _backendBootstrapper.DisposeAsync();
                 }
+
+                await panelWatcher.DisposeAsync();
             };
 
             desktop.MainWindow = new MainWindow
             {
-                DataContext = new MainWindowViewModel(new BackendApiClient(httpClient), _backendBootstrapper),
+                DataContext = new MainWindowViewModel(backendApiClient, _backendBootstrapper, panelWatcher),
             };
         }
 
