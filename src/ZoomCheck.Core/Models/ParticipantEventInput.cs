@@ -2,12 +2,11 @@ using ZoomCheck.Core.Enums;
 
 namespace ZoomCheck.Core.Models;
 
-public sealed record ZoomParticipantEventInput(
+public record ParticipantEventInput(
     string MeetingId,
     DateTimeOffset OccurredAt,
     ParticipantEventType EventType,
     string ParticipantName,
     string? ParticipantEmail,
     string Source,
-    string RawPayload)
-    : ParticipantEventInput(MeetingId, OccurredAt, EventType, ParticipantName, ParticipantEmail, Source, RawPayload);
+    string RawPayload);

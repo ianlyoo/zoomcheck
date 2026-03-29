@@ -37,7 +37,7 @@ public sealed class AttendanceApplicationService
     public Task<IReadOnlyList<ParticipantEvent>> GetParticipantEventsForMeetingAsync(string meetingId, CancellationToken cancellationToken = default)
         => _repository.GetParticipantEventsAsync(meetingId, cancellationToken);
 
-    public async Task<ParticipantEvent> RecordZoomEventAsync(ZoomParticipantEventInput input, CancellationToken cancellationToken = default)
+    public async Task<ParticipantEvent> RecordParticipantEventAsync(ParticipantEventInput input, CancellationToken cancellationToken = default)
     {
         var roster = await _repository.GetRosterPeopleAsync(cancellationToken);
         var aliases = await _repository.GetAliasMapAsync(cancellationToken);
@@ -59,6 +59,9 @@ public sealed class AttendanceApplicationService
         await _repository.AppendParticipantEventAsync(participantEvent, cancellationToken);
         return participantEvent;
     }
+
+    public Task<ParticipantEvent> RecordZoomEventAsync(ZoomParticipantEventInput input, CancellationToken cancellationToken = default)
+        => RecordParticipantEventAsync(input, cancellationToken);
 
     public async Task<AttendanceBoard> BuildBoardAsync(string meetingId, CancellationToken cancellationToken = default)
     {
@@ -187,7 +190,7 @@ public sealed class AttendanceApplicationService
 
         foreach (var input in demoInputs)
         {
-            await RecordZoomEventAsync(input, cancellationToken);
+            await RecordParticipantEventAsync(input, cancellationToken);
         }
     }
 
