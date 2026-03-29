@@ -6,6 +6,7 @@ using System;
 using System.Linq;
 using System.Net.Http;
 using Avalonia.Markup.Xaml;
+using ZoomCheck.App.Models;
 using ZoomCheck.App.Services;
 using ZoomCheck.App.ViewModels;
 using ZoomCheck.App.Views;
@@ -14,6 +15,8 @@ namespace ZoomCheck.App;
 
 public partial class App : Application
 {
+    private BackendBootstrapper? _backendBootstrapper;
+
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
@@ -26,14 +29,24 @@ public partial class App : Application
             // Avoid duplicate validations from both Avalonia and the CommunityToolkit. 
             // More info: https://docs.avaloniaui.net/docs/guides/development-guides/data-validation#manage-validationplugins
             DisableAvaloniaDataAnnotationValidation();
+            var runtimeOptions = new AppRuntimeOptions();
             var httpClient = new HttpClient
             {
-                BaseAddress = new Uri("http://127.0.0.1:5078/")
+                BaseAddress = new Uri(runtimeOptions.BackendBaseUrl)
+            };
+            _backendBootstrapper = new BackendBootstrapper(httpClient, runtimeOptions);
+
+            desktop.ShutdownRequested += async (_, _) =>
+            {
+                if (_backendBootstrapper is not null)
+                {
+                    await _backendBootstrapper.DisposeAsync();
+                }
             };
 
             desktop.MainWindow = new MainWindow
             {
-                DataContext = new MainWindowViewModel(new BackendApiClient(httpClient)),
+                DataContext = new MainWindowViewModel(new BackendApiClient(httpClient), _backendBootstrapper),
             };
         }
 
