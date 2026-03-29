@@ -26,10 +26,10 @@ public partial class MainWindowViewModel : ViewModelBase
     private CancellationTokenSource? _autoRefreshCts;
 
     [ObservableProperty]
-    private string activeSessionLabel = "First run checklist";
+    private string activeSessionLabel = "Session not started";
 
     [ObservableProperty]
-    private string statusBanner = "Open or join Zoom first, confirm the meeting ID, then load the roster and refresh when class begins.";
+    private string statusBanner = "Detect a live meeting or enter a meeting ID, then load the roster and refresh the board.";
 
     [ObservableProperty]
     private string backendUrl = "http://127.0.0.1:5078/";
@@ -84,9 +84,9 @@ public partial class MainWindowViewModel : ViewModelBase
         LiveMeetings = new ObservableCollection<LiveMeetingOptionViewModel>();
     }
 
-    public string HeaderTitle { get; } = "Class attendance dashboard";
+    public string HeaderTitle { get; } = "Attendance workspace";
 
-    public string HeaderSubtitle { get; } = "Simple class flow: open Zoom first, check the meeting ID, load the roster once, refresh during class, review flagged people, then export at the end.";
+    public string HeaderSubtitle { get; } = "Live coverage and recent activity stay on the left. Meeting setup, refresh controls, and review actions stay on the right.";
 
     public string LiveCoverageLabel { get; private set; } = "Waiting for your first meeting refresh";
 
@@ -201,7 +201,7 @@ public partial class MainWindowViewModel : ViewModelBase
             if (healthy)
             {
                 await UpdateZoomSettingsStatusAsync();
-                await DetectLiveMeetingCoreAsync(autoAttachSingleMeeting: true, updateStatusBanner: true);
+                await DetectLiveMeetingCoreAsync(autoAttachSingleMeeting: true, updateStatusBanner: false);
                 await LoadRosterOptionsAsync();
                 if (RosterOptions.Count > 0)
                 {
@@ -223,8 +223,9 @@ public partial class MainWindowViewModel : ViewModelBase
 
             await _apiClient.ImportRosterAsync(RosterFilePath);
             await LoadRosterOptionsAsync();
-            StatusBanner = $"Roster loaded from {Path.GetFileName(RosterFilePath)}. If the Zoom meeting is already open, press Refresh anytime to pull the latest class activity.";
-            await DetectLiveMeetingCoreAsync(autoAttachSingleMeeting: true, updateStatusBanner: true);
+            ActiveSessionLabel = $"Roster loaded · {RosterOptions.Count} people ready";
+            StatusBanner = $"Roster loaded from {Path.GetFileName(RosterFilePath)} with {RosterOptions.Count} people. If Zoom is already open, you can refresh now to see who is present.";
+            await DetectLiveMeetingCoreAsync(autoAttachSingleMeeting: true, updateStatusBanner: false);
             await RefreshAsync();
         });
     }
@@ -486,7 +487,7 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         await UpdateZoomSettingsStatusAsync();
 
-        if (_zoomSettingsStatus is not null && (!_zoomSettingsStatus.OAuthConfigured || !_zoomSettingsStatus.WebhookSecretConfigured))
+        if (_zoomSettingsStatus is not null && !_zoomSettingsStatus.OAuthConfigured)
         {
             ReplaceWith(LiveMeetings, Array.Empty<LiveMeetingOptionViewModel>());
             OnPropertyChanged(nameof(HasLiveMeetingCandidates));
@@ -494,10 +495,13 @@ public partial class MainWindowViewModel : ViewModelBase
 
             if (updateStatusBanner)
             {
-                var missing = string.Join(", ", _zoomSettingsStatus.MissingFields);
+                var oauthMissing = _zoomSettingsStatus.MissingFields
+                    .Where(field => !string.Equals(field, "Zoom:WebhookSecretToken", StringComparison.Ordinal))
+                    .ToArray();
+                var missing = string.Join(", ", oauthMissing);
                 StatusBanner = string.IsNullOrWhiteSpace(missing)
-                    ? "Live Zoom detection is not configured yet. Add your Zoom app credentials and webhook secret first."
-                    : $"Live Zoom detection needs configuration first: {missing}.";
+                    ? "Live Zoom detection is not configured yet. Add your Zoom OAuth credentials first."
+                    : $"Live Zoom detection needs OAuth configuration first: {missing}.";
             }
 
             return;
@@ -601,6 +605,11 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private string BuildRefreshStatusMessage()
     {
+        if (RosterOptions.Count > 0 && Participants.Count == 0)
+        {
+            return $"Roster is loaded with {RosterOptions.Count} people. No one has been pulled in yet, so check the meeting ID, open the Zoom meeting, and refresh again.";
+        }
+
         if (Participants.Count == 0)
         {
             return "No one has been pulled in yet. Make sure the Zoom meeting is open and the meeting ID is correct, then press Refresh again.";
