@@ -1,0 +1,121 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="ZoomCheck.App.App"
+             xmlns:local="using:ZoomCheck.App"
+             RequestedThemeVariant="Dark">
+
+    <Application.DataTemplates>
+        <local:ViewLocator/>
+    </Application.DataTemplates>
+
+    <Application.Resources>
+        <SolidColorBrush x:Key="Brush.WindowBackground">#08111E</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.SurfacePrimary">#101A2B</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.SurfaceSecondary">#16253A</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.SurfaceRaised">#1B2D46</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.BorderSubtle">#29415F</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.TextPrimary">#F3F7FF</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.TextSoft">#CCD7EA</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.TextMuted">#98AAC7</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.ActionPrimary">#2F7BFF</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.ActionSecondary">#193154</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.ActionGhost">#0E1A2B</SolidColorBrush>
+        <SolidColorBrush x:Key="Brush.ActionBorder">#3A5C8F</SolidColorBrush>
+    </Application.Resources>
+  
+    <Application.Styles>
+        <FluentTheme />
+
+        <Style Selector="Window">
+            <Setter Property="Background" Value="{StaticResource Brush.WindowBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
+        </Style>
+
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="{StaticResource Brush.SurfacePrimary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Brush.BorderSubtle}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="20" />
+            <Setter Property="Padding" Value="20" />
+        </Style>
+
+        <Style Selector="Border.listRow">
+            <Setter Property="Background" Value="{StaticResource Brush.SurfaceSecondary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Brush.BorderSubtle}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="16" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+
+        <Style Selector="TextBlock.pageEyebrow">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextMuted}" />
+        </Style>
+
+        <Style Selector="TextBlock.pageTitle">
+            <Setter Property="FontSize" Value="30" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+
+        <Style Selector="TextBlock.pageSubtitle">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextSoft}" />
+        </Style>
+
+        <Style Selector="TextBlock.sectionTitle">
+            <Setter Property="FontSize" Value="17" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style Selector="TextBlock.sectionHint">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextMuted}" />
+        </Style>
+
+        <Style Selector="TextBlock.metricLabel">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextMuted}" />
+        </Style>
+
+        <Style Selector="TextBlock.metricValue">
+            <Setter Property="FontSize" Value="28" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+
+        <Style Selector="TextBlock.metricDetail">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextSoft}" />
+        </Style>
+
+        <Style Selector="Button.actionPrimary">
+            <Setter Property="Background" Value="{StaticResource Brush.ActionPrimary}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource Brush.ActionPrimary}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="20,12" />
+            <Setter Property="MinHeight" Value="44" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style Selector="Button.actionSecondary">
+            <Setter Property="Background" Value="{StaticResource Brush.ActionSecondary}" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Brush.ActionBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="18,12" />
+            <Setter Property="MinHeight" Value="44" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style Selector="Button.actionGhost">
+            <Setter Property="Background" Value="{StaticResource Brush.ActionGhost}" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Brush.BorderSubtle}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="18,12" />
+            <Setter Property="MinHeight" Value="44" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+    </Application.Styles>
+</Application>

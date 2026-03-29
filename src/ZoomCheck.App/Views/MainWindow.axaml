@@ -1,0 +1,299 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:ZoomCheck.App.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1460" d:DesignHeight="920"
+        x:Class="ZoomCheck.App.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="ZoomCheck Operator Dashboard"
+        Width="1460"
+        Height="920"
+        MinWidth="1220"
+        MinHeight="780">
+
+    <Design.DataContext>
+        <vm:MainWindowViewModel/>
+    </Design.DataContext>
+
+    <Grid RowDefinitions="Auto,Auto,*" RowSpacing="20" Margin="24">
+        <Border Classes="card" Padding="24">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
+                <StackPanel Spacing="8">
+                    <TextBlock Classes="pageEyebrow" Text="ZOOMCHECK · OPERATOR CONSOLE"/>
+                    <TextBlock Classes="pageTitle" Text="{Binding HeaderTitle}"/>
+                    <TextBlock Classes="pageSubtitle"
+                               Text="{Binding HeaderSubtitle}"
+                               TextWrapping="Wrap"
+                               MaxWidth="760"/>
+                </StackPanel>
+
+                    <StackPanel Spacing="14" HorizontalAlignment="Right" Width="460">
+                        <StackPanel Spacing="4" HorizontalAlignment="Right">
+                            <TextBlock Classes="sectionTitle" Text="{Binding ActiveSessionLabel}" HorizontalAlignment="Right"/>
+                            <TextBlock Classes="sectionHint" Text="{Binding StatusBanner}" TextAlignment="Right"/>
+                        </StackPanel>
+
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" RowDefinitions="Auto,Auto" RowSpacing="10">
+                            <TextBlock Classes="metricLabel" Text="Meeting ID" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Text="{Binding MeetingId}" Watermark="Zoom meeting ID or class code"/>
+                            <TextBlock Grid.Row="1" Classes="metricLabel" Text="Roster file" VerticalAlignment="Center"/>
+                            <Grid Grid.Row="1" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                <TextBox Text="{Binding RosterFilePath}" Watermark="Choose roster Excel file"/>
+                                <Button Grid.Column="1" Classes="actionGhost" Content="Browse" Click="BrowseRosterFile_OnClick"/>
+                            </Grid>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
+                            <Button Classes="actionSecondary" Content="Load roster" Command="{Binding LoadRosterCommand}"/>
+                            <Button Classes="actionPrimary" Content="Refresh" Command="{Binding RefreshCommand}"/>
+                            <Button Classes="actionSecondary" Content="Demo events" Command="{Binding SeedDemoCommand}"/>
+                            <Button Classes="actionGhost" Content="Export" Click="Export_OnClick"/>
+                        </StackPanel>
+                    </StackPanel>
+            </Grid>
+        </Border>
+
+        <ItemsControl Grid.Row="1" ItemsSource="{Binding SummaryCards}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <WrapPanel />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:SummaryMetricViewModel">
+                    <Border Classes="card" Width="320" Margin="0,0,16,16" Padding="18">
+                        <StackPanel Spacing="14">
+                            <Border Width="52"
+                                    Height="6"
+                                    Background="{Binding AccentBrush}"
+                                    CornerRadius="999"/>
+                            <TextBlock Classes="metricLabel" Text="{Binding Label}"/>
+                            <TextBlock Classes="metricValue" Text="{Binding Value}"/>
+                            <TextBlock Classes="metricDetail" Text="{Binding Detail}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <Grid Grid.Row="2" ColumnDefinitions="1.85*,1.15*" ColumnSpacing="20">
+            <Border Classes="card" Grid.Column="0">
+                <Grid RowDefinitions="Auto,Auto,*" RowSpacing="16">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="sectionTitle" Text="Live participant list"/>
+                            <TextBlock Classes="sectionHint"
+                                       Text="Roster-first view so operators can distinguish strong matches from weak Zoom identities at a glance."/>
+                        </StackPanel>
+
+                        <Border Background="{StaticResource Brush.SurfaceSecondary}"
+                                BorderBrush="{StaticResource Brush.BorderSubtle}"
+                                BorderThickness="1"
+                                CornerRadius="999"
+                                Padding="14,8"
+                                VerticalAlignment="Top">
+                            <TextBlock Text="{Binding LiveCoverageLabel}" Foreground="{StaticResource Brush.TextSoft}"/>
+                        </Border>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="2.1*,1.7*,1.2*,1*" ColumnSpacing="14">
+                        <TextBlock Classes="metricLabel" Text="Roster match"/>
+                        <TextBlock Classes="metricLabel" Grid.Column="1" Text="Zoom identity"/>
+                        <TextBlock Classes="metricLabel" Grid.Column="2" Text="Confidence"/>
+                        <TextBlock Classes="metricLabel" Grid.Column="3" Text="Timeline"/>
+                    </Grid>
+
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Participants}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ParticipantItemViewModel">
+                                    <Border Classes="listRow" Margin="0,0,0,12">
+                                        <Grid ColumnDefinitions="Auto,2.1*,1.7*,1.2*,1*" ColumnSpacing="14">
+                                            <Border Width="8"
+                                                    Height="56"
+                                                    Background="{Binding AccentBrush}"
+                                                    CornerRadius="999"
+                                                    VerticalAlignment="Center"/>
+
+                                            <StackPanel Grid.Column="1" Spacing="4">
+                                                <TextBlock Text="{Binding DisplayName}" FontSize="16" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding RosterContext}"
+                                                           Foreground="{StaticResource Brush.TextMuted}"
+                                                           TextWrapping="Wrap"/>
+                                            </StackPanel>
+
+                                            <StackPanel Grid.Column="2" Spacing="4">
+                                                <TextBlock Text="{Binding ZoomName}" FontSize="15" FontWeight="Medium"/>
+                                                <TextBlock Text="{Binding MatchContext}"
+                                                           Foreground="{StaticResource Brush.TextMuted}"
+                                                           TextWrapping="Wrap"/>
+                                            </StackPanel>
+
+                                            <StackPanel Grid.Column="3" Spacing="6">
+                                                <Border Background="{StaticResource Brush.SurfaceRaised}"
+                                                        BorderBrush="{Binding AccentBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="999"
+                                                        Padding="10,5"
+                                                        HorizontalAlignment="Left">
+                                                    <TextBlock Text="{Binding ConfidenceLabel}"
+                                                               Foreground="{Binding AccentBrush}"
+                                                               FontWeight="SemiBold"/>
+                                                </Border>
+                                                <TextBlock Text="{Binding ConfidenceDetail}"
+                                                           Foreground="{StaticResource Brush.TextMuted}"
+                                                           TextWrapping="Wrap"/>
+                                            </StackPanel>
+
+                                            <StackPanel Grid.Column="4" Spacing="4">
+                                                <TextBlock Text="{Binding JoinTime}" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding Duration}"
+                                                           Foreground="{StaticResource Brush.TextMuted}"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*" RowSpacing="20">
+                <Border Classes="card">
+                    <StackPanel Spacing="16">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                            <StackPanel Spacing="4">
+                                <TextBlock Classes="sectionTitle" Text="Confidence buckets"/>
+                                <TextBlock Classes="sectionHint"
+                                           Text="Escalate anything weaker than a verified roster match before marking attendance complete."/>
+                            </StackPanel>
+
+                            <Border Background="{StaticResource Brush.SurfaceSecondary}"
+                                    BorderBrush="{StaticResource Brush.BorderSubtle}"
+                                    BorderThickness="1"
+                                    CornerRadius="999"
+                                    Padding="12,8"
+                                    VerticalAlignment="Top">
+                                <TextBlock Text="{Binding QueueStatus}" Foreground="{StaticResource Brush.TextSoft}"/>
+                            </Border>
+                        </Grid>
+
+                        <ItemsControl ItemsSource="{Binding ConfidenceBuckets}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ConfidenceBucketViewModel">
+                                    <Border Classes="listRow" Margin="0,0,0,12">
+                                        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+                                            <Border Width="10"
+                                                    Background="{Binding AccentBrush}"
+                                                    CornerRadius="999"/>
+
+                                            <StackPanel Grid.Column="1" Spacing="4">
+                                                <TextBlock Text="{Binding Label}" FontSize="16" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding Detail}"
+                                                           Foreground="{StaticResource Brush.TextMuted}"
+                                                           TextWrapping="Wrap"/>
+                                            </StackPanel>
+
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding Count}"
+                                                       Foreground="{Binding AccentBrush}"
+                                                       FontSize="30"
+                                                       FontWeight="Bold"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Classes="card">
+                    <Grid RowDefinitions="Auto,*,Auto,Auto,Auto" RowSpacing="14">
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="sectionTitle" Text="Review queue"/>
+                            <TextBlock Classes="sectionHint" Text="Only weaker matches land here, so operators can focus on the exceptions instead of the whole class."/>
+                        </StackPanel>
+
+                        <ListBox Grid.Row="1"
+                                 ItemsSource="{Binding ReviewQueue}"
+                                 SelectedItem="{Binding SelectedReviewItem}"
+                                 MinHeight="180">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ReviewQueueItemViewModel">
+                                    <Border Classes="listRow" Margin="0,0,0,10">
+                                        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                                            <Border Width="8" Background="{Binding AccentBrush}" CornerRadius="999"/>
+                                            <StackPanel Grid.Column="1" Spacing="4">
+                                                <TextBlock Text="{Binding ParticipantName}" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding Suggestion}" Foreground="{StaticResource Brush.TextSoft}"/>
+                                                <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.TextMuted}" TextWrapping="Wrap"/>
+                                            </StackPanel>
+                                            <Border Grid.Column="2" Background="{StaticResource Brush.SurfaceRaised}" BorderBrush="{Binding AccentBrush}" BorderThickness="1" CornerRadius="999" Padding="10,6" VerticalAlignment="Top">
+                                                <TextBlock Text="{Binding ConfidenceLabel}" Foreground="{Binding AccentBrush}" FontWeight="SemiBold"/>
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <ComboBox Grid.Row="2"
+                                  ItemsSource="{Binding RosterOptions}"
+                                  SelectedItem="{Binding SelectedRosterOption}"
+                                  DisplayMemberBinding="{Binding DisplayName}"/>
+
+                        <TextBox Grid.Row="3" Text="{Binding SelectedAliasText}" Watermark="Alias text to save for future meetings"/>
+
+                        <Button Grid.Row="4"
+                                Classes="actionPrimary"
+                                Content="Save alias and reclassify"
+                                Command="{Binding SaveAliasCommand}"
+                                IsEnabled="{Binding CanSaveAlias}"/>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="2" Classes="card">
+                    <Grid RowDefinitions="Auto,*" RowSpacing="16">
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="sectionTitle" Text="Recent join / leave events"/>
+                            <TextBlock Classes="sectionHint"
+                                       Text="Use the timeline to verify late arrivals, reconnects, and exits that may affect attendance confidence."/>
+                        </StackPanel>
+
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding RecentEvents}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:ActivityEventViewModel">
+                                        <Border Classes="listRow" Margin="0,0,0,12">
+                                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+                                                <Border Width="8"
+                                                        Background="{Binding AccentBrush}"
+                                                        CornerRadius="999"/>
+
+                                                <StackPanel Grid.Column="1" Spacing="4">
+                                                    <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding Detail}"
+                                                               Foreground="{StaticResource Brush.TextMuted}"
+                                                               TextWrapping="Wrap"/>
+                                                </StackPanel>
+
+                                                <TextBlock Grid.Column="2"
+                                                           Text="{Binding Timestamp}"
+                                                           Foreground="{StaticResource Brush.TextSoft}"
+                                                           VerticalAlignment="Top"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+    </Grid>
+
+</Window>

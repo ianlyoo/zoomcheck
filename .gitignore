@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.suo
+*.db
+*.db-shm
+*.db-wal
+data/
+*.log
+tmp/
+.DS_Store
+*.xlsx
+*.xls

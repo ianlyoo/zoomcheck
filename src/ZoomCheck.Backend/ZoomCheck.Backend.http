@@ -1,0 +1,18 @@
+@ZoomCheck.Backend_HostAddress = http://localhost:5078
+
+GET {{ZoomCheck.Backend_HostAddress}}/health
+Accept: application/json
+
+###
+
+POST {{ZoomCheck.Backend_HostAddress}}/api/meetings/demo-meeting/seed-demo
+
+###
+
+GET {{ZoomCheck.Backend_HostAddress}}/api/meetings/demo-meeting/board
+Accept: application/json
+
+###
+
+GET {{ZoomCheck.Backend_HostAddress}}/api/zoom/settings-status
+Accept: application/json
