@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using ZoomCheck.Backend.Contracts;
+using ZoomCheck.Core.Models;
 using ZoomCheck.Infrastructure.Services;
 
 namespace ZoomCheck.Backend.Controllers;
@@ -26,6 +28,33 @@ public sealed class MeetingsController : ControllerBase
     {
         await _attendanceService.SeedDemoEventsAsync(meetingId, cancellationToken);
         return Accepted(new { meetingId, message = "Demo events seeded." });
+    }
+
+    [HttpPost("{meetingId}/events")]
+    public async Task<IActionResult> IngestParticipantEvents(string meetingId, [FromBody] IReadOnlyList<ParticipantEventRequest> events, CancellationToken cancellationToken)
+    {
+        if (events.Count == 0)
+        {
+            return Ok(new { accepted = 0 });
+        }
+
+        var accepted = 0;
+        foreach (var item in events)
+        {
+            await _attendanceService.RecordParticipantEventAsync(
+                new ParticipantEventInput(
+                    meetingId,
+                    item.OccurredAt ?? DateTimeOffset.UtcNow,
+                    item.EventType,
+                    item.ParticipantName,
+                    item.ParticipantEmail,
+                    string.IsNullOrWhiteSpace(item.Source) ? "panel-observation" : item.Source,
+                    string.IsNullOrWhiteSpace(item.RawPayload) ? "{}" : item.RawPayload),
+                cancellationToken);
+            accepted++;
+        }
+
+        return Ok(new { accepted });
     }
 
     [HttpGet("{meetingId}/export")]
