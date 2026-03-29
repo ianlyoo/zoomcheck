@@ -18,39 +18,157 @@
 
     <Grid RowDefinitions="Auto,Auto,*" RowSpacing="20" Margin="24">
         <Border Classes="card" Padding="24">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
-                <StackPanel Spacing="8">
-                    <TextBlock Classes="pageEyebrow" Text="ZOOMCHECK · OPERATOR CONSOLE"/>
-                    <TextBlock Classes="pageTitle" Text="{Binding HeaderTitle}"/>
-                    <TextBlock Classes="pageSubtitle"
-                               Text="{Binding HeaderSubtitle}"
-                               TextWrapping="Wrap"
-                               MaxWidth="760"/>
-                </StackPanel>
+            <Grid RowDefinitions="Auto,Auto" RowSpacing="20">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
+                    <StackPanel Spacing="12">
+                        <TextBlock Classes="pageEyebrow" Text="ZOOMCHECK · OPERATOR CONSOLE"/>
+                        <TextBlock Classes="pageTitle" Text="{Binding HeaderTitle}"/>
+                        <TextBlock Classes="pageSubtitle"
+                                   Text="{Binding HeaderSubtitle}"
+                                   TextWrapping="Wrap"
+                                   MaxWidth="760"/>
+                        <Border Classes="calloutPanel" MaxWidth="780">
+                            <TextBlock Classes="sectionHint"
+                                       Text="You do not need to manage background services in this screen. Just follow the meeting workflow below and keep using Refresh while the class is live."
+                                       TextWrapping="Wrap"/>
+                        </Border>
+                    </StackPanel>
 
                     <StackPanel Spacing="14" HorizontalAlignment="Right" Width="460">
-                        <StackPanel Spacing="4" HorizontalAlignment="Right">
-                            <TextBlock Classes="sectionTitle" Text="{Binding ActiveSessionLabel}" HorizontalAlignment="Right"/>
-                            <TextBlock Classes="sectionHint" Text="{Binding StatusBanner}" TextAlignment="Right"/>
+                        <Border Classes="calloutPanel">
+                            <StackPanel Spacing="4">
+                                <TextBlock Classes="sectionTitle" Text="{Binding ActiveSessionLabel}" HorizontalAlignment="Right"/>
+                                <TextBlock Classes="sectionHint"
+                                           Text="{Binding StatusBanner}"
+                                           TextAlignment="Right"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <StackPanel Spacing="8">
+                            <TextBlock Classes="metricLabel" Text="Meeting ID" HorizontalAlignment="Right"/>
+                            <TextBox Text="{Binding MeetingId}" Watermark="Zoom meeting ID or class code"/>
+                            <TextBlock Classes="helperCopy"
+                                        Text="Step 2: open or join Zoom first, then type the meeting ID or class code you want to watch."
+                                        TextAlignment="Right"
+                                        TextWrapping="Wrap"/>
+                            <Button Classes="actionGhost"
+                                    Content="Detect live Zoom meeting"
+                                    Command="{Binding DetectLiveMeetingCommand}"
+                                    HorizontalAlignment="Right"/>
+                            <ComboBox ItemsSource="{Binding LiveMeetings}"
+                                      SelectedItem="{Binding SelectedLiveMeeting}"
+                                      DisplayMemberBinding="{Binding DisplayName}"
+                                      IsVisible="{Binding HasLiveMeetingCandidates}"/>
+                            <TextBlock Classes="helperCopy"
+                                       Text="{Binding LiveMeetingStatus}"
+                                       TextAlignment="Right"
+                                       TextWrapping="Wrap"/>
                         </StackPanel>
 
-                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" RowDefinitions="Auto,Auto" RowSpacing="10">
-                            <TextBlock Classes="metricLabel" Text="Meeting ID" VerticalAlignment="Center"/>
-                            <TextBox Grid.Column="1" Text="{Binding MeetingId}" Watermark="Zoom meeting ID or class code"/>
-                            <TextBlock Grid.Row="1" Classes="metricLabel" Text="Roster file" VerticalAlignment="Center"/>
-                            <Grid Grid.Row="1" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                        <StackPanel Spacing="8">
+                            <TextBlock Classes="metricLabel" Text="Roster file" HorizontalAlignment="Right"/>
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                                 <TextBox Text="{Binding RosterFilePath}" Watermark="Choose roster Excel file"/>
                                 <Button Grid.Column="1" Classes="actionGhost" Content="Browse" Click="BrowseRosterFile_OnClick"/>
                             </Grid>
-                        </Grid>
+                            <TextBlock Classes="helperCopy"
+                                       Text="Step 3: choose the Excel roster for this class. You usually load this once, then keep refreshing during class."
+                                       TextAlignment="Right"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
-                            <Button Classes="actionSecondary" Content="Load roster" Command="{Binding LoadRosterCommand}"/>
-                            <Button Classes="actionPrimary" Content="Refresh" Command="{Binding RefreshCommand}"/>
-                            <Button Classes="actionSecondary" Content="Demo events" Command="{Binding SeedDemoCommand}"/>
-                            <Button Classes="actionGhost" Content="Export" Click="Export_OnClick"/>
+                        <StackPanel Spacing="10">
+                            <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
+                                <Button Classes="actionSecondary" Content="Load roster" Command="{Binding LoadRosterCommand}"/>
+                                <Button Classes="actionPrimary" Content="Refresh board" Command="{Binding RefreshCommand}"/>
+                                <Button Classes="actionSecondary" Content="Export CSV" Click="Export_OnClick"/>
+                                <Button Classes="actionGhost" Content="Demo events" Command="{Binding SeedDemoCommand}"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <CheckBox IsChecked="{Binding AutoRefreshEnabled}" VerticalAlignment="Center"/>
+                                <TextBlock Classes="metricLabel" Text="Auto refresh" VerticalAlignment="Center"/>
+                                <ComboBox Width="86"
+                                          ItemsSource="{Binding AutoRefreshIntervalOptions}"
+                                          SelectedItem="{Binding SelectedAutoRefreshIntervalSeconds}"/>
+                                <TextBlock Classes="helperCopy" Text="seconds" VerticalAlignment="Center"/>
+                            </StackPanel>
+
+                            <TextBlock Classes="helperCopy"
+                                       Text="{Binding AutoRefreshStatus}"
+                                       TextAlignment="Right"
+                                       TextWrapping="Wrap"/>
+
+                            <TextBlock Classes="helperCopy"
+                                        Text="Step 4 happens during class: use auto refresh for visual live tracking, or press Refresh manually. ZoomCheck also rechecks current participants periodically so you can start mid-meeting and still recover who is present now."
+                                        TextAlignment="Right"
+                                        TextWrapping="Wrap"/>
                         </StackPanel>
                     </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="1" ColumnDefinitions="*,*,*,*,*,*" ColumnSpacing="12">
+                    <Border Classes="workflowStep">
+                        <StackPanel Spacing="10">
+                            <TextBlock Classes="stepIndex" Text="STEP 1"/>
+                            <TextBlock Classes="stepTitle" Text="Open or join Zoom" TextWrapping="Wrap"/>
+                            <TextBlock Classes="stepDetail"
+                                       Text="Have the class meeting running first so ZoomCheck has live activity to pull."
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="1" Classes="workflowStep">
+                        <StackPanel Spacing="10">
+                            <TextBlock Classes="stepIndex" Text="STEP 2"/>
+                            <TextBlock Classes="stepTitle" Text="Check the meeting ID" TextWrapping="Wrap"/>
+                            <TextBlock Classes="stepDetail"
+                                       Text="Use the meeting ID or class code shown in Zoom before refreshing the board."
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="2" Classes="workflowStep">
+                        <StackPanel Spacing="10">
+                            <TextBlock Classes="stepIndex" Text="STEP 3"/>
+                            <TextBlock Classes="stepTitle" Text="Load the roster" TextWrapping="Wrap"/>
+                            <TextBlock Classes="stepDetail"
+                                       Text="Choose the Excel roster for this class. You normally do this once per roster."
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="3" Classes="workflowStep">
+                        <StackPanel Spacing="10">
+                            <TextBlock Classes="stepIndex" Text="STEP 4"/>
+                            <TextBlock Classes="stepTitle" Text="Refresh during class" TextWrapping="Wrap"/>
+                            <TextBlock Classes="stepDetail"
+                                       Text="Press Refresh to pull the newest Zoom joins, leaves, and reconnects into the board."
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="4" Classes="workflowStep">
+                        <StackPanel Spacing="10">
+                            <TextBlock Classes="stepIndex" Text="STEP 5"/>
+                            <TextBlock Classes="stepTitle" Text="Review flagged people" TextWrapping="Wrap"/>
+                            <TextBlock Classes="stepDetail"
+                                       Text="Focus on Name-only, Review, and Unmatched entries instead of the whole class list."
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="5" Classes="workflowStep">
+                        <StackPanel Spacing="10">
+                            <TextBlock Classes="stepIndex" Text="STEP 6"/>
+                            <TextBlock Classes="stepTitle" Text="Export at the end" TextWrapping="Wrap"/>
+                            <TextBlock Classes="stepDetail"
+                                       Text="Save the final CSV after class when you are satisfied with the flagged review items."
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
             </Grid>
         </Border>
 
@@ -84,7 +202,7 @@
                         <StackPanel Spacing="4">
                             <TextBlock Classes="sectionTitle" Text="Live participant list"/>
                             <TextBlock Classes="sectionHint"
-                                       Text="Roster-first view so operators can distinguish strong matches from weak Zoom identities at a glance."/>
+                                       Text="After each refresh, this shows the rostered people ZoomCheck has seen in the meeting so far."/>
                         </StackPanel>
 
                         <Border Background="{StaticResource Brush.SurfaceSecondary}"
@@ -104,7 +222,20 @@
                         <TextBlock Classes="metricLabel" Grid.Column="3" Text="Timeline"/>
                     </Grid>
 
-                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <Border Grid.Row="2"
+                            Classes="calloutPanel"
+                            IsVisible="{Binding ShowParticipantEmptyState}">
+                        <StackPanel Spacing="8" VerticalAlignment="Center">
+                            <TextBlock Classes="emptyTitle" Text="No live people yet"/>
+                            <TextBlock Classes="emptyDetail"
+                                       Text="Open or join the Zoom meeting first, make sure the meeting ID above is correct, then press Refresh. This list will fill in as Zoom activity arrives."
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="2"
+                                  VerticalScrollBarVisibility="Auto"
+                                  IsVisible="{Binding HasParticipants}">
                         <ItemsControl ItemsSource="{Binding Participants}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="vm:ParticipantItemViewModel">
@@ -167,7 +298,7 @@
                             <StackPanel Spacing="4">
                                 <TextBlock Classes="sectionTitle" Text="Confidence buckets"/>
                                 <TextBlock Classes="sectionHint"
-                                           Text="Escalate anything weaker than a verified roster match before marking attendance complete."/>
+                                           Text="Use this as a quick class health check. Focus most of your time on Review and Unmatched counts."/>
                             </StackPanel>
 
                             <Border Background="{StaticResource Brush.SurfaceSecondary}"
@@ -211,16 +342,28 @@
                 </Border>
 
                 <Border Grid.Row="1" Classes="card">
-                    <Grid RowDefinitions="Auto,*,Auto,Auto,Auto" RowSpacing="14">
+                    <Grid RowDefinitions="Auto,*,Auto,Auto,Auto,Auto" RowSpacing="14">
                         <StackPanel Spacing="4">
                             <TextBlock Classes="sectionTitle" Text="Review queue"/>
-                            <TextBlock Classes="sectionHint" Text="Only weaker matches land here, so operators can focus on the exceptions instead of the whole class."/>
+                            <TextBlock Classes="sectionHint" Text="Only weaker matches land here, so you can focus on the exceptions instead of the whole class."/>
                         </StackPanel>
 
+                        <Border Grid.Row="1"
+                                Classes="calloutPanel"
+                                IsVisible="{Binding ShowReviewQueueEmptyState}">
+                            <StackPanel Spacing="8" VerticalAlignment="Center">
+                                <TextBlock Classes="emptyTitle" Text="Nothing is flagged right now"/>
+                                <TextBlock Classes="emptyDetail"
+                                           Text="Keep refreshing during class. This area only fills when Zoom names need a quick human check before export."
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
                         <ListBox Grid.Row="1"
-                                 ItemsSource="{Binding ReviewQueue}"
-                                 SelectedItem="{Binding SelectedReviewItem}"
-                                 MinHeight="180">
+                                  ItemsSource="{Binding ReviewQueue}"
+                                  SelectedItem="{Binding SelectedReviewItem}"
+                                  MinHeight="180"
+                                  IsVisible="{Binding HasReviewQueue}">
                             <ListBox.ItemTemplate>
                                 <DataTemplate x:DataType="vm:ReviewQueueItemViewModel">
                                     <Border Classes="listRow" Margin="0,0,0,10">
@@ -240,18 +383,29 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
 
-                        <ComboBox Grid.Row="2"
+                        <TextBlock Grid.Row="2"
+                                   Classes="helperCopy"
+                                   Text="Select a flagged person, choose the correct roster entry, then save the alias so future refreshes classify them faster."
+                                   TextWrapping="Wrap"
+                                   IsVisible="{Binding HasReviewQueue}"/>
+
+                        <ComboBox Grid.Row="3"
                                   ItemsSource="{Binding RosterOptions}"
                                   SelectedItem="{Binding SelectedRosterOption}"
-                                  DisplayMemberBinding="{Binding DisplayName}"/>
+                                  DisplayMemberBinding="{Binding DisplayName}"
+                                  IsVisible="{Binding HasReviewQueue}"/>
 
-                        <TextBox Grid.Row="3" Text="{Binding SelectedAliasText}" Watermark="Alias text to save for future meetings"/>
+                        <TextBox Grid.Row="4"
+                                 Text="{Binding SelectedAliasText}"
+                                 Watermark="Alias text to save for future meetings"
+                                 IsVisible="{Binding HasReviewQueue}"/>
 
-                        <Button Grid.Row="4"
-                                Classes="actionPrimary"
-                                Content="Save alias and reclassify"
-                                Command="{Binding SaveAliasCommand}"
-                                IsEnabled="{Binding CanSaveAlias}"/>
+                        <Button Grid.Row="5"
+                                 Classes="actionPrimary"
+                                 Content="Save alias and reclassify"
+                                 Command="{Binding SaveAliasCommand}"
+                                 IsEnabled="{Binding CanSaveAlias}"
+                                 IsVisible="{Binding HasReviewQueue}"/>
                     </Grid>
                 </Border>
 
@@ -260,10 +414,23 @@
                         <StackPanel Spacing="4">
                             <TextBlock Classes="sectionTitle" Text="Recent join / leave events"/>
                             <TextBlock Classes="sectionHint"
-                                       Text="Use the timeline to verify late arrivals, reconnects, and exits that may affect attendance confidence."/>
+                                       Text="Use this timeline after each refresh to confirm late arrivals, reconnects, and exits during class."/>
                         </StackPanel>
 
-                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <Border Grid.Row="1"
+                                Classes="calloutPanel"
+                                IsVisible="{Binding ShowRecentEventsEmptyState}">
+                            <StackPanel Spacing="8" VerticalAlignment="Center">
+                                <TextBlock Classes="emptyTitle" Text="No meeting activity pulled in yet"/>
+                                <TextBlock Classes="emptyDetail"
+                                           Text="When Zoom join or leave activity exists for this meeting, it will appear here after you press Refresh."
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <ScrollViewer Grid.Row="1"
+                                      VerticalScrollBarVisibility="Auto"
+                                      IsVisible="{Binding HasRecentEvents}">
                             <ItemsControl ItemsSource="{Binding RecentEvents}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate x:DataType="vm:ActivityEventViewModel">

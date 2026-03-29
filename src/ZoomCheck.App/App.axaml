@@ -88,6 +88,53 @@
             <Setter Property="Foreground" Value="{StaticResource Brush.TextSoft}" />
         </Style>
 
+        <Style Selector="Border.calloutPanel">
+            <Setter Property="Background" Value="{StaticResource Brush.SurfaceSecondary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Brush.BorderSubtle}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="18" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+
+        <Style Selector="Border.workflowStep">
+            <Setter Property="Background" Value="{StaticResource Brush.SurfaceSecondary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Brush.ActionBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="18" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+
+        <Style Selector="TextBlock.stepIndex">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextSoft}" />
+        </Style>
+
+        <Style Selector="TextBlock.stepTitle">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style Selector="TextBlock.stepDetail">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextMuted}" />
+        </Style>
+
+        <Style Selector="TextBlock.helperCopy">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextMuted}" />
+        </Style>
+
+        <Style Selector="TextBlock.emptyTitle">
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style Selector="TextBlock.emptyDetail">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextSoft}" />
+        </Style>
+
         <Style Selector="Button.actionPrimary">
             <Setter Property="Background" Value="{StaticResource Brush.ActionPrimary}" />
             <Setter Property="Foreground" Value="White" />
