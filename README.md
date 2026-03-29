@@ -42,12 +42,55 @@ So today:
 
 ## Requirements
 
+### For normal Windows users
+
+- Use the packaged Windows installer
+- No separate .NET installation is needed when using the self-contained Windows package
+
+### For developers running from source
+
 - .NET 8 SDK
 - A Zoom Server-to-Server OAuth app for real Zoom integration
 - Zoom webhook configuration for live participant events
 - Windows is the intended operator runtime, but the backend also runs on Linux
 
-## Quick start
+## Windows install for beginners
+
+The intended beginner flow is:
+
+1. Run `ZoomCheck-Setup-x64.exe`
+2. Finish the installer wizard
+3. Double-click the **ZoomCheck** shortcut
+4. ZoomCheck starts its local service automatically
+5. Open or join the Zoom meeting
+6. Enter the meeting ID, load the roster, refresh during class, review flagged people, and export at the end
+
+> The installer assets for this flow live under `deploy/windows/`.
+
+## Build the Windows installer
+
+On a Windows build machine:
+
+1. Install .NET 8 SDK
+2. Install Inno Setup 6
+3. Run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\windows\build-installer.ps1
+```
+
+This produces:
+
+- self-contained app publish output
+- self-contained backend publish output
+- packaged install folder
+- `dist\installer\ZoomCheck-Setup-x64.exe`
+
+You can also build the installer from GitHub Actions on a Windows runner through:
+
+- `.github/workflows/build-windows-installer.yml`
+
+## Quick start from source
 
 ### 1. Clone the repository
 
@@ -73,11 +116,13 @@ Useful test endpoints:
 dotnet run --project src/ZoomCheck.App/ZoomCheck.App.csproj
 ```
 
-The desktop app currently assumes the backend is available at:
+The desktop app currently targets:
 
 ```text
 http://127.0.0.1:5078/
 ```
+
+When running from the packaged Windows build, the desktop app starts the backend automatically.
 
 ## Simple operator workflow
 
@@ -108,6 +153,11 @@ http://127.0.0.1:5078/
 - `POST /api/zoom/webhooks/events`
 - `POST /api/zoom/webhooks/participant-event`
 - `POST /api/zoom/webhooks/raw`
+
+### Zoom recovery
+
+- `GET /api/zoom/recovery/last`
+- `POST /api/zoom/recovery/run`
 
 ### Meeting board and export
 
@@ -162,6 +212,12 @@ What this enables:
 - Zoom S2S OAuth token acquisition and caching
 - Basic configuration status checking through `/api/zoom/settings-status`
 
+## Beginner operator guide
+
+See:
+
+- `docs/windows-operator-guide.md`
+
 ## How match confidence works
 
 - `Verified` — strongest match, usually email-based
@@ -188,12 +244,44 @@ Stored data includes:
 - manual alias mappings
 - participant event logs
 
+## Zoom late-start recovery
+
+If the backend starts after a meeting has already begun, Zoom does not resend previous participant events. The new recovery path helps avoid that gap.
+
+- Configure `ZoomRecovery` in `appsettings.json` (example included):
+
+  ```json
+  "ZoomRecovery": {
+    "Enabled": true,
+    "StartupDelaySeconds": 8,
+    "PeriodicScanIntervalSeconds": 0,
+    "UsersPageSize": 100,
+    "MeetingsPageSize": 300,
+    "ParticipantsPageSize": 300,
+    "EnableAccountWideUserDiscovery": false,
+    "HostUserIds": [],
+    "IncludeFallbackMeUser": true
+  }
+  ```
+
+  - `Enabled`: turns automatic startup recovery on/off (default `true`)
+  - `StartupDelaySeconds`: delay before first recovery run
+  - `PeriodicScanIntervalSeconds`: optional polling interval; `0` disables periodic scans
+  - `HostUserIds`: explicit host IDs to query live meetings for
+  - `EnableAccountWideUserDiscovery`: include all active users (requires broader account scope)
+  - `IncludeFallbackMeUser`: add `me` as final fallback user
+- Recovery uses Zoom `GET /users/{userId}/meetings?type=live` for discovery.
+- For each live meeting it calls `GET /metrics/meetings/{meetingId}/participants?type=live` and inserts missing `joined` events with `source = zoom-live-recovery`.
+- Endpoint `POST /api/zoom/recovery/run` triggers recovery on demand.
+- Endpoint `GET /api/zoom/recovery/last` returns the last completed run summary.
+- Dedupe rule: recovery skips participants that already have a currently active event for the same normalized name+email.
+- Permissions/scope mismatch on live participant metrics is surfaced as warnings in `POST /api/zoom/recovery/run` response.
+
 ## Known limitations
 
-- Desktop UI uses manual refresh instead of auto-refresh or push updates
+- Desktop UI still uses manual refresh instead of auto-refresh or push updates
 - Real Zoom reconciliation after meeting end is not implemented yet
-- Desktop app backend URL is still fixed in code
-- Packaging for Windows distribution is not done yet
+- Packaged installer generation is prepared, but should be built on Windows for the final `setup.exe`
 
 ## Recommended next steps
 
