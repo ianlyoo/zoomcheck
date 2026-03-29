@@ -34,6 +34,9 @@ public sealed class AttendanceApplicationService
     public Task<IReadOnlyList<RosterPerson>> GetRosterAsync(CancellationToken cancellationToken = default)
         => _repository.GetRosterPeopleAsync(cancellationToken);
 
+    public Task<IReadOnlyList<ParticipantEvent>> GetParticipantEventsForMeetingAsync(string meetingId, CancellationToken cancellationToken = default)
+        => _repository.GetParticipantEventsAsync(meetingId, cancellationToken);
+
     public async Task<ParticipantEvent> RecordZoomEventAsync(ZoomParticipantEventInput input, CancellationToken cancellationToken = default)
     {
         var roster = await _repository.GetRosterPeopleAsync(cancellationToken);

@@ -12,44 +12,74 @@ public sealed class ZoomAdminController : ControllerBase
 {
     private readonly ZoomOptions _options;
     private readonly ZoomOAuthTokenService _tokenService;
+    private readonly ZoomRecoveryService _recoveryService;
 
-    public ZoomAdminController(IOptions<ZoomOptions> options, ZoomOAuthTokenService tokenService)
+    public ZoomAdminController(
+        IOptions<ZoomOptions> options,
+        ZoomOAuthTokenService tokenService,
+        ZoomRecoveryService recoveryService)
     {
         _options = options.Value;
         _tokenService = tokenService;
+        _recoveryService = recoveryService;
     }
 
     [HttpGet("settings-status")]
     public async Task<ActionResult<ZoomSettingsStatusResponse>> GetSettingsStatus(CancellationToken cancellationToken)
     {
-        var token = await _tokenService.TryGetAccessTokenAsync(cancellationToken);
+        string? token = null;
+        try
+        {
+            token = await _tokenService.TryGetAccessTokenAsync(cancellationToken);
+        }
+        catch
+        {
+            token = null;
+        }
         var missingFields = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(_options.WebhookSecretToken))
+        if (!HasConfiguredValue(_options.WebhookSecretToken))
         {
             missingFields.Add("Zoom:WebhookSecretToken");
         }
 
-        if (string.IsNullOrWhiteSpace(_options.ClientId))
+        if (!HasConfiguredValue(_options.ClientId))
         {
             missingFields.Add("Zoom:ClientId");
         }
 
-        if (string.IsNullOrWhiteSpace(_options.ClientSecret))
+        if (!HasConfiguredValue(_options.ClientSecret))
         {
             missingFields.Add("Zoom:ClientSecret");
         }
 
-        if (string.IsNullOrWhiteSpace(_options.AccountId))
+        if (!HasConfiguredValue(_options.AccountId))
         {
             missingFields.Add("Zoom:AccountId");
         }
 
         return Ok(new ZoomSettingsStatusResponse(
-            WebhookSecretConfigured: !string.IsNullOrWhiteSpace(_options.WebhookSecretToken),
+            WebhookSecretConfigured: HasConfiguredValue(_options.WebhookSecretToken),
             OAuthConfigured: _tokenService.IsConfigured,
             TokenAvailable: !string.IsNullOrWhiteSpace(token),
             TokenExpiresAt: _tokenService.ExpiresAt,
             MissingFields: missingFields.ToArray()));
     }
+
+    [HttpGet("recovery/last")]
+    public ActionResult<ZoomRecoveryLastRun> GetRecoveryLastRun()
+    {
+        var last = _recoveryService.GetLastRun();
+        return Ok(last);
+    }
+
+    [HttpPost("recovery/run")]
+    public async Task<ActionResult<ZoomRecoveryResult>> RunRecoveryNow(CancellationToken cancellationToken)
+    {
+        var result = await _recoveryService.RecoverLiveMeetingsAsync(cancellationToken);
+        return Ok(result);
+    }
+
+    private static bool HasConfiguredValue(string? value)
+        => !string.IsNullOrWhiteSpace(value) && !value.StartsWith("replace-with-your-", StringComparison.OrdinalIgnoreCase);
 }

@@ -21,9 +21,9 @@ public sealed class ZoomOAuthTokenService
     }
 
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(_options.ClientId)
-        && !string.IsNullOrWhiteSpace(_options.ClientSecret)
-        && !string.IsNullOrWhiteSpace(_options.AccountId);
+        HasConfiguredValue(_options.ClientId)
+        && HasConfiguredValue(_options.ClientSecret)
+        && HasConfiguredValue(_options.AccountId);
 
     public DateTimeOffset? ExpiresAt => _expiresAt;
 
@@ -83,4 +83,7 @@ public sealed class ZoomOAuthTokenService
         [JsonPropertyName("expires_in")]
         public int ExpiresIn { get; set; }
     }
+
+    private static bool HasConfiguredValue(string? value)
+        => !string.IsNullOrWhiteSpace(value) && !value.StartsWith("replace-with-your-", StringComparison.OrdinalIgnoreCase);
 }
