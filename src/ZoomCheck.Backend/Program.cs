@@ -11,6 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection(StorageOptions.SectionName));
 builder.Services.Configure<ZoomOptions>(builder.Configuration.GetSection(ZoomOptions.SectionName));
+builder.Services.Configure<ZoomRecoveryOptions>(builder.Configuration.GetSection(ZoomRecoveryOptions.SectionName));
 var storageOptions = builder.Configuration.GetSection(StorageOptions.SectionName).Get<StorageOptions>() ?? new StorageOptions();
 
 builder.Services.AddSingleton(new SqliteAttendanceRepository(storageOptions.DatabasePath));
@@ -19,6 +20,9 @@ builder.Services.AddSingleton<AttendanceMatcher>();
 builder.Services.AddSingleton<AttendanceApplicationService>();
 builder.Services.AddSingleton<ZoomWebhookValidator>();
 builder.Services.AddHttpClient<ZoomOAuthTokenService>();
+builder.Services.AddHttpClient<ZoomApiClient>();
+builder.Services.AddSingleton<ZoomRecoveryService>();
+builder.Services.AddHostedService<ZoomRecoveryBackgroundService>();
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
@@ -34,9 +38,8 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+    app.UseHttpsRedirection();
 }
-
-app.UseHttpsRedirection();
 app.UseAuthorization();
 app.MapControllers();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
