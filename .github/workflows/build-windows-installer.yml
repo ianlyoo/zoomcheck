@@ -1,0 +1,59 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional tag name for creating a GitHub release
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Restore
+        run: dotnet restore ZoomCheck.sln
+
+      - name: Build installer
+        shell: powershell
+        run: .\deploy\windows\build-installer.ps1 -Configuration Release -Runtime win-x64 -Version 0.1.${{ github.run_number }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZoomCheck-Setup-x64
+          path: dist/installer/ZoomCheck-Setup-x64.exe
+
+      - name: Upload packaged app folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZoomCheck-win-x64-package
+          path: dist/windows/package
+
+      - name: Create GitHub release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.release_tag }}" dist/installer/ZoomCheck-Setup-x64.exe \
+            --title "ZoomCheck ${{ inputs.release_tag }}" \
+            --notes "Windows self-contained ZoomCheck installer built by GitHub Actions."
