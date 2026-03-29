@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using ZoomCheck.Core.Models;
@@ -14,7 +15,8 @@ public sealed class BackendApiClient
     private readonly HttpClient _httpClient;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter() }
     };
 
     public BackendApiClient(HttpClient httpClient)
@@ -77,6 +79,14 @@ public sealed class BackendApiClient
         return result ?? new ZoomRecoveryRunResponse(false, 0, 0, 0, Array.Empty<ZoomRecoveredMeetingResponse>(), Array.Empty<string>(), "Recovery response was empty.");
     }
 
+    public async Task<ZoomSettingsStatusResponse> GetZoomSettingsStatusAsync(CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.GetAsync("api/zoom/settings-status", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<ZoomSettingsStatusResponse>(_jsonOptions, cancellationToken);
+        return result ?? new ZoomSettingsStatusResponse(false, false, false, null, Array.Empty<string>());
+    }
+
     public string BackendBaseUrl => _httpClient.BaseAddress?.ToString() ?? string.Empty;
 }
 
@@ -93,3 +103,10 @@ public sealed record ZoomRecoveredMeetingResponse(
     string MeetingId,
     int DiscoveredParticipants,
     int AddedEvents);
+
+public sealed record ZoomSettingsStatusResponse(
+    bool WebhookSecretConfigured,
+    bool OAuthConfigured,
+    bool TokenAvailable,
+    DateTimeOffset? TokenExpiresAt,
+    IReadOnlyList<string> MissingFields);

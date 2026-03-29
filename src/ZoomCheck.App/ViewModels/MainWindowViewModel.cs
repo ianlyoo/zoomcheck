@@ -62,6 +62,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private LiveMeetingOptionViewModel? selectedLiveMeeting;
 
     private DateTimeOffset? _lastRecoveryAt;
+    private ZoomSettingsStatusResponse? _zoomSettingsStatus;
 
     public MainWindowViewModel()
         : this(
@@ -199,6 +200,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
             if (healthy)
             {
+                await UpdateZoomSettingsStatusAsync();
                 await DetectLiveMeetingCoreAsync(autoAttachSingleMeeting: true, updateStatusBanner: true);
                 await LoadRosterOptionsAsync();
                 if (RosterOptions.Count > 0)
@@ -482,6 +484,25 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private async Task DetectLiveMeetingCoreAsync(bool autoAttachSingleMeeting, bool updateStatusBanner)
     {
+        await UpdateZoomSettingsStatusAsync();
+
+        if (_zoomSettingsStatus is not null && (!_zoomSettingsStatus.OAuthConfigured || !_zoomSettingsStatus.WebhookSecretConfigured))
+        {
+            ReplaceWith(LiveMeetings, Array.Empty<LiveMeetingOptionViewModel>());
+            OnPropertyChanged(nameof(HasLiveMeetingCandidates));
+            OnPropertyChanged(nameof(LiveMeetingStatus));
+
+            if (updateStatusBanner)
+            {
+                var missing = string.Join(", ", _zoomSettingsStatus.MissingFields);
+                StatusBanner = string.IsNullOrWhiteSpace(missing)
+                    ? "Live Zoom detection is not configured yet. Add your Zoom app credentials and webhook secret first."
+                    : $"Live Zoom detection needs configuration first: {missing}.";
+            }
+
+            return;
+        }
+
         var recovery = await _apiClient.RunRecoveryAsync();
         _lastRecoveryAt = DateTimeOffset.UtcNow;
 
@@ -522,6 +543,12 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
+        if (recovery.Warnings.Count > 0 && LiveMeetings.Count == 0)
+        {
+            StatusBanner = recovery.Warnings.First();
+            return;
+        }
+
         if (LiveMeetings.Count == 0)
         {
             StatusBanner = "No live Zoom meeting was detected yet. Start or join the Zoom meeting, then try Detect live meeting again.";
@@ -536,6 +563,18 @@ public partial class MainWindowViewModel : ViewModelBase
         }
 
         StatusBanner = $"{LiveMeetings.Count} live Zoom meetings were detected. Choose the correct one, then keep refreshing the board.";
+    }
+
+    private async Task UpdateZoomSettingsStatusAsync()
+    {
+        try
+        {
+            _zoomSettingsStatus = await _apiClient.GetZoomSettingsStatusAsync();
+        }
+        catch
+        {
+            _zoomSettingsStatus = null;
+        }
     }
 
     private static string BuildDurationText(BoardPersonStatus person)
