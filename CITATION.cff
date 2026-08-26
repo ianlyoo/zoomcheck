@@ -1,0 +1,36 @@
+# This file is for citation metadata — https://citation-file-format.github.io/
+cff-version: 1.2.0
+message: "If you use zoomcheck, please cite it as below."
+title: "zoomcheck"
+abstract: "Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation."
+version: 0.1.0
+date-released: 2026-08-26
+license: MIT
+type: software
+authors:
+  - family-names: "Yoo"
+    given-names: "Ian"
+    alias: "ianlyoo"
+repository-code: "https://github.com/ianlyoo/zoomcheck"
+url: "https://github.com/ianlyoo/zoomcheck"
+homepage: "https://ianlyoo.github.io/zoomcheck/"
+keywords:
+  - attendance
+  - avalonia
+  - csharp
+  - dashboard
+  - developer-tools
+  - dotnet
+  - education-tools
+  - meeting-automation
+  - roster-matching
+  - webhook
+  - workflow-automation
+  - zoom
+identifiers:
+  - type: url
+    value: "https://github.com/ianlyoo/zoomcheck"
+    description: "GitHub repository"
+  - type: url
+    value: "https://ianlyoo.github.io/zoomcheck/"
+    description: "GitHub Pages"

@@ -1,0 +1,47 @@
+{
+  "@context": "https://doi.org/10.5438/crossref",
+  "@type": "SoftwareSourceCode",
+  "name": "zoomcheck",
+  "description": "Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.",
+  "version": "0.1.0",
+  "license": "https://spdx.org/licenses/MIT",
+  "codeRepository": "https://github.com/ianlyoo/zoomcheck",
+  "url": "https://github.com/ianlyoo/zoomcheck",
+  "homepage": "https://ianlyoo.github.io/zoomcheck/",
+  "issueTracker": "https://github.com/ianlyoo/zoomcheck/issues",
+  "author": [
+    {
+      "@type": "Person",
+      "givenName": "Ian",
+      "familyName": "Yoo",
+      "alternateName": "ianlyoo"
+    }
+  ],
+  "provider": {
+    "@type": "Person",
+    "givenName": "Ian",
+    "familyName": "Yoo",
+    "alternateName": "ianlyoo"
+  },
+  "programmingLanguage": "C#",
+  "runtimePlatform": ".NET 8",
+  "keywords": [
+    "attendance",
+    "avalonia",
+    "csharp",
+    "dashboard",
+    "developer-tools",
+    "dotnet",
+    "education-tools",
+    "meeting-automation",
+    "roster-matching",
+    "webhook",
+    "workflow-automation",
+    "zoom"
+  ],
+  "applicationCategory": "developer-tools",
+  "operatingSystem": "Cross-platform",
+  "datePublished": "2026-08-26",
+  "dateCreated": "2026-08-26",
+  "isAccessibleForFree": true
+}

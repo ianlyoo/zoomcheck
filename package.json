@@ -1,0 +1,32 @@
+{
+  "name": "zoomcheck",
+  "version": "0.1.0",
+  "description": "Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.",
+  "license": "MIT",
+  "author": "ianlyoo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ianlyoo/zoomcheck.git"
+  },
+  "homepage": "https://github.com/ianlyoo/zoomcheck",
+  "bugs": {
+    "url": "https://github.com/ianlyoo/zoomcheck/issues"
+  },
+  "keywords": [
+    "attendance",
+    "avalonia",
+    "csharp",
+    "dashboard",
+    "developer-tools",
+    "dotnet",
+    "education-tools",
+    "meeting-automation",
+    "roster-matching",
+    "webhook",
+    "workflow-automation",
+    "zoom"
+  ],
+  "engines": {
+    "dotnet": ">=8.0.0"
+  }
+}
