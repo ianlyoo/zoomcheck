@@ -85,7 +85,7 @@ flowchart LR
 ```bash
 dotnet build ZoomCheck.sln
 dotnet run --project src/ZoomCheck.Backend &
-# load fixture roster and replay webhook events, then inspect dashboard
+// load fixture roster and replay webhook events, then inspect dashboard
 ```
 
 Limitations restated: synthetic fixture, one run, heuristic thresholds, no live Zoom connection during measurement, local-only data, no attendance warranty.
