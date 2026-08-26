@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zoomcheck — Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.</title>
+<meta name="description" content="Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.">
+<link rel="canonical" href="https://ianlyoo.github.io/zoomcheck/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="zoomcheck — Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.">
+<meta property="og:description" content="Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.">
+<meta property="og:url" content="https://ianlyoo.github.io/zoomcheck/">
+<meta property="og:image" content="https://ianlyoo.github.io/zoomcheck/assets/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:type" content="image/png">
+<meta property="og:site_name" content="zoomcheck">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="zoomcheck — Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.">
+<meta name="twitter:description" content="Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.">
+<meta name="twitter:image" content="https://ianlyoo.github.io/zoomcheck/assets/social-preview.png">
+<meta name="twitter:url" content="https://ianlyoo.github.io/zoomcheck/">
+<meta name="author" content="ianlyoo">
+<meta name="robots" content="index, follow">
+<link rel="stylesheet" href="./styles.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareSourceCode","name":"zoomcheck","description":"Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.","version":"0.1.0","codeRepository":"https://github.com/ianlyoo/zoomcheck","url":"https://ianlyoo.github.io/zoomcheck/","programmingLanguage":"C#","license":"https://spdx.org/licenses/MIT","keywords":["attendance","avalonia","csharp","dashboard","developer-tools","dotnet","education-tools","meeting-automation","roster-matching","webhook","workflow-automation","zoom"],"author":{"@type":"Person","name":"ianlyoo"}}</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header role="banner">
+<div class="container">
+<h1>zoomcheck</h1>
+<p class="tagline">Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.</p>
+<nav aria-label="Primary">
+<ul>
+<li><a href="https://github.com/ianlyoo/zoomcheck">GitHub Repository</a></li>
+<li><a href="https://github.com/ianlyoo/zoomcheck/blob/main/README.md">README</a></li>
+<li><a href="https://github.com/ianlyoo/zoomcheck/issues">Issues</a></li>
+<li><a href="https://ianlyoo.github.io/zoomcheck/">Pages</a></li>
+</ul>
+</nav>
+<nav aria-label="Language">
+<ul>
+<li><a href="https://github.com/ianlyoo/zoomcheck/blob/main/README.md" lang="en">English</a> | <a href="https://github.com/ianlyoo/zoomcheck/blob/main/README.ko.md" lang="ko">한국어</a></li>
+</ul>
+</nav>
+</div>
+</header>
+<main id="main">
+<div class="container">
+<section aria-labelledby="overview-heading">
+<h2 id="overview-heading">Overview</h2>
+<p>Load a roster from Excel, capture Zoom join/leave events via webhook, and match participants against the roster to compute attendance. In classes where names, nicknames, and device names are mixed, checking every attendee by hand is not practical — confident matches are handled automatically and only ambiguous ones go to a review queue.</p>
+<ul>
+<li>.NET 8 + Avalonia desktop, ASP.NET Core backend, SQLite</li>
+<li>Installer: <code>ZoomCheck-Setup-x64.exe</code> under <code>deploy/windows/</code></li>
+<li>Backend at <code>http://127.0.0.1:5078</code> — CSV export from the dashboard</li>
+</ul>
+<p><a href="https://github.com/ianlyoo/zoomcheck/blob/main/README.md">README</a> — <a href="https://github.com/ianlyoo/zoomcheck">Repository</a> — <a href="https://github.com/ianlyoo/zoomcheck/issues">Issues</a> — <a href="https://ianlyoo.github.io/zoomcheck/">Pages canonical</a></p>
+</section>
+
+<section aria-labelledby="install-heading">
+<h2 id="install-heading">Quick start</h2>
+<ol>
+<li>Run <code>ZoomCheck-Setup-x64.exe</code> and finish the wizard</li>
+<li>Launch the <strong>ZoomCheck</strong> shortcut (local service starts automatically)</li>
+<li>Open or join the Zoom meeting</li>
+<li>Enter the meeting ID — load the roster — refresh during class — review flagged people — export at the end</li>
+</ol>
+<pre><code>dotnet build ZoomCheck.sln
+dotnet run --project src/ZoomCheck.Backend
+dotnet run --project src/ZoomCheck.App</code></pre>
+</section>
+
+<section aria-labelledby="architecture-heading">
+<h2 id="architecture-heading">Architecture — 4 projects</h2>
+<table>
+<thead><tr><th>Project</th><th>Responsibility</th></tr></thead>
+<tbody>
+<tr><td><code>ZoomCheck.Core</code></td><td>Domain models and matching logic</td></tr>
+<tr><td><code>ZoomCheck.Infrastructure</code></td><td>Excel parsing and SQLite access</td></tr>
+<tr><td><code>ZoomCheck.Backend</code></td><td>Roster distribution, Zoom webhooks, board operations, export API</td></tr>
+<tr><td><code>ZoomCheck.App</code></td><td>Operator review dashboard (Avalonia desktop)</td></tr>
+</tbody>
+</table>
+</section>
+
+<section aria-labelledby="matching-heading">
+<h2 id="matching-heading">Matching confidence</h2>
+<table>
+<thead><tr><th>Tier</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>Verified</code></td><td>Strongest match, typically email-based</td></tr>
+<tr><td><code>AliasVerified</code></td><td>Operator-registered alias matches Zoom display name</td></tr>
+<tr><td><code>NameOnly</code></td><td>Name-only match — quick confirmation recommended</td></tr>
+<tr><td><code>Possible</code></td><td>Weak evidence — review recommended</td></tr>
+<tr><td><code>Unmatched</code></td><td>No roster match</td></tr>
+</tbody>
+</table>
+<p>See <a href="https://github.com/ianlyoo/zoomcheck/blob/main/docs/windows-operator-guide.md">Windows operator guide</a> for the full workflow.</p>
+</section>
+
+<section aria-labelledby="links-heading">
+<h2 id="links-heading">Project links</h2>
+<ul>
+<li><a href="https://github.com/ianlyoo/zoomcheck">Repository: https://github.com/ianlyoo/zoomcheck</a></li>
+<li><a href="https://github.com/ianlyoo/zoomcheck/issues">Issues</a></li>
+<li><a href="https://ianlyoo.github.io/zoomcheck/">Pages canonical: https://ianlyoo.github.io/zoomcheck/</a></li>
+<li><a href="https://github.com/ianlyoo/zoomcheck/blob/main/LICENSE">License: MIT</a></li>
+<li><a href="https://github.com/ianlyoo/zoomcheck/blob/main/README.md">README</a></li>
+</ul>
+</section>
+
+<section aria-labelledby="license-heading">
+<h2 id="license-heading">License and ownership</h2>
+<p>Owner: <a href="https://github.com/ianlyoo">ianlyoo</a> — License: <a href="https://spdx.org/licenses/MIT">MIT</a> — Version: 0.1.0 — Language: C#</p>
+<div class="limitations" role="note" aria-label="Limitations">
+<p><strong>Limitations:</strong> Windows-oriented deployment; Zoom webhook setup requires a reachable endpoint. Roster quality (Excel encoding, name normalization) directly affects match rates. Attendance results are decision-support — operator review is required for <code>NameOnly</code> / <code>Possible</code> / <code>Unmatched</code>.</p>
+</div>
+</section>
+</div>
+</main>
+<footer role="contentinfo">
+<div class="container">
+<p>© 2026 ianlyoo — <a href="https://github.com/ianlyoo/zoomcheck">zoomcheck</a> — <a href="https://spdx.org/licenses/MIT">MIT</a> — <a href="https://ianlyoo.github.io/zoomcheck/sitemap.xml">Sitemap</a> — <a href="https://github.com/ianlyoo/zoomcheck/blob/main/README.md">README</a></p>
+</div>
+</footer>
+</body>
+</html>
