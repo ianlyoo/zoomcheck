@@ -12,22 +12,29 @@ public sealed class ZoomLiveController : ControllerBase
     private readonly ZoomLiveSyncService _liveSyncService;
     private readonly ZoomOAuthTokenService _tokenService;
     private readonly ZoomAppBridgeService _zoomAppBridge;
+    private readonly ZoomRelayService _zoomRelay;
 
     public ZoomLiveController(
         ZoomLiveSyncService liveSyncService,
         ZoomOAuthTokenService tokenService,
-        ZoomAppBridgeService zoomAppBridge)
+        ZoomAppBridgeService zoomAppBridge,
+        ZoomRelayService zoomRelay)
     {
         _liveSyncService = liveSyncService;
         _tokenService = tokenService;
         _zoomAppBridge = zoomAppBridge;
+        _zoomRelay = zoomRelay;
     }
 
     [HttpGet("connection-status")]
     public ActionResult GetConnectionStatus()
     {
-        var zoomApp = _zoomAppBridge.GetStatus();
-        var recommendedMode = zoomApp.Connected ? "zoomApp" : _tokenService.IsConfigured ? "business" : "manual";
+        var relay = _zoomRelay.GetStatus();
+        var direct = _zoomAppBridge.GetStatus();
+        var zoomApp = relay.Connected || (_zoomRelay.IsConfigured && direct.HomeUrl is null) ? relay : direct;
+        var recommendedMode = zoomApp.Connected || _zoomRelay.IsConfigured
+            ? "zoomApp"
+            : _tokenService.IsConfigured ? "business" : "manual";
         return Ok(new
         {
             configured = _tokenService.IsConfigured || zoomApp.Connected,
@@ -42,6 +49,8 @@ public sealed class ZoomLiveController : ControllerBase
                 endpoint = "GET /v2/metrics/meetings/{meetingId}/participants?type=live"
             },
             zoomApp,
+            relay = new { configured = _zoomRelay.IsConfigured, status = relay },
+            direct,
             recommendedMode,
             requiredScope = "dashboard:read:list_meeting_participants:admin",
             classicScope = "dashboard_meetings:read:admin",

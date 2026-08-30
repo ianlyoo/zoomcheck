@@ -17,6 +17,7 @@ param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
     [string]$Version = "0.1.0",
+    [string]$RelayBaseUrl = "",
     [switch]$SkipInstaller
 )
 
@@ -57,6 +58,29 @@ Write-Step "Publishing ZoomCheck.Backend ($Configuration / $Runtime, self-contai
 dotnet publish $backendProject -c $Configuration -r $Runtime --self-contained true -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -o $packageRoot
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE."
+}
+
+# Embed the operator-managed central relay URL into distributed builds. This is public
+# configuration, not a credential; end users should not need environment variables.
+if (-not [string]::IsNullOrWhiteSpace($RelayBaseUrl)) {
+    $relayUri = $null
+    if (-not [Uri]::TryCreate($RelayBaseUrl.Trim(), [UriKind]::Absolute, [ref]$relayUri) -or
+        $relayUri.Scheme -ne [Uri]::UriSchemeHttps -or
+        -not [string]::IsNullOrWhiteSpace($relayUri.UserInfo) -or
+        -not [string]::IsNullOrWhiteSpace($relayUri.Query) -or
+        -not [string]::IsNullOrWhiteSpace($relayUri.Fragment)) {
+        throw "RelayBaseUrl must be a clean absolute HTTPS origin, for example https://zoomcheck-relay.example/."
+    }
+
+    $publishedSettings = Join-Path $packageRoot "appsettings.json"
+    $publishedConfig = Get-Content $publishedSettings -Raw | ConvertFrom-Json
+    $publishedConfig.ZoomRelay.Enabled = $true
+    $publishedConfig.ZoomRelay.BaseUrl = $relayUri.AbsoluteUri
+    $publishedConfig | ConvertTo-Json -Depth 20 | Set-Content $publishedSettings -Encoding UTF8
+    Write-Host "    embedded central relay origin: $($relayUri.GetLeftPart([UriPartial]::Authority))"
+}
+else {
+    Write-Host "    central relay URL not embedded; Business/direct fallback build only" -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
@@ -132,6 +156,17 @@ if (Test-Path $appSettings) {
             $value = [string]$zoom.PSObject.Properties[$secretKey].Value
             if (-not [string]::IsNullOrWhiteSpace($value)) {
                 $problems.Add("appsettings.json ships a populated Zoom secret: Zoom.$secretKey")
+            }
+        }
+    }
+    if ($config.PSObject.Properties.Name -contains "ZoomRelay") {
+        $relayValue = [string]$config.ZoomRelay.BaseUrl
+        if (-not [string]::IsNullOrWhiteSpace($relayValue)) {
+            $relayUri = $null
+            if (-not [Uri]::TryCreate($relayValue, [UriKind]::Absolute, [ref]$relayUri) -or
+                $relayUri.Scheme -ne [Uri]::UriSchemeHttps -or
+                -not [string]::IsNullOrWhiteSpace($relayUri.UserInfo)) {
+                $problems.Add("appsettings.json carries an invalid ZoomRelay.BaseUrl.")
             }
         }
     }

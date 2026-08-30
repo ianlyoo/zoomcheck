@@ -18,6 +18,7 @@ env:
   PACKAGE_VERSION: 0.4.${{ github.run_number }}
   INSTALLER_PATH: dist/installer/ZoomCheck-Setup-x64.exe
   PORTABLE_PATH: dist/portable/ZoomCheck-portable-win-x64.zip
+  RELAY_BASE_URL: ${{ vars.ZOOMCHECK_RELAY_BASE_URL }}
 
 jobs:
   build-installer:
@@ -46,7 +47,7 @@ jobs:
       # the installer.
       - name: Build package, portable ZIP and installer
         shell: powershell
-        run: .\deploy\windows\build-installer.ps1 -Configuration Release -Runtime win-x64 -Version ${{ env.PACKAGE_VERSION }}
+        run: .\deploy\windows\build-installer.ps1 -Configuration Release -Runtime win-x64 -Version ${{ env.PACKAGE_VERSION }} -RelayBaseUrl "${{ env.RELAY_BASE_URL }}"
 
       - name: Verify build outputs
         shell: pwsh

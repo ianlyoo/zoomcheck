@@ -171,6 +171,39 @@ public sealed class ZoomAppBridgeTests : IAsyncLifetime
         Assert.Equal(new[] { "이순신" }, confirmed.Snapshot.LeftNames);
     }
 
+    [Fact]
+    public async Task RelaySnapshot_UsesSameAttendanceEngineWithoutDirectSessionToken()
+    {
+        var result = await _bridge.ApplyRelaySnapshotAsync(new ZoomRelaySnapshotPayload(
+            "123 456 789",
+            "meeting-uuid",
+            "coHost",
+            RequiredApis,
+            DateTimeOffset.UtcNow,
+            new[]
+            {
+                new ZoomAppParticipantRequest("uuid-1", "영인 유", "coHost"),
+                new ZoomAppParticipantRequest("uuid-2", "이순신", "attendee")
+            }));
+
+        Assert.Equal(2, result.ActiveParticipants);
+        Assert.All(result.Snapshot.Board.People, person => Assert.Equal(AttendanceState.Present, person.AttendanceState));
+        Assert.Contains(result.Snapshot.Board.CurrentConnections!, connection =>
+            connection.PresenceKey == "zoom-app:uuid-1" && connection.DisplayName == "유영인");
+    }
+
+    [Fact]
+    public void RelayHeartbeat_RejectsAttendeeAndMissingSdkApis()
+    {
+        var attendee = Assert.Throws<ZoomAppBridgeException>(() => _bridge.ValidateRelayHeartbeat(
+            new ZoomRelayHeartbeatPayload("meeting-1", null, "attendee", RequiredApis, DateTimeOffset.UtcNow)));
+        var missingApi = Assert.Throws<ZoomAppBridgeException>(() => _bridge.ValidateRelayHeartbeat(
+            new ZoomRelayHeartbeatPayload("meeting-1", null, "host", new[] { "getMeetingContext" }, DateTimeOffset.UtcNow)));
+
+        Assert.Equal(ZoomAppBridgeError.InsufficientRole, attendee.Error);
+        Assert.Equal(ZoomAppBridgeError.UnsupportedClient, missingApi.Error);
+    }
+
     private static readonly string[] RequiredApis =
     {
         "getMeetingParticipants",

@@ -178,7 +178,7 @@
         </section>
 
         <section class="settings-section">
-          <div class="settings-copy"><h3>연결 방식</h3><p>자동을 권장합니다. 자동은 Zoom 앱(Pro) 연결이 살아 있으면 그것을 쓰고, 없으면 Business API로 넘어갑니다.</p></div>
+          <div class="settings-copy"><h3>연결 방식</h3><p>자동을 권장합니다. 일반 사용자는 Zoom 앱(Pro) 릴레이를 쓰고, 기존 Business API와 직접 HTTPS 방식도 그대로 사용할 수 있습니다.</p></div>
           <div class="settings-control">
             <div class="mode-options" role="radiogroup" aria-label="연결 방식 선택">
               <label class="mode-option"><input type="radio" name="connection-mode" value="auto" id="mode-auto" /><span><strong>자동</strong><small>Zoom 앱 우선, 실패 시 Business API</small></span></label>
@@ -200,7 +200,7 @@
         </section>
 
         <section class="settings-section">
-          <div class="settings-copy"><h3>Zoom 앱 (Pro) 페어링</h3><p>Pro 요금제에서는 Dashboard API를 쓸 수 없습니다. 대신 회의 안에서 Zoom 앱을 열고 페어링 코드를 입력하면 호스트·공동호스트 화면의 참가자 목록이 이 PC로 전달됩니다.</p></div>
+          <div class="settings-copy"><h3>Zoom 앱 (Pro) 페어링</h3><p>별도 터널이나 API 키 없이 사용합니다. 회의 안에서 ZoomCheck를 열고 6자리 코드를 입력하면 참가자 목록이 종단간 암호화되어 이 PC로 전달됩니다.</p></div>
           <div class="settings-control">
             <p class="setting-status" id="zoom-app-settings-status">Zoom 앱 연결 상태 확인 중…</p>
             <div class="pairing-box">
@@ -215,15 +215,15 @@
               <button type="button" class="btn secondary" id="btn-copy-pairing-code">코드 복사</button>
               <button type="button" class="btn secondary" id="btn-zoom-app-sync">Zoom 앱 동기화 요청</button>
             </div>
-            <label class="pairing-home" for="zoom-app-home-url">Zoom 앱 Home URL</label>
+            <label class="pairing-home" for="zoom-app-home-url">ZoomCheck 앱 주소</label>
             <div class="pairing-home-row">
-              <code id="zoom-app-home-url">미설정 — Zoom Marketplace에서 Home URL을 등록하세요.</code>
+              <code id="zoom-app-home-url">릴레이 배포 주소를 확인하는 중…</code>
               <button type="button" class="btn secondary compact" id="btn-copy-home-url">복사</button>
             </div>
             <ol class="pairing-steps">
-              <li>Zoom Marketplace에서 General App을 만들고 위 Home URL을 등록합니다.</li>
-              <li>회의를 호스트 또는 공동호스트로 참여한 뒤 Zoom 앱 패널에서 ZoomCheck를 엽니다.</li>
-              <li>여기서 만든 6자리 페어링 코드를 앱에 입력하면 연결이 시작됩니다.</li>
+              <li>처음 한 번만 ZoomCheck 앱 설치를 승인합니다.</li>
+              <li>회의를 호스트 또는 공동호스트로 참여한 뒤 Zoom Apps에서 ZoomCheck를 엽니다.</li>
+              <li>여기서 만든 6자리 코드를 입력합니다. 이름과 참가자 ID는 릴레이가 읽을 수 없습니다.</li>
             </ol>
           </div>
         </section>

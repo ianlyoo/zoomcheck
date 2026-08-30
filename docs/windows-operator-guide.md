@@ -43,7 +43,7 @@ The operator does not need to open a terminal or launch a second program.
 - Check the OAuth status shown in the dashboard
 - Verify that the meeting is live and belongs to the OAuth app account
 - For 403 responses, verify Dashboard API access and the required scope
-- For Pro mode, confirm the companion was opened by a host/co-host, the pairing code has not expired, and the Home URL uses the configured HTTPS origin
+- For Pro mode, confirm the companion was opened by a host/co-host, the one-time pairing code has not expired, and the central relay is reachable
 - Assign co-host before opening the Zoom App. If the app is closed or reloaded, create a new pairing code
 - The Pro path does not request participant email, so review name-only matches carefully
 

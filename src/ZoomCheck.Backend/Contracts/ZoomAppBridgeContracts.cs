@@ -43,6 +43,21 @@ public sealed record ZoomAppHeartbeatResponse(
     bool SyncRequested,
     DateTimeOffset ServerTime);
 
+public sealed record ZoomRelaySnapshotPayload(
+    string? MeetingId,
+    string? MeetingUuid,
+    string? Role,
+    IReadOnlyList<string>? SupportedApis,
+    DateTimeOffset? CapturedAt,
+    IReadOnlyList<ZoomAppParticipantRequest>? Participants);
+
+public sealed record ZoomRelayHeartbeatPayload(
+    string? MeetingId,
+    string? MeetingUuid,
+    string? Role,
+    IReadOnlyList<string>? SupportedApis,
+    DateTimeOffset? SentAt);
+
 public sealed record ZoomAppBridgeStatus(
     bool Connected,
     string? MeetingId,
@@ -54,4 +69,5 @@ public sealed record ZoomAppBridgeStatus(
     int ActiveParticipants,
     long SyncRevision,
     string? HomeUrl,
-    DateTimeOffset? PairingCodeExpiresAt);
+    DateTimeOffset? PairingCodeExpiresAt,
+    string Transport = "direct");

@@ -29,6 +29,8 @@ public sealed class ZoomAppBridgeService
     private readonly TimeProvider _timeProvider;
     private PairingState? _pairing;
     private SessionState? _session;
+    private int _relayActiveParticipants;
+    private DateTimeOffset? _relayEmptySnapshotObservedAt;
 
     public ZoomAppBridgeService(
         AttendanceApplicationService attendance,
@@ -165,6 +167,52 @@ public sealed class ZoomAppBridgeService
         return new ZoomAppSnapshotResponse(connections.Length, snapshot);
     }
 
+    /// <summary>
+    /// Applies a snapshot whose authenticity and confidentiality were established by the
+    /// end-to-end encrypted relay session. The relay itself never sees this plaintext.
+    /// Zoom's role value is still client-supplied, so it is validated here but is not an
+    /// independent server-side attestation.
+    /// </summary>
+    public async Task<ZoomAppSnapshotResponse> ApplyRelaySnapshotAsync(
+        ZoomRelaySnapshotPayload request,
+        CancellationToken cancellationToken = default)
+    {
+        var now = _timeProvider.GetUtcNow();
+        var meetingId = NormalizeMeetingId(request.MeetingId);
+        _ = NormalizeRole(request.Role);
+        ValidateSupportedApis(request.SupportedApis);
+
+        var participants = request.Participants
+            ?? throw new ZoomAppBridgeException(ZoomAppBridgeError.InvalidRequest, "participants is required.");
+        if (participants.Count > MaxParticipants)
+        {
+            throw new ZoomAppBridgeException(
+                ZoomAppBridgeError.InvalidRequest,
+                $"A snapshot cannot contain more than {MaxParticipants} participants.");
+        }
+
+        var connections = ToConnections(participants);
+        ConfirmRelayEmptySnapshot(connections.Length, now);
+        var capturedAt = request.CapturedAt ?? now;
+        var snapshot = await ApplyConnectionsAsync(meetingId, capturedAt, connections, cancellationToken);
+
+        lock (_gate)
+        {
+            _relayActiveParticipants = connections.Length;
+            _relayEmptySnapshotObservedAt = null;
+        }
+
+        return new ZoomAppSnapshotResponse(connections.Length, snapshot);
+    }
+
+    public (string MeetingId, string Role) ValidateRelayHeartbeat(ZoomRelayHeartbeatPayload request)
+    {
+        var meetingId = NormalizeMeetingId(request.MeetingId);
+        var role = NormalizeRole(request.Role);
+        ValidateSupportedApis(request.SupportedApis);
+        return (meetingId, role);
+    }
+
     public ZoomAppHeartbeatResponse Heartbeat(ZoomAppHeartbeatRequest request)
     {
         var now = _timeProvider.GetUtcNow();
@@ -273,6 +321,69 @@ public sealed class ZoomAppBridgeService
                     ZoomAppBridgeError.UnconfirmedEmptySnapshot,
                     "Zoom App returned an empty participant list once. The previous attendance was kept until the next snapshot confirms that everyone left.");
             }
+        }
+    }
+
+    private void ConfirmRelayEmptySnapshot(int participantCount, DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            if (participantCount > 0 || _relayActiveParticipants == 0)
+            {
+                _relayEmptySnapshotObservedAt = null;
+                return;
+            }
+
+            var confirmationWindow = TimeSpan.FromSeconds(20);
+            if (_relayEmptySnapshotObservedAt is null
+                || now - _relayEmptySnapshotObservedAt > confirmationWindow)
+            {
+                _relayEmptySnapshotObservedAt = now;
+                throw new ZoomAppBridgeException(
+                    ZoomAppBridgeError.UnconfirmedEmptySnapshot,
+                    "Zoom App returned an empty participant list once. The previous attendance was kept until the next snapshot confirms that everyone left.");
+            }
+        }
+    }
+
+    private static ParticipantSnapshotParticipant[] ToConnections(
+        IReadOnlyList<ZoomAppParticipantRequest> participants)
+        => participants
+            .Where(item => !string.IsNullOrWhiteSpace(item.ParticipantUuid) && !string.IsNullOrWhiteSpace(item.ScreenName))
+            .GroupBy(item => item.ParticipantUuid!.Trim(), StringComparer.Ordinal)
+            .Select(group => group.Last())
+            .Select(item => new ParticipantSnapshotParticipant(
+                $"zoom-app:{item.ParticipantUuid!.Trim()}",
+                item.ScreenName!.Trim(),
+                Email: null))
+            .ToArray();
+
+    private Task<ParticipantSnapshotResult> ApplyConnectionsAsync(
+        string meetingId,
+        DateTimeOffset capturedAt,
+        IReadOnlyList<ParticipantSnapshotParticipant> connections,
+        CancellationToken cancellationToken)
+        => _attendance.ApplyParticipantSnapshotAsync(
+            new ParticipantSnapshotInput(
+                meetingId,
+                connections.Select(item => item.DisplayName).ToArray(),
+                SnapshotSource,
+                capturedAt,
+                ParticipantEmails: null,
+                Participants: connections),
+            cancellationToken);
+
+    private static void ValidateSupportedApis(IReadOnlyList<string>? supportedApis)
+    {
+        var supported = supportedApis ?? Array.Empty<string>();
+        var missing = RequiredApis
+            .Where(required => !supported.Contains(required, StringComparer.Ordinal))
+            .ToArray();
+        if (missing.Length > 0)
+        {
+            throw new ZoomAppBridgeException(
+                ZoomAppBridgeError.UnsupportedClient,
+                $"Zoom client did not expose required SDK APIs: {string.Join(", ", missing)}.");
         }
     }
 

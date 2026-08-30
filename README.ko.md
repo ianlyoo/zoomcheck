@@ -48,15 +48,17 @@ Windows PowerShell에서 자격증명을 현재 사용자 환경 변수로 한 �
 
 ### 앱 관리자: 최초 1회
 
-1. Windows의 ZoomCheck 서버를 고정된 유효 HTTPS 주소로 노출합니다. 테스트용 임시 터널은 재시작할 때 주소가 바뀔 수 있습니다.
+1. 저장소의 `render.yaml` Blueprint로 단일 인스턴스 중앙 릴레이를 배포합니다. 일반 사용자 PC를 공개 HTTPS로 노출하지 않습니다. 릴레이는 암호문·공개키·짧은 수명의 세션만 메모리에 보관하고 참가자 정보를 복호화할 수 없습니다.
 2. Zoom Marketplace에서 User-managed General App을 만들고 Meetings 제품과 Zoom App SDK를 켭니다.
 3. SDK API·이벤트는 `getSupportedJsApis`, `getMeetingContext`, `getMeetingUUID`, `getUserContext`, `getMeetingParticipants`, `onParticipantChange`만 추가합니다. Guest Mode는 참가자 목록 API를 지원하지 않으므로 켜지 않습니다.
-4. Home URL과 OAuth Redirect/Allow List에는 `https://YOUR-HTTPS-HOST/zoom-app/`, Domain Allow List에는 `YOUR-HTTPS-HOST`를 등록합니다.
-5. 같은 주소를 Windows 사용자 환경 변수로 저장하고 ZoomCheck를 완전히 종료한 뒤 다시 실행합니다.
+4. Home URL과 OAuth Redirect/Allow List에는 `https://YOUR-RELAY/zoom-app/`, Domain Allow List에는 `YOUR-RELAY`를 등록합니다.
+5. 배포용 Windows 빌드에 릴레이 주소를 넣습니다. 주소가 확정되면 `src/ZoomCheck.Backend/appsettings.json`의 `ZoomRelay.BaseUrl` 또는 운영자 환경 변수에 설정합니다. 일반 사용자는 환경 변수를 설정하지 않습니다.
 
 ```powershell
-[Environment]::SetEnvironmentVariable("ZOOMCHECK_ZoomApp__HomeUrl", "https://YOUR-HTTPS-HOST/zoom-app/", "User")
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_ZoomRelay__BaseUrl", "https://YOUR-RELAY/", "User")
 ```
+
+GitHub 설치 파일에는 저장소 Actions 변수 `ZOOMCHECK_RELAY_BASE_URL`을 설정하면 빌드 시 자동으로 주소가 포함됩니다. 릴레이 주소는 공개 설정이며 Zoom Client Secret은 릴레이나 설치 파일에 넣지 않습니다.
 
 6. 컴패니언을 실행할 계정이 앱을 설치할 수 있게 Development Local Test 또는 조직 내부 배포를 허용합니다. 다른 Zoom 조직의 계정은 비공개 개발 앱을 바로 설치하지 못할 수 있으며, 이 경우 테스트 사용자 허용 또는 Marketplace 배포가 필요합니다.
 
@@ -71,9 +73,10 @@ Windows PowerShell에서 자격증명을 현재 사용자 환경 변수로 한 �
 - 매 회의: 공동호스트 지정 확인 → Windows ZoomCheck 실행 → Excel 업로드 → 연결 모드 `자동` → 새 6자리 코드 생성 → Zoom의 **Apps → ZoomCheck**에서 코드 입력 순서로 연결합니다.
 - 앱 패널을 닫거나 새로고침하면 메모리의 세션이 사라질 수 있으므로 새 코드를 만들고 다시 연결합니다. 한 서버에서 동시에 하나의 컴패니언만 연결합니다.
 
-Zoom 웹뷰는 HTTPS만 허용하므로 `http://127.0.0.1:5078`을 Home URL로 등록할 수 없습니다. 터널을 사용할 경우 ZoomCheck는 공개 호스트에서 `/zoom-app/*`와 토큰으로 보호된 `/api/zoom-app/bridge/*`만 노출하고, 명단·대시보드·내보내기 API는 404로 차단합니다. 페어링 코드는 10분·1회용이며 연속 오입력 시 폐기됩니다.
+일반 사용자는 터널, Zoom API 키, Marketplace 앱 생성이 필요 없습니다. 설치·승인은 최초 1회이며, 매 회의에는 Excel 업로드 → 호스트/공동호스트 지정 → 6자리 코드 입력만 합니다. 코드는 10분·1회용이고 암호화 키로 쓰이지 않습니다. P-256 ECDH와 HKDF-SHA256으로 방향별 AES-256-GCM 키를 만들며 복호화는 Windows와 Zoom 컴패니언에서만 수행합니다. 기존 `ZOOMCHECK_ZoomApp__HomeUrl` 직접 HTTPS 방식과 Business Dashboard API도 고급 대체 경로로 계속 지원합니다.
 
 Pro 경로는 참가자 이메일을 요청하지 않고 UUID·표시 이름·회의 역할만 사용하므로 이름 기반으로 대조합니다. 동명이인, 기기명, 별칭은 검토 필요 또는 미매칭으로 남을 수 있습니다. 첫 빈 참가자 스냅샷은 무시하며 20초 안의 다음 빈 스냅샷이 전원 퇴장을 자동 확인합니다.
+호스트/공동호스트 역할 값은 Zoom SDK 클라이언트가 제공하며 릴레이가 독립적으로 증명하는 값은 아닙니다. Windows가 복호화 후 역할과 필수 SDK 기능을 검사하지만 공식 기록으로 확정하기 전 운영자가 결과를 검토해야 합니다.
 
 ## 회의 중 사용 순서
 
@@ -97,7 +100,8 @@ Windows 데이터베이스는 `%LOCALAPPDATA%\ZoomCheck\data\zoomcheck.db`에 �
 ```mermaid
 flowchart LR
   A[Business Dashboard API] --> B[ASP.NET Core 로컬 서버]
-  H[Pro Zoom App SDK] --> B
+  H[Pro Zoom App SDK] <-->|종단간 암호문| R[중앙 릴레이]
+  R <-->|아웃바운드 HTTPS| B
   C[Excel 명단] --> B
   B --> D[(SQLite)]
   B --> E[이름·이메일 매칭]

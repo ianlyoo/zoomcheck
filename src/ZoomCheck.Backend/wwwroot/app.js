@@ -282,13 +282,13 @@
         + ' · ' + describeZoomAppRole(app.role) + ' · 마지막 수신 ' + formatTime(app.lastSeenAt));
       setText(el.pairingSession, '연결된 Zoom 앱: 회의 ' + (app.meetingId || '–') + ' · ' + describeZoomAppRole(app.role));
     } else {
-      setText(el.zoomAppSettingsStatus, '연결된 Zoom 앱이 없습니다. 페어링 코드를 만들고 회의 안의 ZoomCheck 앱에 입력하세요.');
+      setText(el.zoomAppSettingsStatus, '연결 대기 중입니다. 코드를 만들고 회의 안의 ZoomCheck 앱에 입력하세요. 별도 터널이나 API 키는 필요 없습니다.');
       setText(el.pairingSession, '아직 연결된 Zoom 앱이 없습니다.');
     }
     if (app.homeUrl) {
       setText(el.zoomAppHomeUrl, app.homeUrl);
     } else {
-      setText(el.zoomAppHomeUrl, '미설정 — Zoom Marketplace에서 Home URL을 등록하세요.');
+      setText(el.zoomAppHomeUrl, '릴레이 주소 미설정 — 운영자 배포가 필요합니다. 기존 직접 HTTPS 방식은 계속 사용할 수 있습니다.');
     }
     renderPairingCode();
   }

@@ -9,26 +9,53 @@ namespace ZoomCheck.Backend.Controllers;
 public sealed class ZoomAppBridgeController : ControllerBase
 {
     private readonly ZoomAppBridgeService _bridge;
+    private readonly ZoomRelayService _relay;
 
-    public ZoomAppBridgeController(ZoomAppBridgeService bridge)
+    public ZoomAppBridgeController(ZoomAppBridgeService bridge, ZoomRelayService relay)
     {
         _bridge = bridge;
+        _relay = relay;
     }
 
     [HttpPost("pairing-code")]
-    public ActionResult<ZoomAppPairingCodeResponse> CreatePairingCode()
-        => Ok(_bridge.CreatePairingCode());
-
-    [HttpPost("sync")]
-    public IActionResult RequestSync()
+    public async Task<ActionResult<ZoomAppPairingCodeResponse>> CreatePairingCode(
+        CancellationToken cancellationToken)
     {
         try
         {
-            return Accepted(new { requestedRevision = _bridge.RequestSync() });
+            return Ok(_relay.IsConfigured
+                ? await _relay.CreatePairingCodeAsync(cancellationToken)
+                : _bridge.CreatePairingCode());
+        }
+        catch (ZoomRelayException ex)
+        {
+            return Problem(
+                title: "ZoomCheck relay is unavailable.",
+                detail: ex.Message,
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+
+    [HttpPost("sync")]
+    public async Task<IActionResult> RequestSync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var revision = _relay.GetStatus().Connected
+                ? await _relay.RequestSyncAsync(cancellationToken)
+                : _bridge.RequestSync();
+            return Accepted(new { requestedRevision = revision });
         }
         catch (ZoomAppBridgeException ex)
         {
             return MapProblem(ex);
+        }
+        catch (ZoomRelayException ex)
+        {
+            return Problem(
+                title: "ZoomCheck relay is unavailable.",
+                detail: ex.Message,
+                statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     }
 

@@ -13,8 +13,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="ZoomCheck.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\ZoomCheck.Core\ZoomCheck.Core.csproj" />
     <ProjectReference Include="..\ZoomCheck.Infrastructure\ZoomCheck.Infrastructure.csproj" />
+    <ProjectReference Include="..\ZoomCheck.Relay.Contracts\ZoomCheck.Relay.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

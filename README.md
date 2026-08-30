@@ -39,15 +39,15 @@ Credentials are never bundled in source, the installer, or the portable archive.
 
 ## Pro Zoom App bridge
 
-Expose the Windows ZoomCheck listener through a stable HTTPS origin. Create a user-managed Zoom General App, select Meetings, enable Zoom App SDK, and add only `getSupportedJsApis`, `getMeetingContext`, `getMeetingUUID`, `getUserContext`, `getMeetingParticipants`, and `onParticipantChange`. Keep Guest Mode disabled. Set Home URL, OAuth Redirect URL, and OAuth Allow List to `https://YOUR-HTTPS-HOST/zoom-app/`; set Domain Allow List to `YOUR-HTTPS-HOST`. Configure the same URL in ZoomCheck:
+Normal users do not expose their Windows PC, run a tunnel, create a Marketplace app, or enter Zoom API credentials. The operator deploys the stateless central relay once, configures the Zoom General App Home/Redirect/Allow List as `https://YOUR-RELAY/zoom-app/`, and puts the relay base URL into distributed Windows builds. The relay holds only ciphertext, public keys, and short-lived in-memory sessions; P-256 ECDH + HKDF-SHA256 derives directional AES-256-GCM keys that the relay never receives.
 
 ```powershell
-[Environment]::SetEnvironmentVariable("ZOOMCHECK_ZoomApp__HomeUrl", "https://YOUR-HTTPS-HOST/zoom-app/", "User")
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_ZoomRelay__BaseUrl", "https://YOUR-RELAY/", "User")
 ```
 
 ZoomCheck checks the runtime role and available APIs instead of assuming the co-host's subscription. The in-meeting user must actually be host/co-host before opening the app and the client must expose `getMeetingParticipants`. The account running the companion must install/approve the app; cross-account or cross-organization testing may require internal distribution or Marketplace test access. Create a new six-digit code for every meeting and after an app reload. The code is single-use and expires after ten minutes.
 
-The Pro path sends participant UUID, display name, and meeting role only; it does not request email, so matching is name-based. A first empty snapshot is ignored and a second empty snapshot within 20 seconds confirms everyone left. On the public HTTPS host, ZoomCheck serves only the companion and token-protected bridge; dashboard and roster APIs remain local-only.
+End users install/approve ZoomCheck once. Per meeting they upload Excel, become host/co-host, create a six-digit code, and enter it in Apps → ZoomCheck. The code is single-use, expires after ten minutes, and is rendezvous-only—not an encryption key. Participant UUID, display name, and meeting role stay end-to-end encrypted and are stored only by the local Windows app. The existing direct HTTPS bridge (`ZOOMCHECK_ZoomApp__HomeUrl`) and Business Dashboard API remain available as fallback modes.
 
 ## Use during a meeting
 
@@ -66,7 +66,8 @@ Times in the activity log are polling observation times and may lag Zoom by one 
 ```mermaid
 flowchart LR
   A[Business Dashboard API] --> B[ASP.NET Core local server]
-  H[Pro Zoom App SDK] --> B
+  H[Pro Zoom App SDK] <-->|E2E ciphertext| R[Central relay]
+  R <-->|outbound HTTPS| B
   C[Excel roster] --> B
   B --> D[(SQLite)]
   B --> E[Matching and confidence]
@@ -79,6 +80,7 @@ flowchart LR
 | `src/ZoomCheck.Core` | Domain models and participant matching |
 | `src/ZoomCheck.Infrastructure` | Excel parsing, SQLite persistence, attendance projection |
 | `src/ZoomCheck.Backend` | Zoom OAuth/API client, controllers, and local web dashboard |
+| `src/ZoomCheck.Relay` | Stateless ciphertext relay and Zoom companion |
 
 The live endpoint is `GET /v2/metrics/meetings/{meetingId}/participants?type=live`. ZoomCheck follows pagination, retries one short `429 Retry-After`, and accepts only participants whose status is `in_meeting`.
 
