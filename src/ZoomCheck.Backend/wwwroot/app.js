@@ -7,7 +7,8 @@
     autoRefresh: 'zoomcheck.autoRefresh',
     interval: 'zoomcheck.autoRefreshSeconds',
     connectionMode: 'zoomcheck.connectionMode',
-    group: 'zoomcheck.groupFilter'
+    group: 'zoomcheck.groupFilter',
+    tutorialSeen: 'zoomcheck.tutorialSeen.v1'
   };
   var CONNECTION_MODES = ['auto', 'business', 'zoomApp', 'manual'];
   var MODE_LABEL = {
@@ -59,7 +60,8 @@
     pairing: null,
     update: null,
     updateAnnouncedFor: null,
-    updatePollId: null
+    updatePollId: null,
+    tutorialStep: 0
   };
   var el = {};
 
@@ -1291,6 +1293,60 @@
     else { el.settingsDialog.setAttribute('open', ''); }
   }
 
+  /* ---------- 첫 실행 사용법 ---------- */
+  function closeModal(dialog) {
+    if (!dialog) { return; }
+    if (typeof dialog.close === 'function' && dialog.open) { dialog.close(); }
+    else { dialog.removeAttribute('open'); }
+  }
+
+  function shouldAutoOpenTutorial() {
+    if (readStore(STORAGE.tutorialSeen, '') !== '') { return false; }
+    /* v0.6 이하를 이미 사용한 브라우저는 기존 설정 키가 하나라도 남아 있다.
+       기존 사용자에게 갑자기 튜토리얼을 띄우지 않고 다시 보기 버튼만 제공한다. */
+    var legacyKeys = [STORAGE.meetingId, STORAGE.autoRefresh, STORAGE.interval, STORAGE.connectionMode, STORAGE.group];
+    var hasExistingState = legacyKeys.some(function (key) { return readStore(key, '') !== ''; });
+    if (hasExistingState) { writeStore(STORAGE.tutorialSeen, 'existing-user'); }
+    return !hasExistingState;
+  }
+
+  function renderTutorial() {
+    var total = el.tutorialSteps.length;
+    state.tutorialStep = Math.max(0, Math.min(total - 1, state.tutorialStep));
+    el.tutorialSteps.forEach(function (step, index) { step.hidden = index !== state.tutorialStep; });
+    el.tutorialProgressButtons.forEach(function (button, index) {
+      button.setAttribute('aria-selected', index === state.tutorialStep ? 'true' : 'false');
+      button.classList.toggle('is-complete', index < state.tutorialStep);
+      button.tabIndex = index === state.tutorialStep ? 0 : -1;
+    });
+    setText(el.tutorialProgressText, (state.tutorialStep + 1) + ' / ' + total);
+    el.btnTutorialBack.disabled = state.tutorialStep === 0;
+    setText(el.btnTutorialNext, state.tutorialStep === total - 1 ? '시작하기' : '다음');
+  }
+
+  function showTutorial(step) {
+    closeModal(el.settingsDialog);
+    state.tutorialStep = typeof step === 'number' ? step : 0;
+    renderTutorial();
+    writeStore(STORAGE.tutorialSeen, 'seen');
+    if (typeof el.tutorialDialog.showModal === 'function') {
+      if (!el.tutorialDialog.open) { el.tutorialDialog.showModal(); }
+    } else { el.tutorialDialog.setAttribute('open', ''); }
+    window.setTimeout(function () { el.btnCloseTutorial.focus(); }, 0);
+  }
+
+  function closeTutorial() {
+    writeStore(STORAGE.tutorialSeen, 'seen');
+    closeModal(el.tutorialDialog);
+  }
+
+  function moveTutorial(offset) {
+    var next = state.tutorialStep + offset;
+    if (next >= el.tutorialSteps.length) { closeTutorial(); return; }
+    state.tutorialStep = Math.max(0, next);
+    renderTutorial();
+  }
+
   /* ---------- Windows 앱 업데이트 ----------
      백엔드가 시작할 때 스스로 확인·다운로드하므로 UI는 상태를 읽어 보여주기만 한다.
      응답 필드 이름이 바뀌어도 화면이 깨지지 않도록 여러 후보 키를 관용적으로 읽는다. */
@@ -1651,7 +1707,7 @@
   function cacheElements() {
     [
       'meeting-id','health-dot','health-text','zoom-dot','zoom-status','chk-autorefresh','auto-status','last-sync-time','next-sync-time',
-      'btn-sync-zoom','btn-open-settings','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
+      'btn-sync-zoom','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
       'summary-total','summary-present','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
       'participants-meta','btn-refresh','btn-export','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
       'count-all','count-present','count-absent','count-review','count-unmatched','activity-feed','activity-empty','activity-count',
@@ -1662,12 +1718,15 @@
       'zoom-app-dot','zoom-app-status','btn-zoom-app-detail','mode-note','zoom-app-settings-status','pairing-code','pairing-expiry',
       'pairing-session','btn-create-pairing-code','btn-copy-pairing-code','btn-zoom-app-sync','zoom-app-home-url','btn-copy-home-url',
       'update-current-version','update-status-text','update-progress','update-progress-bar','update-badge','update-error-text',
-      'btn-check-update','btn-install-update','btn-version-chip','version-dot','version-text'
+      'btn-check-update','btn-install-update','btn-version-chip','version-dot','version-text',
+      'btn-settings-tutorial','tutorial-dialog','tutorial-progress-text','btn-close-tutorial','btn-skip-tutorial','btn-tutorial-back','btn-tutorial-next'
     ].forEach(function (id) {
       var key = id.replace(/-([a-z])/g, function (_, letter) { return letter.toUpperCase(); });
       el[key] = $(id);
     });
     el.filterButtons = Array.prototype.slice.call(document.querySelectorAll('[data-filter]'));
+    el.tutorialSteps = Array.prototype.slice.call(document.querySelectorAll('[data-tutorial-step]'));
+    el.tutorialProgressButtons = Array.prototype.slice.call(document.querySelectorAll('#tutorial-progress [role="tab"]'));
     el.modeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="connection-mode"]'));
     el.chkAutoRefresh = el.chkAutorefresh;
     el.alertAction = el.btnAlertAction;
@@ -1685,6 +1744,16 @@
     el.btnRefresh.addEventListener('click', function () { refreshBoard({ notify: true }); });
     el.btnExport.addEventListener('click', exportCsv);
     el.btnOpenSettings.addEventListener('click', openSettings);
+    el.btnOpenTutorial.addEventListener('click', function () { showTutorial(0); });
+    el.btnSettingsTutorial.addEventListener('click', function () { showTutorial(0); });
+    el.btnCloseTutorial.addEventListener('click', closeTutorial);
+    el.btnSkipTutorial.addEventListener('click', closeTutorial);
+    el.btnTutorialBack.addEventListener('click', function () { moveTutorial(-1); });
+    el.btnTutorialNext.addEventListener('click', function () { moveTutorial(1); });
+    el.tutorialProgressButtons.forEach(function (button, index) {
+      button.addEventListener('click', function () { state.tutorialStep = index; renderTutorial(); });
+    });
+    el.tutorialDialog.addEventListener('close', function () { writeStore(STORAGE.tutorialSeen, 'seen'); });
     el.btnHealthDetail.addEventListener('click', checkHealth);
     el.btnApiDetail.addEventListener('click', function () { openSettings(); checkZoomConnection(false); });
     el.btnZoomAppDetail.addEventListener('click', function () { openSettings(); checkZoomConnection(false); });
@@ -1731,6 +1800,9 @@
     el.alertAction.addEventListener('click', function () { if (state.alertAction) { state.alertAction(); } });
     el.btnDismissAlert.addEventListener('click', hideAlert);
     document.addEventListener('keydown', function (event) {
+      if (el.tutorialDialog.open && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
+        event.preventDefault(); moveTutorial(event.key === 'ArrowRight' ? 1 : -1); return;
+      }
       if (event.key === '/' && !el.settingsDialog.open && document.activeElement !== el.participantSearch) { event.preventDefault(); el.participantSearch.focus(); }
       if ((event.key === 'r' || event.key === 'R') && !event.metaKey && !event.ctrlKey && !event.altKey && !el.settingsDialog.open && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
         event.preventDefault(); syncNow({ silent: false });
@@ -1752,6 +1824,7 @@
 
   function init() {
     cacheElements();
+    var autoOpenTutorial = shouldAutoOpenTutorial();
     restoreState();
     bindEvents();
     renderSessionLog();
@@ -1780,6 +1853,7 @@
       loadUpdateStatus({ silent: true });
     }, 15000);
     if (currentMeetingId()) { refreshBoard({ silent: true }); }
+    if (autoOpenTutorial) { window.setTimeout(function () { showTutorial(0); }, 250); }
   }
 
   if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', init); }

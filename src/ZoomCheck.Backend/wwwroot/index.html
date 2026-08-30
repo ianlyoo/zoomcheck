@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light" />
   <title>ZoomCheck 회의 출석 대시보드</title>
-  <link rel="stylesheet" href="styles.css?v=20260830.6" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231264d8'/%3E%3Cpath d='M16 18h32L27 46h21' fill='none' stroke='white' stroke-width='8' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css?v=20260830.7" />
 </head>
 <body>
   <a class="skip-link" href="#participant-search">참가자 검색으로 이동</a>
@@ -48,7 +49,8 @@
     </div>
 
     <button type="button" class="btn primary sync-button" id="btn-sync-zoom">지금 동기화</button>
-    <button type="button" class="btn icon-button" id="btn-open-settings" aria-haspopup="dialog">설정</button>
+    <button type="button" class="btn icon-button help-button" id="btn-open-tutorial" aria-haspopup="dialog">사용법</button>
+    <button type="button" class="btn icon-button settings-button" id="btn-open-settings" aria-haspopup="dialog">설정</button>
   </header>
 
   <div class="alert-bar" id="alert-bar" role="alert" hidden>
@@ -182,6 +184,11 @@
       </header>
       <div class="settings-content">
         <section class="settings-section">
+          <div class="settings-copy"><h3>처음 사용 안내</h3><p>회의 준비부터 Excel 명단, Zoom 앱 페어링, 실시간 출석 확인까지 6단계로 다시 볼 수 있습니다.</p></div>
+          <div class="settings-control"><button type="button" class="btn secondary" id="btn-settings-tutorial">사용법 다시 보기</button></div>
+        </section>
+
+        <section class="settings-section">
           <div class="settings-copy"><h3>Excel 명단</h3><p>번호·성명 열이 있는 .xlsx 또는 .xls 파일을 올립니다. 같은 명단을 다시 올려도 기존 활동 기록은 유지됩니다.</p></div>
           <div class="settings-control">
             <input type="file" id="roster-file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
@@ -291,8 +298,100 @@
     </form>
   </dialog>
 
+  <dialog class="tutorial-dialog" id="tutorial-dialog" aria-labelledby="tutorial-title" aria-describedby="tutorial-description">
+    <div class="tutorial-shell">
+      <header class="tutorial-header">
+        <div>
+          <h2 class="tutorial-brand" id="tutorial-title">ZoomCheck 시작 안내</h2>
+          <strong id="tutorial-progress-text">1 / 6</strong>
+        </div>
+        <button type="button" class="btn icon-button" id="btn-close-tutorial" aria-label="사용법 닫기">닫기</button>
+      </header>
+
+      <div class="tutorial-progress" id="tutorial-progress" role="tablist" aria-label="사용법 단계">
+        <button type="button" role="tab" aria-label="1단계 회의 준비" aria-selected="true"></button>
+        <button type="button" role="tab" aria-label="2단계 명단 올리기" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="3단계 Zoom 앱 연결" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="4단계 동기화 시작" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="5단계 결과 확인" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="6단계 조별 확인과 마무리" aria-selected="false"></button>
+      </div>
+
+      <main class="tutorial-content" id="tutorial-description">
+        <section class="tutorial-step" data-tutorial-step="0">
+          <div class="tutorial-illustration is-blue" aria-hidden="true"><span>01</span><strong>회의 준비</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">시작 전에</span>
+            <h2>회의 ID와 권한을 확인하세요</h2>
+            <p>Zoom 회의에는 <strong>호스트 또는 공동호스트</strong>로 들어가고, ZoomCheck 상단에 회의 ID를 입력합니다. 숫자 사이 공백은 자동으로 정리됩니다.</p>
+            <ul><li>회의를 진행하는 PC와 ZoomCheck PC가 달라도 됩니다.</li><li>Pro 계정은 회의 안의 ZoomCheck 앱으로 참가자를 가져옵니다.</li></ul>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="1" hidden>
+          <div class="tutorial-illustration is-green" aria-hidden="true"><span>02</span><strong>Excel 명단</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">설정 → Excel 명단</span>
+            <h2>출석 명단을 올리세요</h2>
+            <p><strong>번호·성명</strong> 열이 있는 Excel 파일을 선택하고 <strong>명단 올리기</strong>를 누릅니다. 기존 입퇴장 기록은 같은 명단을 다시 올려도 유지됩니다.</p>
+            <ul><li>전화번호·이메일·소속기관 열도 참가자 상세와 검색에 사용됩니다.</li><li>조별 실습은 <strong>조·분반·그룹·팀·반</strong> 열 중 하나를 추가하세요.</li></ul>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="2" hidden>
+          <div class="tutorial-illustration is-violet" aria-hidden="true"><span>03</span><strong>Zoom 연결</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">설정 → Zoom 앱 (Pro) 페어링</span>
+            <h2>6자리 코드로 회의와 연결하세요</h2>
+            <p><strong>페어링 코드 생성</strong>을 누른 뒤, Zoom 회의의 <strong>Apps → ZoomCheck</strong>에서 코드를 입력합니다.</p>
+            <ol><li>연결 방식은 <strong>자동</strong>을 권장합니다.</li><li>코드는 10분·1회용이며 연결 후에는 코드 만료와 무관하게 세션이 유지됩니다.</li><li>Zoom 앱 상태가 <strong>호스트 연결</strong> 또는 <strong>공동호스트 연결</strong>인지 확인합니다.</li></ol>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="3" hidden>
+          <div class="tutorial-illustration is-amber" aria-hidden="true"><span>04</span><strong>실시간 동기화</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">대시보드 상단</span>
+            <h2>지금 동기화를 눌러 출석을 시작하세요</h2>
+            <p>처음에는 <strong>지금 동기화</strong>를 눌러 명단과 현재 참가자가 맞는지 확인합니다. 이후 <strong>자동 동기화</strong>를 켜면 기본 10초마다 갱신됩니다.</p>
+            <ul><li>회의 ID가 비어 있으면 연결된 Zoom 회의 ID를 자동으로 가져옵니다.</li><li>Zoom 앱에서 “암호화 전송”이 보이면 참가자 정보가 PC로 안전하게 전달되는 중입니다.</li></ul>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="4" hidden>
+          <div class="tutorial-illustration is-red" aria-hidden="true"><span>05</span><strong>결과 확인</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">참가자 · 최근 활동 · 중복 연결</span>
+            <h2>검토가 필요한 사람을 확인하세요</h2>
+            <p>참가자 행을 누르면 원래 Zoom 이름, 전화번호, 조, 입퇴장 이력을 볼 수 있습니다. 이름이 명단과 확실히 일치할 때만 실제 Zoom 이름 변경 버튼이 나타납니다.</p>
+            <ul><li><strong>검토</strong>와 <strong>미매칭</strong> 탭은 사람이 한 번 확인하세요.</li><li>최근 활동에는 입장·퇴장·이름 변경, 중복 연결에는 다중 기기 접속이 표시됩니다.</li></ul>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="5" hidden>
+          <div class="tutorial-illustration is-blue" aria-hidden="true"><span>06</span><strong>마무리</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">조별 확인 · CSV · 업데이트</span>
+            <h2>필요한 범위만 확인하고 저장하세요</h2>
+            <p>그룹 선택에서 특정 조를 고르면 그 조의 출석 현황과 CSV만 확인할 수 있습니다. 회의가 끝나면 <strong>CSV 내보내기</strong>로 결과를 저장하세요.</p>
+            <ul><li>출석 DB는 이 PC의 로컬 폴더에 저장됩니다.</li><li>새 버전은 자동으로 확인·검증하며, 설치는 직접 누를 때만 진행됩니다.</li><li>이 안내는 상단 <strong>사용법</strong> 또는 설정에서 언제든 다시 열 수 있습니다.</li></ul>
+          </div>
+        </section>
+      </main>
+
+      <footer class="tutorial-footer">
+        <span>처음 한 번만 자동으로 표시됩니다.</span>
+        <div class="button-row">
+          <button type="button" class="btn ghost" id="btn-skip-tutorial">건너뛰기</button>
+          <button type="button" class="btn secondary" id="btn-tutorial-back" disabled>이전</button>
+          <button type="button" class="btn primary" id="btn-tutorial-next">다음</button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
+
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
   <div class="busy" id="busy" hidden role="status" aria-live="polite"><span class="spinner"></span><span id="busy-text">처리 중…</span></div>
-  <script src="app.js?v=20260830.6"></script>
+  <script src="app.js?v=20260830.7"></script>
 </body>
 </html>
