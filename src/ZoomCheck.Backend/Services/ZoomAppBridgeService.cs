@@ -273,7 +273,8 @@ public sealed class ZoomAppBridgeService
                 _session.ActiveParticipants,
                 _session.SyncRevision,
                 NormalizedHomeUrl(),
-                pairingExpires);
+                pairingExpires,
+                SessionActive: true);
         }
     }
 

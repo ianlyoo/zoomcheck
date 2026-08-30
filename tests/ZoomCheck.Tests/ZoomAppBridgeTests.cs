@@ -19,6 +19,7 @@ public sealed class ZoomAppBridgeTests : IAsyncLifetime
 
     private SqliteAttendanceRepository _repository = null!;
     private ZoomAppBridgeService _bridge = null!;
+    private readonly MutableTimeProvider _clock = new(DateTimeOffset.UtcNow);
 
     public async Task InitializeAsync()
     {
@@ -45,7 +46,7 @@ public sealed class ZoomAppBridgeTests : IAsyncLifetime
             {
                 HomeUrl = "https://zoomcheck.example/zoom-app/"
             }),
-            TimeProvider.System);
+            _clock);
     }
 
     public Task DisposeAsync()
@@ -93,6 +94,7 @@ public sealed class ZoomAppBridgeTests : IAsyncLifetime
 
         var status = _bridge.GetStatus();
         Assert.True(status.Connected);
+        Assert.True(status.SessionActive);
         Assert.Equal("coHost", status.Role);
         Assert.Equal(2, status.ActiveParticipants);
     }
@@ -135,6 +137,26 @@ public sealed class ZoomAppBridgeTests : IAsyncLifetime
 
         Assert.Equal(revision, heartbeat.SyncRevision);
         Assert.True(heartbeat.SyncRequested);
+    }
+
+    [Fact]
+    public void Status_SeparatesActivePairingFromTemporarilyStaleSignal()
+    {
+        var pairing = _bridge.CreatePairingCode();
+        _bridge.Connect(new ZoomAppConnectRequest(
+            pairing.Code,
+            "meeting-1",
+            null,
+            "host",
+            RequiredApis));
+
+        _clock.Advance(TimeSpan.FromSeconds(21));
+
+        var status = _bridge.GetStatus();
+        Assert.False(status.Connected);
+        Assert.True(status.SessionActive);
+        Assert.Equal("meeting-1", status.MeetingId);
+        Assert.Null(status.PairingCodeExpiresAt);
     }
 
     [Fact]
@@ -222,4 +244,13 @@ public sealed class ZoomAppBridgeTests : IAsyncLifetime
             string.Empty,
             string.Empty,
             new[] { NameNormalizer.Normalize(name) });
+
+    private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan duration) => _now += duration;
+    }
 }

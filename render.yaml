@@ -8,6 +8,11 @@ services:
     dockerContext: .
     healthCheckPath: /health
     autoDeploy: true
+    buildFilter:
+      paths:
+        - render.yaml
+        - src/ZoomCheck.Relay/**
+        - src/ZoomCheck.Relay.Contracts/**
     envVars:
       - key: ASPNETCORE_HTTP_PORTS
         value: "10000"

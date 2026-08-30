@@ -89,9 +89,7 @@
     return trimmed;
   }
   function currentMeetingId() {
-    var normalized = normalizeMeetingId(el.meetingId.value);
-    if (el.meetingId.value !== normalized) { el.meetingId.value = normalized; }
-    return normalized;
+    return normalizeMeetingId(el.meetingId.value);
   }
   function intervalSeconds() {
     var value = parseInt(el.intervalInput.value, 10);
@@ -222,9 +220,10 @@
   }
 
   function setDot(node, status) {
-    node.classList.remove('is-ok', 'is-bad');
+    node.classList.remove('is-ok', 'is-bad', 'warn');
     if (status === true) { node.classList.add('is-ok'); }
     if (status === false) { node.classList.add('is-bad'); }
+    if (status === 'warn') { node.classList.add('warn'); }
   }
 
   function checkHealth() {
@@ -248,7 +247,7 @@
   /* 자동 모드에서 실제로 사용할 경로를 결정한다. Zoom 앱 연결이 살아 있으면 그것을 우선한다. */
   function effectiveMode() {
     if (state.connectionMode !== 'auto') { return state.connectionMode; }
-    if (state.zoomApp && state.zoomApp.connected) { return 'zoomApp'; }
+    if (state.zoomApp && (state.zoomApp.sessionActive || state.zoomApp.connected)) { return 'zoomApp'; }
     if (state.zoomConfigured) { return 'business'; }
     if (state.recommendedMode && state.recommendedMode !== 'auto') { return state.recommendedMode; }
     return 'business';
@@ -284,12 +283,17 @@
   function renderZoomAppStrip() {
     var app = state.zoomApp || {};
     var connected = !!app.connected;
-    setDot(el.zoomAppDot, connected ? true : (state.connectionMode === 'zoomApp' ? false : null));
-    setText(el.zoomAppStatus, connected ? describeZoomAppRole(app.role) + ' 연결' : '미연결');
+    var sessionActive = app.sessionActive !== undefined ? !!app.sessionActive : connected;
+    setDot(el.zoomAppDot, connected ? true : (sessionActive ? 'warn' : (state.connectionMode === 'zoomApp' ? false : null)));
+    setText(el.zoomAppStatus, connected ? describeZoomAppRole(app.role) + ' 연결' : (sessionActive ? '연결 유지' : '미연결'));
     if (connected) {
       setText(el.zoomAppSettingsStatus, 'Zoom 앱이 연결되어 있습니다 · 회의 ' + (app.meetingId || '–')
         + ' · ' + describeZoomAppRole(app.role) + ' · 마지막 수신 ' + formatTime(app.lastSeenAt));
       setText(el.pairingSession, '연결된 Zoom 앱: 회의 ' + (app.meetingId || '–') + ' · ' + describeZoomAppRole(app.role));
+    } else if (sessionActive) {
+      setText(el.zoomAppSettingsStatus, '페어링은 유지 중이며 참가자 신호를 다시 확인하고 있습니다 · 회의 '
+        + (app.meetingId || '–') + ' · 마지막 수신 ' + formatTime(app.lastSeenAt));
+      setText(el.pairingSession, '연결 유지 중: 회의 ' + (app.meetingId || '–') + ' · Zoom 앱 신호 재확인 중');
     } else {
       setText(el.zoomAppSettingsStatus, '연결 대기 중입니다. 코드를 만들고 회의 안의 ZoomCheck 앱에 입력하세요. 별도 터널이나 API 키는 필요 없습니다.');
       setText(el.pairingSession, '아직 연결된 Zoom 앱이 없습니다.');
@@ -303,6 +307,13 @@
   }
 
   function renderPairingCode() {
+    var app = state.zoomApp || {};
+    var sessionActive = app.sessionActive !== undefined ? !!app.sessionActive : !!app.connected;
+    if (sessionActive) {
+      setText(el.pairingCode, '연결 유지 중');
+      setText(el.pairingExpiry, '6자리 코드는 최초 연결 후 폐기되며, 코드 만료와 무관하게 현재 세션이 유지됩니다.');
+      return;
+    }
     if (!state.pairing) {
       setText(el.pairingCode, '– – – – – –');
       setText(el.pairingExpiry, '코드를 생성하면 유효 시간이 표시됩니다.');
@@ -331,11 +342,12 @@
       state.zoomConfigured = business.configured !== undefined ? !!business.configured : !!payload.configured;
       state.zoomApp = payload.zoomApp || null;
       state.recommendedMode = payload.recommendedMode ? normalizeMode(payload.recommendedMode) : null;
-      if (state.zoomApp && state.zoomApp.connected) {
+      if (state.zoomApp && (state.zoomApp.sessionActive || state.zoomApp.connected)) {
         state.pairing = null;
         if (!currentMeetingId() && state.zoomApp.meetingId) {
-          el.meetingId.value = state.zoomApp.meetingId;
-          writeStore(STORAGE.meetingId, state.zoomApp.meetingId);
+          var connectedMeetingId = normalizeMeetingId(state.zoomApp.meetingId);
+          el.meetingId.value = connectedMeetingId;
+          writeStore(STORAGE.meetingId, connectedMeetingId);
         }
       } else if (state.zoomApp && state.zoomApp.pairingCodeExpiresAt && !state.pairing) {
         state.pairing = { code: null, expiresAt: state.zoomApp.pairingCodeExpiresAt };
@@ -1122,7 +1134,9 @@
       button.addEventListener('click', function () { state.filter = button.dataset.filter; syncFilterButtons(); renderParticipants(); });
     });
     el.meetingId.addEventListener('change', function () {
-      writeStore(STORAGE.meetingId, currentMeetingId());
+      var normalizedMeetingId = currentMeetingId();
+      el.meetingId.value = normalizedMeetingId;
+      writeStore(STORAGE.meetingId, normalizedMeetingId);
       state.selectedKey = null;
       refreshBoard({ silent: true });
     });
@@ -1140,7 +1154,7 @@
   }
 
   function restoreState() {
-    el.meetingId.value = readStore(STORAGE.meetingId, '');
+    el.meetingId.value = normalizeMeetingId(readStore(STORAGE.meetingId, ''));
     var savedInterval = parseInt(readStore(STORAGE.interval, '10'), 10);
     el.intervalInput.value = isNaN(savedInterval) ? '10' : String(Math.min(600, Math.max(5, savedInterval)));
     var auto = readStore(STORAGE.autoRefresh, '0') === '1';
@@ -1159,7 +1173,7 @@
     state.clockId = window.setInterval(updateClock, 1000);
     state.connectionPollId = window.setInterval(function () {
       checkZoomConnection(false).then(function () {
-        if (state.zoomApp && state.zoomApp.connected && currentMeetingId()) { refreshBoard({ silent: true }); }
+        if (state.zoomApp && (state.zoomApp.sessionActive || state.zoomApp.connected) && currentMeetingId()) { refreshBoard({ silent: true }); }
       });
     }, 5000);
     checkHealth();

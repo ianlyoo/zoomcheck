@@ -70,4 +70,5 @@ public sealed record ZoomAppBridgeStatus(
     long SyncRevision,
     string? HomeUrl,
     DateTimeOffset? PairingCodeExpiresAt,
-    string Transport = "direct");
+    string Transport = "direct",
+    bool SessionActive = false);

@@ -317,7 +317,7 @@ body:has(.alert-bar:not([hidden])) .dashboard { height: calc(100vh - 110px); }
 .compact-empty { min-height: 90px; }
 .statusbar { display: flex; align-items: center; gap: 20px; padding: 0 4px; color: var(--muted); font-size: 10px; }
 .statusbar span:first-child { display: inline-flex; align-items: center; gap: 7px; }
-.statusbar span:last-child { margin-left: auto; }
+.statusbar .copyright { margin-left: auto; white-space: nowrap; }
 
 .settings-dialog { width: min(940px, calc(100vw - 32px)); max-height: min(880px, calc(100vh - 32px)); padding: 0; border: 0; border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: 0 22px 70px rgba(16, 24, 40, .28); }
 .settings-dialog::backdrop { background: rgba(15, 23, 42, .52); backdrop-filter: blur(2px); }
@@ -401,6 +401,8 @@ body:has(.alert-bar:not([hidden])) .dashboard { height: calc(100vh - 110px); }
   .search-box { width: 100%; }
   .participant-table { min-width: 760px; }
   .right-rail { grid-template-columns: 1fr; grid-template-rows: 430px 330px; }
+  .statusbar { flex-wrap: wrap; gap: 4px 14px; padding-bottom: 8px; }
+  .statusbar .copyright { width: 100%; margin-left: 0; }
   .settings-section { grid-template-columns: 1fr; gap: 12px; }
   .mode-options { grid-template-columns: 1fr; }
   .pairing-meta { text-align: left; margin-left: 0; }

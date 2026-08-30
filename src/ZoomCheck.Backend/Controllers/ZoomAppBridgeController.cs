@@ -41,7 +41,7 @@ public sealed class ZoomAppBridgeController : ControllerBase
     {
         try
         {
-            var revision = _relay.GetStatus().Connected
+            var revision = _relay.GetStatus().SessionActive
                 ? await _relay.RequestSyncAsync(cancellationToken)
                 : _bridge.RequestSync();
             return Accepted(new { requestedRevision = revision });

@@ -128,7 +128,8 @@ public sealed class ZoomRelayService : IDisposable
                 _session.SendSequence,
                 _client.CompanionUrl()?.AbsoluteUri,
                 _session.Keys is null ? _session.ExpiresAt : null,
-                "relay");
+                "relay",
+                _session.Keys is not null);
         }
     }
 
@@ -178,7 +179,7 @@ public sealed class ZoomRelayService : IDisposable
                     session.LastReceivedSequence = envelope.Sequence;
                     var result = await _bridge.ApplyRelaySnapshotAsync(payload, cancellationToken);
                     session.LastSeenAt = _timeProvider.GetUtcNow();
-                    session.MeetingId = payload.MeetingId;
+                    session.MeetingId = result.Snapshot.Board.MeetingId;
                     session.MeetingUuid = payload.MeetingUuid;
                     session.Role = NormalizeRole(payload.Role);
                     session.LastSnapshotAt = payload.CapturedAt ?? _timeProvider.GetUtcNow();

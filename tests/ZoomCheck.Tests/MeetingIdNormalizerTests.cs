@@ -9,6 +9,7 @@ public sealed class MeetingIdNormalizerTests
     [InlineData("123-456-78901", "12345678901")]
     [InlineData(" 12345678901 ", "12345678901")]
     [InlineData("meeting-uuid/value", "meeting-uuid/value")]
+    [InlineData("abc 123", "abc 123")]
     public void Normalize_CanonicalizesNumericZoomIdsAndPreservesOpaqueIds(string input, string expected)
     {
         Assert.Equal(expected, MeetingIdNormalizer.Normalize(input));

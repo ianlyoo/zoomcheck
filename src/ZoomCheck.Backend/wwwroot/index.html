@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light" />
   <title>ZoomCheck 회의 출석 대시보드</title>
-  <link rel="stylesheet" href="styles.css?v=20260830.3" />
+  <link rel="stylesheet" href="styles.css?v=20260830.4" />
 </head>
 <body>
   <a class="skip-link" href="#participant-search">참가자 검색으로 이동</a>
@@ -158,6 +158,7 @@
       <span id="sync-summary"><span class="status-dot"></span>동기화 대기</span>
       <span id="roster-summary">명단 0명</span>
       <span>데이터는 이 PC에만 저장됩니다.</span>
+      <span class="copyright">© 2026 Youngin. All rights reserved.</span>
     </footer>
   </main>
 
@@ -200,7 +201,7 @@
         </section>
 
         <section class="settings-section">
-          <div class="settings-copy"><h3>Zoom 앱 (Pro) 페어링</h3><p>별도 터널이나 API 키 없이 사용합니다. 회의 안에서 ZoomCheck를 열고 6자리 코드를 입력하면 참가자 목록이 종단간 암호화되어 이 PC로 전달됩니다.</p></div>
+          <div class="settings-copy"><h3>Zoom 앱 (Pro) 페어링</h3><p>별도 터널이나 API 키 없이 사용합니다. 6자리 코드는 최초 연결 전 10분 동안만 유효하며, 연결 후에는 코드가 폐기되고 세션이 별도로 유지됩니다.</p></div>
           <div class="settings-control">
             <p class="setting-status" id="zoom-app-settings-status">Zoom 앱 연결 상태 확인 중…</p>
             <div class="pairing-box">
@@ -257,6 +258,6 @@
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
   <div class="busy" id="busy" hidden role="status" aria-live="polite"><span class="spinner"></span><span id="busy-text">처리 중…</span></div>
-  <script src="app.js?v=20260830.3"></script>
+  <script src="app.js?v=20260830.4"></script>
 </body>
 </html>

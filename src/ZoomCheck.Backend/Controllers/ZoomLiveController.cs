@@ -31,13 +31,13 @@ public sealed class ZoomLiveController : ControllerBase
     {
         var relay = _zoomRelay.GetStatus();
         var direct = _zoomAppBridge.GetStatus();
-        var zoomApp = relay.Connected || (_zoomRelay.IsConfigured && direct.HomeUrl is null) ? relay : direct;
-        var recommendedMode = zoomApp.Connected || _zoomRelay.IsConfigured
+        var zoomApp = relay.SessionActive || (_zoomRelay.IsConfigured && direct.HomeUrl is null) ? relay : direct;
+        var recommendedMode = zoomApp.SessionActive || _zoomRelay.IsConfigured
             ? "zoomApp"
             : _tokenService.IsConfigured ? "business" : "manual";
         return Ok(new
         {
-            configured = _tokenService.IsConfigured || zoomApp.Connected,
+            configured = _tokenService.IsConfigured || zoomApp.SessionActive,
             tokenCached = _tokenService.HasUsableCachedToken,
             tokenExpiresAt = _tokenService.ExpiresAt,
             business = new

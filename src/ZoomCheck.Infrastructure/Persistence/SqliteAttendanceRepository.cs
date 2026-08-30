@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using ZoomCheck.Core.Enums;
 using ZoomCheck.Core.Models;
+using ZoomCheck.Core.Services;
 
 namespace ZoomCheck.Infrastructure.Persistence;
 
@@ -154,6 +155,8 @@ public sealed class SqliteAttendanceRepository
             migratePresence.Parameters.AddWithValue("$appliedAt", DateTimeOffset.UtcNow.ToString("O"));
             await migratePresence.ExecuteNonQueryAsync(cancellationToken);
         }
+
+        await NormalizeLegacyMeetingIdsAsync(connection, cancellationToken);
     }
 
     public async Task ReplaceRosterAsync(RosterImportResult roster, CancellationToken cancellationToken = default)
@@ -428,6 +431,195 @@ public sealed class SqliteAttendanceRepository
         var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
         return connection;
+    }
+
+    private static async Task NormalizeLegacyMeetingIdsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using (var alreadyApplied = connection.CreateCommand())
+        {
+            alreadyApplied.CommandText =
+                "SELECT 1 FROM schema_migrations WHERE migration_id = 'meeting-id-v1' LIMIT 1;";
+            if (await alreadyApplied.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return;
+            }
+        }
+
+        var meetingIds = new List<string>();
+        await using (var findIds = connection.CreateCommand())
+        {
+            findIds.CommandText =
+                "SELECT meeting_id FROM participant_events " +
+                "UNION SELECT meeting_id FROM participant_snapshots " +
+                "UNION SELECT meeting_id FROM participant_presence_v2;";
+            await using var reader = await findIds.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                meetingIds.Add(reader.GetString(0));
+            }
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        foreach (var legacyMeetingId in meetingIds)
+        {
+            if (!MeetingIdNormalizer.TryNormalize(legacyMeetingId, out var normalizedMeetingId)
+                || string.Equals(legacyMeetingId, normalizedMeetingId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Event ids are globally unique, so histories from both display forms can be merged.
+            await ExecuteMigrationCommandAsync(
+                connection,
+                transaction,
+                "UPDATE participant_events SET meeting_id = $normalized WHERE meeting_id = $legacy;",
+                legacyMeetingId,
+                normalizedMeetingId,
+                cancellationToken);
+
+            // Keep the newest snapshot for each source and move its matching presence set with it.
+            var sources = new List<string>();
+            await using (var findSources = connection.CreateCommand())
+            {
+                findSources.Transaction = transaction;
+                findSources.CommandText =
+                    "SELECT source FROM participant_snapshots WHERE meeting_id IN ($legacy, $normalized) " +
+                    "UNION SELECT source FROM participant_presence_v2 WHERE meeting_id IN ($legacy, $normalized);";
+                findSources.Parameters.AddWithValue("$legacy", legacyMeetingId);
+                findSources.Parameters.AddWithValue("$normalized", normalizedMeetingId);
+                await using var reader = await findSources.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    sources.Add(reader.GetString(0));
+                }
+            }
+
+            foreach (var source in sources)
+            {
+                var legacyCapturedAt = await GetSnapshotCapturedAtAsync(
+                    connection, transaction, legacyMeetingId, source, cancellationToken);
+                var normalizedCapturedAt = await GetSnapshotCapturedAtAsync(
+                    connection, transaction, normalizedMeetingId, source, cancellationToken);
+                var keepLegacy = legacyCapturedAt is not null
+                    && (normalizedCapturedAt is null || legacyCapturedAt > normalizedCapturedAt);
+
+                if (keepLegacy)
+                {
+                    await DeleteMeetingSourceAsync(connection, transaction, normalizedMeetingId, source, cancellationToken);
+                    await MoveMeetingSourceAsync(
+                        connection, transaction, legacyMeetingId, normalizedMeetingId, source, cancellationToken);
+                }
+                else if (normalizedCapturedAt is not null)
+                {
+                    await DeleteMeetingSourceAsync(connection, transaction, legacyMeetingId, source, cancellationToken);
+                }
+                else
+                {
+                    // Legacy databases can have presence rows without a snapshot row.
+                    await MoveMeetingSourceAsync(
+                        connection, transaction, legacyMeetingId, normalizedMeetingId, source, cancellationToken);
+                }
+            }
+        }
+
+        await using (var markApplied = connection.CreateCommand())
+        {
+            markApplied.Transaction = transaction;
+            markApplied.CommandText =
+                "INSERT INTO schema_migrations (migration_id, applied_at) VALUES ('meeting-id-v1', $appliedAt);";
+            markApplied.Parameters.AddWithValue("$appliedAt", DateTimeOffset.UtcNow.ToString("O"));
+            await markApplied.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task<DateTimeOffset?> GetSnapshotCapturedAtAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string meetingId,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            "SELECT captured_at FROM participant_snapshots WHERE meeting_id = $meetingId AND source = $source;";
+        command.Parameters.AddWithValue("$meetingId", meetingId);
+        command.Parameters.AddWithValue("$source", source);
+        var value = await command.ExecuteScalarAsync(cancellationToken) as string;
+        return value is null ? null : DateTimeOffset.Parse(value);
+    }
+
+    private static async Task DeleteMeetingSourceAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string meetingId,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        foreach (var table in new[] { "participant_presence_v2", "participant_snapshots" })
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = $"DELETE FROM {table} WHERE meeting_id = $meetingId AND source = $source;";
+            command.Parameters.AddWithValue("$meetingId", meetingId);
+            command.Parameters.AddWithValue("$source", source);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task MoveMeetingSourceAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string legacyMeetingId,
+        string normalizedMeetingId,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        await using (var movePresence = connection.CreateCommand())
+        {
+            movePresence.Transaction = transaction;
+            movePresence.CommandText =
+                "INSERT OR IGNORE INTO participant_presence_v2 " +
+                "(meeting_id, source, presence_key, normalized_name, display_name, first_seen_at, last_seen_at, participant_email, raw_display_name, canonical_name) " +
+                "SELECT $normalized, source, presence_key, normalized_name, display_name, first_seen_at, last_seen_at, participant_email, raw_display_name, canonical_name " +
+                "FROM participant_presence_v2 WHERE meeting_id = $legacy AND source = $source; " +
+                "DELETE FROM participant_presence_v2 WHERE meeting_id = $legacy AND source = $source;";
+            movePresence.Parameters.AddWithValue("$legacy", legacyMeetingId);
+            movePresence.Parameters.AddWithValue("$normalized", normalizedMeetingId);
+            movePresence.Parameters.AddWithValue("$source", source);
+            await movePresence.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var moveSnapshot = connection.CreateCommand())
+        {
+            moveSnapshot.Transaction = transaction;
+            moveSnapshot.CommandText =
+                "UPDATE participant_snapshots SET meeting_id = $normalized " +
+                "WHERE meeting_id = $legacy AND source = $source;";
+            moveSnapshot.Parameters.AddWithValue("$legacy", legacyMeetingId);
+            moveSnapshot.Parameters.AddWithValue("$normalized", normalizedMeetingId);
+            moveSnapshot.Parameters.AddWithValue("$source", source);
+            await moveSnapshot.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task ExecuteMigrationCommandAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        string legacyMeetingId,
+        string normalizedMeetingId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$legacy", legacyMeetingId);
+        command.Parameters.AddWithValue("$normalized", normalizedMeetingId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task EnsureColumnExistsAsync(

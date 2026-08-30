@@ -58,8 +58,16 @@ public sealed class SqliteSchemaMigrationTests : IDisposable
                     last_seen_at TEXT NOT NULL,
                     PRIMARY KEY (meeting_id, source, normalized_name)
                 );
-                INSERT INTO participant_events VALUES ('e1','meeting-legacy','2024-01-01T00:00:00.0000000+00:00','Joined','이순신','이순신',NULL,'NameOnly','p2','manual-snapshot','{}');
-                INSERT INTO participant_presence VALUES ('meeting-legacy','manual-snapshot','이순신','이순신','2024-01-01T00:00:00.0000000+00:00','2024-01-01T00:00:00.0000000+00:00');
+                CREATE TABLE participant_snapshots (
+                    meeting_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    present_count INTEGER NOT NULL,
+                    PRIMARY KEY (meeting_id, source)
+                );
+                INSERT INTO participant_events VALUES ('e1','123 456-789','2024-01-01T00:00:00.0000000+00:00','Joined','이순신','이순신',NULL,'NameOnly','p2','manual-snapshot','{}');
+                INSERT INTO participant_presence VALUES ('123 456-789','manual-snapshot','이순신','이순신','2024-01-01T00:00:00.0000000+00:00','2024-01-01T00:00:00.0000000+00:00');
+                INSERT INTO participant_snapshots VALUES ('123 456-789','manual-snapshot','2024-01-01T00:00:00.0000000+00:00',1);
                 """;
             await command.ExecuteNonQueryAsync();
         }
@@ -67,7 +75,7 @@ public sealed class SqliteSchemaMigrationTests : IDisposable
         var repository = new SqliteAttendanceRepository(_databasePath);
         await repository.InitializeAsync();
 
-        var events = await repository.GetParticipantEventsAsync("meeting-legacy");
+        var events = await repository.GetParticipantEventsAsync("123456789");
         var legacyEvent = Assert.Single(events);
         Assert.Equal(ParticipantEventType.Joined, legacyEvent.EventType);
         Assert.Equal("이순신", legacyEvent.ParticipantName);
@@ -77,7 +85,7 @@ public sealed class SqliteSchemaMigrationTests : IDisposable
         Assert.Null(legacyEvent.CanonicalParticipantName);
         Assert.Equal("이순신", legacyEvent.EffectiveRawParticipantName);
 
-        var presence = await repository.GetParticipantPresenceAsync("meeting-legacy", "manual-snapshot");
+        var presence = await repository.GetParticipantPresenceAsync("123456789", "manual-snapshot");
         var entry = Assert.Single(presence);
         Assert.Equal("이순신", entry.DisplayName);
         Assert.Equal("이순신", entry.PresenceKey);
@@ -85,8 +93,11 @@ public sealed class SqliteSchemaMigrationTests : IDisposable
         Assert.Null(entry.CanonicalName);
         Assert.Equal("이순신", entry.EffectiveRawDisplayName);
 
+        var snapshots = await repository.GetParticipantSnapshotSourcesAsync("123456789");
+        Assert.Equal(1, Assert.Single(snapshots).PresentCount);
+
         // Re-initializing an already-upgraded database must stay a no-op.
         await repository.InitializeAsync();
-        Assert.Single(await repository.GetParticipantEventsAsync("meeting-legacy"));
+        Assert.Single(await repository.GetParticipantEventsAsync("123456789"));
     }
 }

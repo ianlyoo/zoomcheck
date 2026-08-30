@@ -5,16 +5,16 @@ public static class MeetingIdNormalizer
     public static bool TryNormalize(string? value, out string normalized)
     {
         normalized = value?.Trim() ?? string.Empty;
-        if (normalized.Length == 0 || normalized.Length > 512)
+        if (normalized.Length == 0)
         {
             normalized = string.Empty;
             return false;
         }
 
         if (normalized.All(character =>
-                char.IsDigit(character) || char.IsWhiteSpace(character) || character == '-'))
+                character is >= '0' and <= '9' || char.IsWhiteSpace(character) || character == '-'))
         {
-            normalized = new string(normalized.Where(char.IsDigit).ToArray());
+            normalized = new string(normalized.Where(character => character is >= '0' and <= '9').ToArray());
         }
 
         return normalized.Length is > 0 and <= 512;
