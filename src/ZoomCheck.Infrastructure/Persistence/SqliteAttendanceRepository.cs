@@ -70,6 +70,18 @@ public sealed class SqliteAttendanceRepository
                 raw_payload TEXT NOT NULL
             );
             """
+            ,
+            """
+            CREATE TABLE IF NOT EXISTS participant_presence (
+                meeting_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (meeting_id, source, normalized_name)
+            );
+            """
         };
 
         foreach (var sql in commands)
@@ -183,20 +195,85 @@ public sealed class SqliteAttendanceRepository
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText =
-            "INSERT INTO participant_events (id, meeting_id, occurred_at, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload) VALUES ($id, $meetingId, $occurredAt, $eventType, $participantName, $normalizedParticipantName, $participantEmail, $confidence, $matchedRosterPersonId, $source, $rawPayload);";
-        command.Parameters.AddWithValue("$id", participantEvent.Id);
-        command.Parameters.AddWithValue("$meetingId", participantEvent.MeetingId);
-        command.Parameters.AddWithValue("$occurredAt", participantEvent.OccurredAt.ToString("O"));
-        command.Parameters.AddWithValue("$eventType", participantEvent.EventType.ToString());
-        command.Parameters.AddWithValue("$participantName", participantEvent.ParticipantName);
-        command.Parameters.AddWithValue("$normalizedParticipantName", participantEvent.NormalizedParticipantName);
-        command.Parameters.AddWithValue("$participantEmail", (object?)participantEvent.ParticipantEmail ?? DBNull.Value);
-        command.Parameters.AddWithValue("$confidence", participantEvent.Confidence.ToString());
-        command.Parameters.AddWithValue("$matchedRosterPersonId", (object?)participantEvent.MatchedRosterPersonId ?? DBNull.Value);
-        command.Parameters.AddWithValue("$source", participantEvent.Source);
-        command.Parameters.AddWithValue("$rawPayload", participantEvent.RawPayload);
+        BindParticipantEvent(command, participantEvent);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns the participants a capture source last reported as present for a meeting.
+    /// Presence is scoped by (meeting, source) so snapshots from one source never imply
+    /// that participants observed by another source have left.
+    /// </summary>
+    public async Task<IReadOnlyList<ParticipantSnapshotEntry>> GetParticipantPresenceAsync(string meetingId, string source, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT normalized_name, display_name, first_seen_at, last_seen_at FROM participant_presence WHERE meeting_id = $meetingId AND source = $source;";
+        command.Parameters.AddWithValue("$meetingId", meetingId);
+        command.Parameters.AddWithValue("$source", source);
+
+        var entries = new List<ParticipantSnapshotEntry>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            entries.Add(new ParticipantSnapshotEntry(
+                reader.GetString(0),
+                reader.GetString(1),
+                DateTimeOffset.Parse(reader.GetString(2)),
+                DateTimeOffset.Parse(reader.GetString(3))));
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// Atomically appends the derived join/leave events and replaces the presence set
+    /// for the given (meeting, source) pair.
+    /// </summary>
+    public async Task ApplyParticipantSnapshotAsync(
+        string meetingId,
+        string source,
+        IReadOnlyList<ParticipantSnapshotEntry> presentEntries,
+        IReadOnlyList<ParticipantEvent> derivedEvents,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        foreach (var derivedEvent in derivedEvents)
+        {
+            await using var insertEvent = connection.CreateCommand();
+            insertEvent.Transaction = transaction;
+            BindParticipantEvent(insertEvent, derivedEvent);
+            await insertEvent.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var clearPresence = connection.CreateCommand())
+        {
+            clearPresence.Transaction = transaction;
+            clearPresence.CommandText = "DELETE FROM participant_presence WHERE meeting_id = $meetingId AND source = $source;";
+            clearPresence.Parameters.AddWithValue("$meetingId", meetingId);
+            clearPresence.Parameters.AddWithValue("$source", source);
+            await clearPresence.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        foreach (var entry in presentEntries)
+        {
+            await using var insertPresence = connection.CreateCommand();
+            insertPresence.Transaction = transaction;
+            insertPresence.CommandText =
+                "INSERT INTO participant_presence (meeting_id, source, normalized_name, display_name, first_seen_at, last_seen_at) VALUES ($meetingId, $source, $normalizedName, $displayName, $firstSeenAt, $lastSeenAt);";
+            insertPresence.Parameters.AddWithValue("$meetingId", meetingId);
+            insertPresence.Parameters.AddWithValue("$source", source);
+            insertPresence.Parameters.AddWithValue("$normalizedName", entry.NormalizedName);
+            insertPresence.Parameters.AddWithValue("$displayName", entry.DisplayName);
+            insertPresence.Parameters.AddWithValue("$firstSeenAt", entry.FirstSeenAt.ToString("O"));
+            insertPresence.Parameters.AddWithValue("$lastSeenAt", entry.LastSeenAt.ToString("O"));
+            await insertPresence.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<ParticipantEvent>> GetParticipantEventsAsync(string meetingId, CancellationToken cancellationToken = default)
@@ -233,5 +310,22 @@ public sealed class SqliteAttendanceRepository
         var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
         return connection;
+    }
+
+    private static void BindParticipantEvent(SqliteCommand command, ParticipantEvent participantEvent)
+    {
+        command.CommandText =
+            "INSERT INTO participant_events (id, meeting_id, occurred_at, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload) VALUES ($id, $meetingId, $occurredAt, $eventType, $participantName, $normalizedParticipantName, $participantEmail, $confidence, $matchedRosterPersonId, $source, $rawPayload);";
+        command.Parameters.AddWithValue("$id", participantEvent.Id);
+        command.Parameters.AddWithValue("$meetingId", participantEvent.MeetingId);
+        command.Parameters.AddWithValue("$occurredAt", participantEvent.OccurredAt.ToString("O"));
+        command.Parameters.AddWithValue("$eventType", participantEvent.EventType.ToString());
+        command.Parameters.AddWithValue("$participantName", participantEvent.ParticipantName);
+        command.Parameters.AddWithValue("$normalizedParticipantName", participantEvent.NormalizedParticipantName);
+        command.Parameters.AddWithValue("$participantEmail", (object?)participantEvent.ParticipantEmail ?? DBNull.Value);
+        command.Parameters.AddWithValue("$confidence", participantEvent.Confidence.ToString());
+        command.Parameters.AddWithValue("$matchedRosterPersonId", (object?)participantEvent.MatchedRosterPersonId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$source", participantEvent.Source);
+        command.Parameters.AddWithValue("$rawPayload", participantEvent.RawPayload);
     }
 }

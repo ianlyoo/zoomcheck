@@ -13,6 +13,7 @@ using ZoomCheck.App.Models;
 using ZoomCheck.App.Services;
 using ZoomCheck.Core.Enums;
 using ZoomCheck.Core.Models;
+using ZoomCheck.Core.Services;
 
 namespace ZoomCheck.App.ViewModels;
 
@@ -38,7 +39,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private string backendUrl = "http://127.0.0.1:5078/";
 
     [ObservableProperty]
-    private string meetingId = "demo-meeting";
+    private string meetingId = string.Empty;
 
     [ObservableProperty]
     private string rosterFilePath = DetectDefaultRosterPath();
@@ -75,6 +76,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
     [ObservableProperty]
     private int visiblePanelParticipantCount;
+
+    [ObservableProperty]
+    private string manualSnapshotText = string.Empty;
+
+    [ObservableProperty]
+    private string manualSnapshotStatus = "Fallback only. Paste the Zoom participant list here if the panel cannot be read.";
 
     public MainWindowViewModel()
         : this(
@@ -156,6 +163,40 @@ public partial class MainWindowViewModel : ViewModelBase
         ? $"Auto refresh is on every {SelectedAutoRefreshIntervalSeconds} seconds while this window stays open."
         : "Auto refresh is off. Turn it on to keep checking the live board automatically.";
 
+    public int ManualSnapshotNameCount => ParseManualSnapshotNames(ManualSnapshotText).Count;
+
+    public bool HasManualSnapshotNames => ManualSnapshotNameCount > 0;
+
+    public bool CanSubmitManualSnapshot => !IsBusy
+        && !string.IsNullOrWhiteSpace(MeetingId)
+        && HasManualSnapshotNames;
+
+    public string ManualSnapshotPreview
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(ManualSnapshotText))
+            {
+                return "No names pasted yet. One participant per line.";
+            }
+
+            var parsed = ParseManualSnapshotNames(ManualSnapshotText);
+            if (parsed.Count == 0)
+            {
+                return "Nothing usable found. Every line was blank or had no letters or digits.";
+            }
+
+            var rawLines = ManualSnapshotText
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Count(line => !string.IsNullOrWhiteSpace(line));
+            var dropped = rawLines - parsed.Count;
+
+            return dropped <= 0
+                ? $"{parsed.Count} unique name(s) ready to submit."
+                : $"{parsed.Count} unique name(s) ready to submit · {dropped} duplicate or unusable line(s) ignored.";
+        }
+    }
+
     partial void OnSelectedReviewItemChanged(ReviewQueueItemViewModel? value)
     {
         SelectedAliasText = value?.AliasText ?? string.Empty;
@@ -175,6 +216,23 @@ public partial class MainWindowViewModel : ViewModelBase
     partial void OnIsBusyChanged(bool value)
     {
         OnPropertyChanged(nameof(CanSaveAlias));
+        OnPropertyChanged(nameof(CanSubmitManualSnapshot));
+        SubmitManualSnapshotCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnManualSnapshotTextChanged(string value)
+    {
+        OnPropertyChanged(nameof(ManualSnapshotNameCount));
+        OnPropertyChanged(nameof(HasManualSnapshotNames));
+        OnPropertyChanged(nameof(ManualSnapshotPreview));
+        OnPropertyChanged(nameof(CanSubmitManualSnapshot));
+        SubmitManualSnapshotCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnMeetingIdChanged(string value)
+    {
+        OnPropertyChanged(nameof(CanSubmitManualSnapshot));
+        SubmitManualSnapshotCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnAutoRefreshEnabledChanged(bool value)
@@ -308,6 +366,49 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             await RefreshBoardCoreAsync(updateStatusBanner: true);
         });
+    }
+
+    [RelayCommand(CanExecute = nameof(CanSubmitManualSnapshot))]
+    private async Task SubmitManualSnapshotAsync()
+    {
+        await SafeExecuteAsync(async () =>
+        {
+            if (string.IsNullOrWhiteSpace(MeetingId))
+            {
+                ManualSnapshotStatus = "Enter the meeting ID from Zoom before submitting a pasted snapshot.";
+                throw new InvalidOperationException("Enter the meeting ID from Zoom before submitting a pasted snapshot.");
+            }
+
+            var names = ParseManualSnapshotNames(ManualSnapshotText);
+            if (names.Count == 0)
+            {
+                ManualSnapshotStatus = "Nothing to submit. Paste the Zoom participant list with one name per line.";
+                throw new InvalidOperationException("Paste at least one participant name, one per line.");
+            }
+
+            ManualSnapshotStatus = $"Submitting {names.Count} pasted name(s) as the current participant snapshot...";
+            var result = await _apiClient.PostParticipantSnapshotAsync(MeetingId, names);
+            ApplyBoard(result.Board);
+            ActiveSessionLabel = $"Meeting {MeetingId} · manual snapshot at {DateTime.Now:h:mm tt}";
+
+            var ignoredNote = result.IgnoredNames.Count == 0
+                ? string.Empty
+                : $" · {result.IgnoredNames.Count} name(s) ignored by the service";
+            ManualSnapshotStatus =
+                $"Snapshot applied at {DateTime.Now:h:mm tt} · {result.PresentCount} present · "
+                + $"{result.JoinedNames.Count} newly joined · {result.LeftNames.Count} marked left{ignoredNote}.";
+
+            StatusBanner = ReviewQueue.Count == 0
+                ? $"Manual snapshot applied for {names.Count} pasted name(s). Nothing is flagged, so you can export when class ends."
+                : $"Manual snapshot applied for {names.Count} pasted name(s). Review the {ReviewQueue.Count} flagged {(ReviewQueue.Count == 1 ? "person" : "people")} on the right.";
+        });
+    }
+
+    [RelayCommand]
+    private void ClearManualSnapshot()
+    {
+        ManualSnapshotText = string.Empty;
+        ManualSnapshotStatus = "Pasted snapshot cleared. The Windows participant panel remains the primary capture path.";
     }
 
     [RelayCommand]
@@ -646,6 +747,36 @@ public partial class MainWindowViewModel : ViewModelBase
     private static IBrush CreateBrush(string hexColor)
     {
         return new SolidColorBrush(Color.Parse(hexColor));
+    }
+
+    private static List<string> ParseManualSnapshotNames(string? rawText)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return new List<string>();
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var names = new List<string>();
+
+        foreach (var line in rawText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            var normalized = NameNormalizer.Normalize(trimmed);
+            if (normalized.Length == 0 || !seen.Add(normalized))
+            {
+                continue;
+            }
+
+            names.Add(trimmed);
+        }
+
+        return names;
     }
 
     private static string DetectDefaultRosterPath()

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text;
+using System.Collections.Concurrent;
 using ZoomCheck.Core.Enums;
 using ZoomCheck.Core.Models;
 using ZoomCheck.Core.Services;
@@ -13,6 +14,7 @@ public sealed class AttendanceApplicationService
     private readonly ExcelRosterParser _rosterParser;
     private readonly SqliteAttendanceRepository _repository;
     private readonly AttendanceMatcher _matcher;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _snapshotLocks = new(StringComparer.Ordinal);
 
     public AttendanceApplicationService(
         ExcelRosterParser rosterParser,
@@ -62,6 +64,160 @@ public sealed class AttendanceApplicationService
 
     public Task<ParticipantEvent> RecordZoomEventAsync(ZoomParticipantEventInput input, CancellationToken cancellationToken = default)
         => RecordParticipantEventAsync(input, cancellationToken);
+
+    /// <summary>
+    /// Applies a full "currently present" participant list for a meeting and capture source.
+    /// Names not seen before produce Joined events, names missing from the snapshot but present
+    /// in that source's previous snapshot produce Left events. Presence is scoped by
+    /// (meeting, source) so a snapshot never marks participants observed elsewhere as left.
+    /// </summary>
+    public async Task<ParticipantSnapshotResult> ApplyParticipantSnapshotAsync(ParticipantSnapshotInput input, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(input.MeetingId))
+        {
+            throw new ArgumentException("Meeting id is required.", nameof(input));
+        }
+
+        if (string.IsNullOrWhiteSpace(input.Source))
+        {
+            throw new ArgumentException("Snapshot source is required.", nameof(input));
+        }
+
+        var meetingId = input.MeetingId.Trim();
+        var source = input.Source.Trim();
+        var capturedAt = input.CapturedAt;
+
+        var present = new Dictionary<string, string>(StringComparer.Ordinal);
+        var ignored = new List<string>();
+        foreach (var rawName in input.ParticipantNames ?? Array.Empty<string>())
+        {
+            var displayName = rawName?.Trim() ?? string.Empty;
+            var normalized = NameNormalizer.Normalize(displayName);
+            if (string.IsNullOrEmpty(normalized))
+            {
+                if (!string.IsNullOrEmpty(displayName))
+                {
+                    ignored.Add(displayName);
+                }
+
+                continue;
+            }
+
+            // First spelling wins for the display name; later duplicates collapse into it.
+            if (!present.TryAdd(normalized, displayName))
+            {
+                continue;
+            }
+        }
+
+        var snapshotLock = _snapshotLocks.GetOrAdd($"{meetingId}\u0000{source}", _ => new SemaphoreSlim(1, 1));
+        await snapshotLock.WaitAsync(cancellationToken);
+        try
+        {
+            var previous = await _repository.GetParticipantPresenceAsync(meetingId, source, cancellationToken);
+            var previousByName = previous.ToDictionary(entry => entry.NormalizedName, StringComparer.Ordinal);
+
+            var roster = await _repository.GetRosterPeopleAsync(cancellationToken);
+            var aliases = await _repository.GetAliasMapAsync(cancellationToken);
+
+            var derivedEvents = new List<ParticipantEvent>();
+            var joinedNames = new List<string>();
+            var leftNames = new List<string>();
+            var presentEntries = new List<ParticipantSnapshotEntry>(present.Count);
+
+            foreach (var (normalized, displayName) in present)
+            {
+                if (previousByName.TryGetValue(normalized, out var existing))
+                {
+                    presentEntries.Add(existing with { DisplayName = displayName, LastSeenAt = capturedAt });
+                    continue;
+                }
+
+                presentEntries.Add(new ParticipantSnapshotEntry(normalized, displayName, capturedAt, capturedAt));
+                joinedNames.Add(displayName);
+                derivedEvents.Add(CreateSnapshotEvent(
+                    meetingId,
+                    capturedAt,
+                    ParticipantEventType.Joined,
+                    displayName,
+                    normalized,
+                    source,
+                    roster,
+                    aliases,
+                    present.Count));
+            }
+
+            foreach (var entry in previous)
+            {
+                if (present.ContainsKey(entry.NormalizedName))
+                {
+                    continue;
+                }
+
+                leftNames.Add(entry.DisplayName);
+                derivedEvents.Add(CreateSnapshotEvent(
+                    meetingId,
+                    capturedAt,
+                    ParticipantEventType.Left,
+                    entry.DisplayName,
+                    entry.NormalizedName,
+                    source,
+                    roster,
+                    aliases,
+                    present.Count));
+            }
+
+            await _repository.ApplyParticipantSnapshotAsync(meetingId, source, presentEntries, derivedEvents, cancellationToken);
+
+            var board = await BuildBoardAsync(meetingId, cancellationToken);
+            return new ParticipantSnapshotResult(
+                MeetingId: meetingId,
+                Source: source,
+                CapturedAt: capturedAt,
+                PresentCount: presentEntries.Count,
+                JoinedNames: joinedNames,
+                LeftNames: leftNames,
+                IgnoredNames: ignored,
+                Board: board);
+        }
+        finally
+        {
+            snapshotLock.Release();
+        }
+    }
+
+    private ParticipantEvent CreateSnapshotEvent(
+        string meetingId,
+        DateTimeOffset occurredAt,
+        ParticipantEventType eventType,
+        string displayName,
+        string normalizedName,
+        string source,
+        IReadOnlyList<RosterPerson> roster,
+        IReadOnlyDictionary<string, string> aliases,
+        int snapshotSize)
+    {
+        var candidate = _matcher.Match(roster, aliases, displayName, null);
+        return new ParticipantEvent(
+            Id: Guid.NewGuid().ToString("N"),
+            MeetingId: meetingId,
+            OccurredAt: occurredAt,
+            EventType: eventType,
+            ParticipantName: displayName,
+            NormalizedParticipantName: normalizedName,
+            ParticipantEmail: null,
+            Confidence: candidate.Confidence,
+            MatchedRosterPersonId: candidate.Person?.Id,
+            Source: source,
+            RawPayload: JsonSerializer.Serialize(new
+            {
+                snapshot = true,
+                source,
+                capturedAt = occurredAt,
+                snapshotSize,
+                name = displayName
+            }));
+    }
 
     public async Task<AttendanceBoard> BuildBoardAsync(string meetingId, CancellationToken cancellationToken = default)
     {

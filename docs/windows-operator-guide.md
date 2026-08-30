@@ -2,6 +2,8 @@
 
 ## Beginner workflow
 
+For a detailed Korean live-meeting checklist, see [`windows-live-test-ko.md`](windows-live-test-ko.md).
+
 1. Install `ZoomCheck-Setup-x64.exe`
 2. Double-click the **ZoomCheck** shortcut
 3. Open or join the Zoom meeting first

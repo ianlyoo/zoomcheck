@@ -9,6 +9,9 @@ namespace ZoomCheck.Backend.Controllers;
 [Route("api/meetings")]
 public sealed class MeetingsController : ControllerBase
 {
+    private const string DefaultSnapshotSource = "manual-snapshot";
+    private const int MaxSnapshotParticipants = 2000;
+
     private readonly AttendanceApplicationService _attendanceService;
 
     public MeetingsController(AttendanceApplicationService attendanceService)
@@ -55,6 +58,56 @@ public sealed class MeetingsController : ControllerBase
         }
 
         return Ok(new { accepted });
+    }
+
+    [HttpPost("{meetingId}/participant-snapshot")]
+    [ProducesResponseType(typeof(ParticipantSnapshotResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ApplyParticipantSnapshot(string meetingId, [FromBody] ParticipantSnapshotRequest? request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(meetingId))
+        {
+            return Problem(
+                title: "Invalid meeting id.",
+                detail: "meetingId is required.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (request is null)
+        {
+            return Problem(
+                title: "Invalid snapshot payload.",
+                detail: "A JSON body with participantNames is required.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (request.ParticipantNames is null)
+        {
+            return Problem(
+                title: "Invalid snapshot payload.",
+                detail: "participantNames is required. Send an empty array to record that nobody is present.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (request.ParticipantNames.Count > MaxSnapshotParticipants)
+        {
+            return Problem(
+                title: "Snapshot too large.",
+                detail: $"participantNames cannot contain more than {MaxSnapshotParticipants} entries.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var source = string.IsNullOrWhiteSpace(request.Source) ? DefaultSnapshotSource : request.Source.Trim();
+
+        var result = await _attendanceService.ApplyParticipantSnapshotAsync(
+            new ParticipantSnapshotInput(
+                meetingId.Trim(),
+                request.ParticipantNames,
+                source,
+                request.CapturedAt ?? DateTimeOffset.UtcNow),
+            cancellationToken);
+
+        return Ok(result);
     }
 
     [HttpGet("{meetingId}/export")]

@@ -33,6 +33,9 @@ jobs:
       - name: Restore
         run: dotnet restore ZoomCheck.sln
 
+      - name: Test
+        run: dotnet test ZoomCheck.sln -c Release --no-restore
+
       - name: Build installer
         shell: powershell
         run: .\deploy\windows\build-installer.ps1 -Configuration Release -Runtime win-x64 -Version 0.1.${{ github.run_number }}
