@@ -8,9 +8,11 @@
     interval: 'zoomcheck.autoRefreshSeconds',
     connectionMode: 'zoomcheck.connectionMode',
     group: 'zoomcheck.groupFilter',
+    theme: 'zoomcheck.theme',
     tutorialSeen: 'zoomcheck.tutorialSeen.v1'
   };
   var CONNECTION_MODES = ['auto', 'business', 'zoomApp', 'manual'];
+  var THEME_OPTIONS = ['system', 'light', 'dark'];
   var MODE_LABEL = {
     auto: '자동',
     business: 'Business API',
@@ -61,7 +63,8 @@
     update: null,
     updateAnnouncedFor: null,
     updatePollId: null,
-    tutorialStep: 0
+    tutorialStep: 0,
+    themePreference: 'system'
   };
   var el = {};
 
@@ -75,6 +78,51 @@
   function writeStore(key, value) {
     try { localStorage.setItem(key, String(value)); }
     catch (_) { /* private browsing may reject storage */ }
+  }
+  function systemTheme() {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  function normalizeTheme(value) {
+    return THEME_OPTIONS.indexOf(value) >= 0 ? value : 'system';
+  }
+  function renderThemeControls() {
+    var effective = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+    if (el.btnToggleTheme) {
+      var nextLabel = effective === 'dark' ? '라이트 모드' : '다크 모드';
+      setText(el.btnToggleTheme, nextLabel);
+      el.btnToggleTheme.setAttribute('aria-label', nextLabel + '로 전환');
+      el.btnToggleTheme.setAttribute('aria-pressed', effective === 'dark' ? 'true' : 'false');
+    }
+    if (el.themeRadios) {
+      el.themeRadios.forEach(function (radio) { radio.checked = radio.value === state.themePreference; });
+    }
+  }
+  function applyTheme(preference, options) {
+    options = options || {};
+    state.themePreference = normalizeTheme(preference);
+    var effective = state.themePreference === 'system' ? systemTheme() : state.themePreference;
+    document.documentElement.dataset.theme = effective;
+    document.documentElement.style.colorScheme = effective;
+    var themeColor = $('theme-color');
+    if (themeColor) { themeColor.content = effective === 'dark' ? '#0b1220' : '#f5f7fb'; }
+    if (options.persist) { writeStore(STORAGE.theme, state.themePreference); }
+    renderThemeControls();
+    if (options.notify) {
+      toast('ok', effective === 'dark' ? '다크 모드 적용' : '밝은 모드 적용', state.themePreference === 'system' ? 'Windows 화면 설정을 따릅니다.' : '이 PC에 선택을 저장했습니다.');
+    }
+  }
+  function toggleTheme() {
+    var current = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+    applyTheme(current === 'dark' ? 'light' : 'dark', { persist: true, notify: true });
+  }
+  function watchSystemTheme() {
+    if (!window.matchMedia) { return; }
+    var query = window.matchMedia('(prefers-color-scheme: dark)');
+    var onChange = function () {
+      if (state.themePreference === 'system') { applyTheme('system', { persist: false, notify: false }); }
+    };
+    if (query.addEventListener) { query.addEventListener('change', onChange); }
+    else if (query.addListener) { query.addListener(onChange); }
   }
   function pad(value) { return value < 10 ? '0' + value : String(value); }
   function formatTime(value) {
@@ -1707,7 +1755,7 @@
   function cacheElements() {
     [
       'meeting-id','health-dot','health-text','zoom-dot','zoom-status','chk-autorefresh','auto-status','last-sync-time','next-sync-time',
-      'btn-sync-zoom','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
+      'btn-sync-zoom','btn-toggle-theme','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
       'summary-total','summary-present','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
       'participants-meta','btn-refresh','btn-export','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
       'count-all','count-present','count-absent','count-review','count-unmatched','activity-feed','activity-empty','activity-count',
@@ -1728,6 +1776,7 @@
     el.tutorialSteps = Array.prototype.slice.call(document.querySelectorAll('[data-tutorial-step]'));
     el.tutorialProgressButtons = Array.prototype.slice.call(document.querySelectorAll('#tutorial-progress [role="tab"]'));
     el.modeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="connection-mode"]'));
+    el.themeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="theme"]'));
     el.chkAutoRefresh = el.chkAutorefresh;
     el.alertAction = el.btnAlertAction;
     el.alertBar = el.alertBar;
@@ -1743,6 +1792,7 @@
     el.btnSyncZoom.addEventListener('click', function () { syncNow({ silent: false }); });
     el.btnRefresh.addEventListener('click', function () { refreshBoard({ notify: true }); });
     el.btnExport.addEventListener('click', exportCsv);
+    el.btnToggleTheme.addEventListener('click', toggleTheme);
     el.btnOpenSettings.addEventListener('click', openSettings);
     el.btnOpenTutorial.addEventListener('click', function () { showTutorial(0); });
     el.btnSettingsTutorial.addEventListener('click', function () { showTutorial(0); });
@@ -1772,6 +1822,11 @@
     el.modeRadios.forEach(function (radio) {
       radio.addEventListener('change', function () {
         if (radio.checked) { applyConnectionMode(radio.value, { notify: true }); }
+      });
+    });
+    el.themeRadios.forEach(function (radio) {
+      radio.addEventListener('change', function () {
+        if (radio.checked) { applyTheme(radio.value, { persist: true, notify: true }); }
       });
     });
     el.btnUploadRoster.addEventListener('click', uploadRoster);
@@ -1811,6 +1866,7 @@
   }
 
   function restoreState() {
+    applyTheme(readStore(STORAGE.theme, 'system'), { persist: false, notify: false });
     el.meetingId.value = normalizeMeetingId(readStore(STORAGE.meetingId, ''));
     var savedInterval = parseInt(readStore(STORAGE.interval, '10'), 10);
     el.intervalInput.value = isNaN(savedInterval) ? '10' : String(Math.min(600, Math.max(5, savedInterval)));
@@ -1827,6 +1883,7 @@
     var autoOpenTutorial = shouldAutoOpenTutorial();
     restoreState();
     bindEvents();
+    watchSystemTheme();
     renderSessionLog();
     updateParsedCount();
     applyAutoRefresh(el.chkAutoRefresh.checked);

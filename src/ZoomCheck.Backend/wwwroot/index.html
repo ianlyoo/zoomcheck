@@ -3,10 +3,23 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="color-scheme" content="light" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" id="theme-color" content="#f5f7fb" />
   <title>ZoomCheck 회의 출석 대시보드</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231264d8'/%3E%3Cpath d='M16 18h32L27 46h21' fill='none' stroke='white' stroke-width='8' stroke-linejoin='round'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="styles.css?v=20260830.7" />
+  <script>
+    (function () {
+      try {
+        var preference = localStorage.getItem('zoomcheck.theme');
+        var systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = preference === 'dark' || preference === 'light' ? preference : (systemDark ? 'dark' : 'light');
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.getElementById('theme-color').content = theme === 'dark' ? '#0b1220' : '#f5f7fb';
+      } catch (_) { /* 저장소를 사용할 수 없으면 기본 밝은 테마를 유지한다. */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="styles.css?v=20260830.8" />
 </head>
 <body>
   <a class="skip-link" href="#participant-search">참가자 검색으로 이동</a>
@@ -49,6 +62,7 @@
     </div>
 
     <button type="button" class="btn primary sync-button" id="btn-sync-zoom">지금 동기화</button>
+    <button type="button" class="btn icon-button theme-button" id="btn-toggle-theme" aria-pressed="false">다크 모드</button>
     <button type="button" class="btn icon-button help-button" id="btn-open-tutorial" aria-haspopup="dialog">사용법</button>
     <button type="button" class="btn icon-button settings-button" id="btn-open-settings" aria-haspopup="dialog">설정</button>
   </header>
@@ -186,6 +200,17 @@
         <section class="settings-section">
           <div class="settings-copy"><h3>처음 사용 안내</h3><p>회의 준비부터 Excel 명단, Zoom 앱 페어링, 실시간 출석 확인까지 6단계로 다시 볼 수 있습니다.</p></div>
           <div class="settings-control"><button type="button" class="btn secondary" id="btn-settings-tutorial">사용법 다시 보기</button></div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-copy"><h3>화면 테마</h3><p>Windows 화면 설정을 따르거나 밝은 모드와 다크 모드를 직접 고를 수 있습니다. 선택은 이 PC에 저장됩니다.</p></div>
+          <div class="settings-control">
+            <div class="mode-options theme-options" role="radiogroup" aria-label="화면 테마 선택">
+              <label class="mode-option"><input type="radio" name="theme" value="system" /><span><strong>시스템 설정</strong><small>Windows 밝게·어둡게 설정을 자동으로 따름</small></span></label>
+              <label class="mode-option"><input type="radio" name="theme" value="light" /><span><strong>밝게</strong><small>항상 밝은 대시보드 사용</small></span></label>
+              <label class="mode-option"><input type="radio" name="theme" value="dark" /><span><strong>어둡게</strong><small>눈부심을 줄인 다크 대시보드 사용</small></span></label>
+            </div>
+          </div>
         </section>
 
         <section class="settings-section">
@@ -392,6 +417,6 @@
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
   <div class="busy" id="busy" hidden role="status" aria-live="polite"><span class="spinner"></span><span id="busy-text">처리 중…</span></div>
-  <script src="app.js?v=20260830.7"></script>
+  <script src="app.js?v=20260830.8"></script>
 </body>
 </html>

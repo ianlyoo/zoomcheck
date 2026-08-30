@@ -24,6 +24,7 @@ ZoomCheck does not scrape the participant panel or automate Zoom UI. Business ac
 - Self-contained Windows installer and portable ZIP; no separate .NET install
 - Startup update checks and verified downloads with one-click install/restart in the dashboard
 - Six-step first-run guide with skip and reopen controls
+- Light and dark themes with Windows preference sync and saved overrides
 - Local-only listener at `http://127.0.0.1:5078`; data under `%LOCALAPPDATA%\ZoomCheck`
 - Auto, Business API, Pro Zoom App, and manual connection modes
 
