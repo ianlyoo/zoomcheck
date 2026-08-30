@@ -15,10 +15,9 @@ permissions:
   contents: write
 
 env:
-  PACKAGE_VERSION: 0.4.${{ github.run_number }}
   INSTALLER_PATH: dist/installer/ZoomCheck-Setup-x64.exe
   PORTABLE_PATH: dist/portable/ZoomCheck-portable-win-x64.zip
-  RELAY_BASE_URL: ${{ vars.ZOOMCHECK_RELAY_BASE_URL }}
+  CHECKSUM_PATH: dist/installer/SHA256SUMS.txt
 
 jobs:
   build-installer:
@@ -42,12 +41,34 @@ jobs:
       - name: Test
         run: dotnet test ZoomCheck.sln -c Release --no-restore
 
+      - name: Resolve package version
+        id: version
+        shell: pwsh
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          $releaseTag = $env:RELEASE_TAG_INPUT.Trim()
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            $packageVersion = "0.6.${{ github.run_number }}"
+          }
+          elseif ($releaseTag -match '^v?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)$') {
+            $packageVersion = $Matches.version
+          }
+          else {
+            throw "release_tag must be a semantic version such as v0.6.0 or v0.6.0-rc.1."
+          }
+
+          "package_version=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Package version: $packageVersion"
+
       # Publishes ZoomCheck.Backend (win-x64, self-contained) as the single
       # package root, runs the packaging guard, then emits the portable ZIP and
       # the installer.
       - name: Build package, portable ZIP and installer
         shell: powershell
-        run: .\deploy\windows\build-installer.ps1 -Configuration Release -Runtime win-x64 -Version ${{ env.PACKAGE_VERSION }} -RelayBaseUrl "${{ env.RELAY_BASE_URL }}"
+        # Public releases never embed a maintainer's personal relay URL. Each operator deploys
+        # their own HTTPS relay and configures it locally after installation.
+        run: .\deploy\windows\build-installer.ps1 -Configuration Release -Runtime win-x64 -Version ${{ steps.version.outputs.package_version }}
 
       - name: Verify build outputs
         shell: pwsh
@@ -55,6 +76,7 @@ jobs:
           $expected = @(
             "${{ env.INSTALLER_PATH }}",
             "${{ env.PORTABLE_PATH }}",
+            "${{ env.CHECKSUM_PATH }}",
             "dist/windows/package/ZoomCheck.Backend.exe",
             "dist/windows/package/wwwroot/index.html",
             "dist/windows/package/wwwroot/zoom-app/index.html"
@@ -80,6 +102,17 @@ jobs:
           $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
           try {
             $entries = $zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
+            $settingsEntry = $zip.Entries | Where-Object { $_.FullName -eq "appsettings.json" } | Select-Object -First 1
+            if (-not $settingsEntry) {
+              Write-Error "Portable ZIP has no appsettings.json."
+              exit 1
+            }
+            $reader = [System.IO.StreamReader]::new($settingsEntry.Open())
+            try {
+              $config = $reader.ReadToEnd() | ConvertFrom-Json
+            } finally {
+              $reader.Dispose()
+            }
           } finally {
             $zip.Dispose()
           }
@@ -110,13 +143,16 @@ jobs:
             exit 1
           }
 
-          # Shipped appsettings.json must not contain populated Zoom credentials.
-          $config = Get-Content dist/windows/package/appsettings.json -Raw | ConvertFrom-Json
+          # The appsettings.json inside the shipped archive must remain generic.
           foreach ($secretKey in @("WebhookSecretToken", "ClientId", "ClientSecret", "AccountId")) {
             if (-not [string]::IsNullOrWhiteSpace([string]$config.Zoom.$secretKey)) {
               Write-Error "appsettings.json ships a populated Zoom secret: Zoom.$secretKey"
               exit 1
             }
+          }
+          if (-not [string]::IsNullOrWhiteSpace([string]$config.ZoomRelay.BaseUrl)) {
+            Write-Error "Public release must not embed a ZoomRelay.BaseUrl."
+            exit 1
           }
 
           Write-Host "Portable ZIP audit passed ($($entries.Count) entries)."
@@ -135,14 +171,25 @@ jobs:
           path: ${{ env.PORTABLE_PATH }}
           if-no-files-found: error
 
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZoomCheck-SHA256SUMS
+          path: ${{ env.CHECKSUM_PATH }}
+          if-no-files-found: error
+
       - name: Create GitHub release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "${{ inputs.release_tag }}"
-          "${{ env.INSTALLER_PATH }}"
-          "${{ env.PORTABLE_PATH }}"
-          --target "${{ github.sha }}"
-          --title "ZoomCheck ${{ inputs.release_tag }}"
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TARGET: ${{ github.sha }}
+        shell: pwsh
+        run: |
+          gh release create $env:RELEASE_TAG `
+          "${{ env.INSTALLER_PATH }}" `
+          "${{ env.PORTABLE_PATH }}" `
+          "${{ env.CHECKSUM_PATH }}" `
+          --target $env:RELEASE_TARGET `
+          --title "ZoomCheck $env:RELEASE_TAG" `
           --notes "Windows web dashboard build. Installer and portable ZIP both contain the self-contained ZoomCheck.Backend.exe; launch it and the dashboard opens in your browser. No secrets, databases or attendance data are bundled."

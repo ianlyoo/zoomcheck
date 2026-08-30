@@ -227,3 +227,15 @@ Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 Write-Host "  installer : $(Join-Path $installerRoot 'ZoomCheck-Setup-x64.exe')"
 Write-Host "  portable  : $portableZip"
+
+# Public auto-update verifies the installer against this sidecar before execution.
+$installerPath = Join-Path $installerRoot 'ZoomCheck-Setup-x64.exe'
+$checksumPath = Join-Path $installerRoot 'SHA256SUMS.txt'
+$installerHash = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$portableHash = (Get-FileHash -Path $portableZip -Algorithm SHA256).Hash.ToLowerInvariant()
+$checksumLines = @(
+    "$installerHash  ZoomCheck-Setup-x64.exe",
+    "$portableHash  ZoomCheck-portable-$($Runtime).zip"
+) -join "`n"
+[IO.File]::WriteAllText($checksumPath, $checksumLines + "`n", [Text.Encoding]::ASCII)
+Write-Host "  checksum  : $checksumPath"

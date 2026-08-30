@@ -52,7 +52,8 @@ public sealed class SqliteAttendanceRepository
                 email TEXT NOT NULL,
                 phone TEXT NOT NULL,
                 organization TEXT NOT NULL,
-                aliases_json TEXT NOT NULL
+                aliases_json TEXT NOT NULL,
+                group_name TEXT NOT NULL DEFAULT ''
             );
             """,
             """
@@ -139,6 +140,15 @@ public sealed class SqliteAttendanceRepository
             await EnsureColumnExistsAsync(connection, table, column, "TEXT NULL", cancellationToken);
         }
 
+        // Rosters gained an optional group column later. It is additive and non-null so existing
+        // roster rows simply read back as ungrouped instead of requiring a re-import.
+        await EnsureColumnExistsAsync(
+            connection,
+            tableName: "roster_people",
+            columnName: "group_name",
+            definition: "TEXT NOT NULL DEFAULT ''",
+            cancellationToken);
+
         if (await TableExistsAsync(connection, "participant_presence", cancellationToken))
         {
             await EnsureColumnExistsAsync(
@@ -192,7 +202,7 @@ public sealed class SqliteAttendanceRepository
             await using var insertPerson = connection.CreateCommand();
             insertPerson.Transaction = transaction;
             insertPerson.CommandText =
-                "INSERT INTO roster_people (id, import_id, sequence, name, normalized_name, email, phone, organization, aliases_json) VALUES ($id, $importId, $sequence, $name, $normalizedName, $email, $phone, $organization, $aliases);";
+                "INSERT INTO roster_people (id, import_id, sequence, name, normalized_name, email, phone, organization, aliases_json, group_name) VALUES ($id, $importId, $sequence, $name, $normalizedName, $email, $phone, $organization, $aliases, $group);";
             insertPerson.Parameters.AddWithValue("$id", person.Id);
             insertPerson.Parameters.AddWithValue("$importId", roster.ImportId);
             insertPerson.Parameters.AddWithValue("$sequence", person.Sequence);
@@ -202,6 +212,7 @@ public sealed class SqliteAttendanceRepository
             insertPerson.Parameters.AddWithValue("$phone", person.Phone);
             insertPerson.Parameters.AddWithValue("$organization", person.Organization);
             insertPerson.Parameters.AddWithValue("$aliases", JsonSerializer.Serialize(person.Aliases));
+            insertPerson.Parameters.AddWithValue("$group", person.Group ?? string.Empty);
             await insertPerson.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -212,7 +223,7 @@ public sealed class SqliteAttendanceRepository
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id, sequence, name, normalized_name, email, phone, organization, aliases_json FROM roster_people ORDER BY CAST(sequence AS INTEGER);";
+        command.CommandText = "SELECT id, sequence, name, normalized_name, email, phone, organization, aliases_json, group_name FROM roster_people ORDER BY CAST(sequence AS INTEGER);";
 
         var people = new List<RosterPerson>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -227,7 +238,8 @@ public sealed class SqliteAttendanceRepository
                 reader.GetString(4),
                 reader.GetString(5),
                 reader.GetString(6),
-                aliases));
+                aliases,
+                reader.IsDBNull(8) ? string.Empty : reader.GetString(8)));
         }
 
         return people;

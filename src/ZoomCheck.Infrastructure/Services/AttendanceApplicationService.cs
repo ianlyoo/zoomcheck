@@ -588,6 +588,7 @@ public sealed class AttendanceApplicationService
                 Sequence: person.Sequence,
                 Name: person.Name,
                 Organization: person.Organization,
+                Group: person.Group ?? string.Empty,
                 AttendanceState: attendanceState,
                 Confidence: confidence,
                 ConfidenceReason: reason,
@@ -632,6 +633,14 @@ public sealed class AttendanceApplicationService
             .GroupBy(person => person.Confidence)
             .ToDictionary(group => group.Key, group => group.Count());
 
+        // Distinct groups in roster order so the dashboard can offer a filter without
+        // re-deriving or re-sorting them. Ungrouped people contribute nothing.
+        var groups = people
+            .Select(person => person.Group)
+            .Where(group => !string.IsNullOrWhiteSpace(group))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
         return new AttendanceBoard(
             MeetingId: meetingId,
             GeneratedAt: DateTimeOffset.UtcNow,
@@ -640,22 +649,42 @@ public sealed class AttendanceApplicationService
             RecentEvents: events.OrderByDescending(evt => evt.OccurredAt).Take(30).ToArray(),
             ConfidenceCounts: confidenceCounts,
             CurrentConnections: currentConnections,
-            DuplicateConnectionGroups: duplicateConnectionGroups);
+            DuplicateConnectionGroups: duplicateConnectionGroups,
+            Groups: groups);
     }
 
-    public async Task<string> BuildBoardCsvAsync(string meetingId, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Exports the board as CSV. When <paramref name="groupFilter"/> is supplied, only people in
+    /// that roster group are exported; the comparison ignores case and surrounding or repeated
+    /// whitespace so "1조" and " 1 조 " select the same group.
+    /// </summary>
+    public async Task<string> BuildBoardCsvAsync(
+        string meetingId,
+        string? groupFilter = null,
+        CancellationToken cancellationToken = default)
     {
         var board = await BuildBoardAsync(meetingId, cancellationToken);
-        var builder = new StringBuilder();
-        builder.AppendLine("Sequence,Name,Organization,AttendanceState,Confidence,ConfidenceReason,LastJoinedAt,LastLeftAt,JoinCount");
+        var normalizedFilter = NormalizeGroup(groupFilter);
+        var rows = string.IsNullOrEmpty(normalizedFilter)
+            ? board.People
+            : board.People
+                .Where(person => string.Equals(
+                    NormalizeGroup(person.Group),
+                    normalizedFilter,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
 
-        foreach (var person in board.People)
+        var builder = new StringBuilder();
+        builder.AppendLine("Sequence,Name,Organization,Group,AttendanceState,Confidence,ConfidenceReason,LastJoinedAt,LastLeftAt,JoinCount");
+
+        foreach (var person in rows)
         {
             builder.AppendLine(string.Join(",", new[]
             {
                 Escape(person.Sequence),
                 Escape(person.Name),
                 Escape(person.Organization),
+                Escape(person.Group),
                 Escape(person.AttendanceState.ToString()),
                 Escape(person.Confidence.ToString()),
                 Escape(person.ConfidenceReason),
@@ -729,6 +758,39 @@ public sealed class AttendanceApplicationService
     }
 
     private static int ParseSequence(string value) => int.TryParse(value, out var parsed) ? parsed : int.MaxValue;
+
+    /// <summary>
+    /// Trims and collapses whitespace runs so group values written with inconsistent spacing
+    /// still compare equal. Mirrors the normalization the roster parser applies on import.
+    /// </summary>
+    private static string NormalizeGroup(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        var pendingSpace = false;
+        foreach (var character in value.Trim())
+        {
+            if (char.IsWhiteSpace(character))
+            {
+                pendingSpace = builder.Length > 0;
+                continue;
+            }
+
+            if (pendingSpace)
+            {
+                builder.Append(' ');
+                pendingSpace = false;
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString();
+    }
 
     private static string Escape(string value)
     {

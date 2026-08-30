@@ -13,6 +13,12 @@ public sealed class MeetingsController : ControllerBase
     private const string DefaultSnapshotSource = "manual-snapshot";
     private const int MaxSnapshotParticipants = 2000;
 
+    /// <summary>
+    /// Roster groups are short labels such as "1조" or "A반". Capping the query keeps an
+    /// oversized value from travelling into the export path and the file name.
+    /// </summary>
+    private const int MaxGroupFilterLength = 100;
+
     private readonly AttendanceApplicationService _attendanceService;
 
     public MeetingsController(AttendanceApplicationService attendanceService)
@@ -131,13 +137,25 @@ public sealed class MeetingsController : ControllerBase
     }
 
     [HttpGet("{meetingId}/export")]
-    public async Task<IActionResult> ExportCsv(string meetingId, CancellationToken cancellationToken)
+    public async Task<IActionResult> ExportCsv(
+        string meetingId,
+        [FromQuery(Name = "group")] string? group,
+        CancellationToken cancellationToken)
     {
         if (!MeetingIdNormalizer.TryNormalize(meetingId, out var normalizedMeetingId))
         {
             return InvalidMeetingId();
         }
-        var csv = await _attendanceService.BuildBoardCsvAsync(normalizedMeetingId, cancellationToken);
+
+        if (group is { Length: > MaxGroupFilterLength })
+        {
+            return Problem(
+                title: "Invalid group filter.",
+                detail: $"group cannot be longer than {MaxGroupFilterLength} characters.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var csv = await _attendanceService.BuildBoardCsvAsync(normalizedMeetingId, group, cancellationToken);
         return File(System.Text.Encoding.UTF8.GetBytes(csv), "text/csv", $"{normalizedMeetingId}-attendance.csv");
     }
 

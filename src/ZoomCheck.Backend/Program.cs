@@ -16,6 +16,7 @@ builder.Services.Configure<ZoomAppOptions>(builder.Configuration.GetSection(Zoom
 builder.Services.Configure<ZoomRelayOptions>(builder.Configuration.GetSection(ZoomRelayOptions.SectionName));
 builder.Services.Configure<ZoomRecoveryOptions>(builder.Configuration.GetSection(ZoomRecoveryOptions.SectionName));
 builder.Services.Configure<DashboardOptions>(builder.Configuration.GetSection(DashboardOptions.SectionName));
+builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.SectionName));
 var storageOptions = builder.Configuration.GetSection(StorageOptions.SectionName).Get<StorageOptions>() ?? new StorageOptions();
 if (OperatingSystem.IsWindows()
     && string.Equals(storageOptions.DatabasePath, "data/zoomcheck.db", StringComparison.OrdinalIgnoreCase))
@@ -43,6 +44,8 @@ builder.Services.AddHostedService<ZoomRelayBackgroundService>();
 builder.Services.AddSingleton<ZoomRecoveryService>();
 builder.Services.AddHostedService<ZoomRecoveryBackgroundService>();
 builder.Services.AddHostedService<DashboardBrowserLauncher>();
+builder.Services.AddHttpClient<UpdateService>();
+builder.Services.AddHostedService<UpdateBackgroundService>();
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());

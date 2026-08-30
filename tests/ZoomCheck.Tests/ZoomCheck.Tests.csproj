@@ -20,4 +20,8 @@
     <ProjectReference Include="..\..\src\ZoomCheck.Infrastructure\ZoomCheck.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
 </Project>

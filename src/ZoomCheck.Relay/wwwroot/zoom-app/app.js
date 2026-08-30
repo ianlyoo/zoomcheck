@@ -8,7 +8,7 @@
   var sdk = window.zoomSdk;
   var subtle = window.crypto && window.crypto.subtle;
 
-  var CAPABILITIES = ['getSupportedJsApis', 'getMeetingContext', 'getMeetingUUID', 'getUserContext', 'getMeetingParticipants', 'onParticipantChange'];
+  var CAPABILITIES = ['getSupportedJsApis', 'getMeetingContext', 'getMeetingUUID', 'getUserContext', 'getMeetingParticipants', 'onParticipantChange', 'setParticipantScreenName'];
   var REQUIRED = ['getMeetingParticipants', 'getMeetingContext', 'getUserContext'];
 
   var PROTOCOL = 'zoomcheck-relay';
@@ -24,9 +24,12 @@
   var MSG_HEARTBEAT = 'heartbeat';
   var MSG_DISCONNECT = 'companion-disconnect';
   var MSG_SYNC_REQUEST = 'sync-request';
+  var MSG_RENAME_REQUEST = 'rename-participant';
+  var MSG_RENAME_RESULT = 'rename-participant-result';
 
   var zoom = { meetingId: null, meetingUuid: null, role: null, userId: null, screenName: null, supported: [] };
   var session = null; // { id, token, sendKey, receiveKey, sequence, lastReceived }
+  var sendChain = Promise.resolve();
   var timers = { heartbeat: null, snapshot: null, poll: null, debounce: null };
   var flags = { sdkReady: false, sending: false, polling: false, connecting: false };
   var el = {};
@@ -199,9 +202,24 @@
   }
 
   function sendMessage(messageType, plaintext) {
+    // The relay rejects reordered sequences. Serialize encryption + upload so a later heartbeat
+    // cannot overtake an earlier snapshot or rename result on the network.
+    var queued = sendChain.then(function () {
+      return sendMessageNow(messageType, plaintext);
+    }, function () {
+      return sendMessageNow(messageType, plaintext);
+    });
+    sendChain = queued.catch(function () { return null; });
+    return queued;
+  }
+
+  function sendMessageNow(messageType, plaintext) {
     if (!session) { return Promise.reject(new RedactedError('연결이 종료되었습니다.', 'session')); }
     var current = session;
     var sequence = current.sequence + 1; // 단조 증가, 1부터 시작
+    // Reserve the sequence synchronously. Heartbeats, snapshots, and command results may encrypt
+    // concurrently; assigning only after Web Crypto resolves can reuse one sequence twice.
+    current.sequence = sequence;
     var nonce = window.crypto.getRandomValues(new Uint8Array(12));
 
     return subtle.encrypt(
@@ -209,7 +227,6 @@
       current.sendKey,
       utf8(JSON.stringify(plaintext))
     ).then(function (ciphertext) {
-      current.sequence = sequence;
       return relayFetch('/api/v1/sessions/' + encodeURIComponent(current.id) + '/companion/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -350,7 +367,49 @@
       setText(el.syncState, '요청 수신');
       return sendSnapshot('Windows 요청');
     }
+    if (message.messageType === MSG_RENAME_REQUEST) {
+      return renameParticipant(message.body || {});
+    }
     return null;
+  }
+
+  function renameParticipant(command) {
+    var commandId = String(command.commandId || '');
+    var participantUuid = String(command.participantUuid || '');
+    var screenName = String(command.screenName || '').replace(/\s+/g, ' ').trim();
+    var valid = /^[a-f0-9]{32}$/i.test(commandId)
+      && participantUuid.length > 0 && participantUuid.length <= 256
+      && screenName.length > 0 && screenName.length <= 128;
+    var supported = zoom.supported.indexOf('setParticipantScreenName') >= 0;
+    if (!valid || !supported || !isHostRole(zoom.role)) {
+      return sendMessage(MSG_RENAME_RESULT, {
+        commandId: commandId,
+        success: false,
+        errorCode: !valid ? 'invalid-command' : (!supported ? 'unsupported-client' : 'insufficient-role'),
+        completedAt: new Date().toISOString()
+      }).catch(function () { return null; });
+    }
+
+    setText(el.syncState, '이름 변경 중');
+    return sdk.setParticipantScreenName({
+      participantUUID: participantUuid,
+      screenName: screenName
+    }).then(function () {
+      return sendMessage(MSG_RENAME_RESULT, {
+        commandId: commandId, success: true, errorCode: null, completedAt: new Date().toISOString()
+      }).then(function () {
+        show('Zoom 참가자 이름을 변경했습니다.', 'ok');
+        return sendSnapshot('이름 변경');
+      });
+    }).catch(function (error) {
+      var code = String((error && (error.code || error.errorCode)) || 'zoom-sdk-error')
+        .replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24);
+      setText(el.syncState, '변경 실패');
+      show('Zoom에서 참가자 이름을 변경하지 못했습니다' + (code ? ' · ' + code : '') + '.', 'bad');
+      return sendMessage(MSG_RENAME_RESULT, {
+        commandId: commandId, success: false, errorCode: code, completedAt: new Date().toISOString()
+      }).catch(function () { return null; });
+    });
   }
 
   function startLoops() {
@@ -400,6 +459,7 @@
   function teardown(message) {
     clearTimers();
     session = null;
+    sendChain = Promise.resolve();
     flags.sending = false;
     flags.polling = false;
     setConnected(false);

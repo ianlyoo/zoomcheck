@@ -47,4 +47,7 @@ Name: "{autoprograms}\ZoomCheck"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\ZoomCheck"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; Interactive installs offer the launch checkbox; silent automatic updates
+; relaunch the dashboard without waiting on a checkbox that is not displayed.
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch ZoomCheck dashboard"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifnotsilent

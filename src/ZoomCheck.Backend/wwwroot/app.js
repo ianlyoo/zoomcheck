@@ -6,7 +6,8 @@
     meetingId: 'zoomcheck.meetingId',
     autoRefresh: 'zoomcheck.autoRefresh',
     interval: 'zoomcheck.autoRefreshSeconds',
-    connectionMode: 'zoomcheck.connectionMode'
+    connectionMode: 'zoomcheck.connectionMode',
+    group: 'zoomcheck.groupFilter'
   };
   var CONNECTION_MODES = ['auto', 'business', 'zoomApp', 'manual'];
   var MODE_LABEL = {
@@ -39,6 +40,8 @@
     connections: [],
     duplicates: [],
     filter: 'all',
+    group: '',
+    groups: [],
     selectedKey: null,
     pending: 0,
     timerId: null,
@@ -53,7 +56,10 @@
     connectionMode: 'auto',
     recommendedMode: null,
     zoomApp: null,
-    pairing: null
+    pairing: null,
+    update: null,
+    updateAnnouncedFor: null,
+    updatePollId: null
   };
   var el = {};
 
@@ -82,6 +88,19 @@
   }
   function normalizeSearch(value) {
     return String(value || '').toLocaleLowerCase('ko-KR').replace(/\s+/g, ' ').trim();
+  }
+  function normalizeGroupName(value) {
+    return String(value === null || value === undefined ? '' : value).replace(/\s+/g, ' ').trim();
+  }
+  function groupKey(value) {
+    return normalizeSearch(normalizeGroupName(value));
+  }
+  function sameGroup(left, right) {
+    return groupKey(left) === groupKey(right);
+  }
+  /* 010-1234-5678 과 01012345678 을 모두 찾을 수 있게 숫자만 남긴 값도 검색에 포함한다. */
+  function digitsOnly(value) {
+    return String(value === null || value === undefined ? '' : value).replace(/\D/g, '');
   }
   function normalizeMeetingId(value) {
     var trimmed = String(value || '').trim();
@@ -453,6 +472,7 @@
         : '등록된 명단이 없습니다. Excel 파일을 올려 주세요.');
       if (showToast) { toast('ok', '명단 확인 완료', state.roster.length + '명'); }
       if (state.board) { renderBoard(state.board); }
+      else { state.groups = collectGroups(null); renderGroupOptions(); }
       return state.roster;
     }, function (error) {
       setText(el.rosterNote, '명단을 읽지 못했습니다 — ' + error.message);
@@ -562,14 +582,18 @@
     return asArray(source).map(function (item, index) {
       var rawName = item.rawDisplayName || item.rawName || item.originalName || item.zoomName || item.displayName || item.participantName || '';
       var canonicalName = item.canonicalName || item.displayName || item.participantName || rawName;
+      var presenceKey = item.presenceKey || item.connectionKey || null;
       return {
-        key: item.presenceKey || item.connectionKey || item.id || ('connection-' + index + '-' + rawName),
+        key: presenceKey || item.id || ('connection-' + index + '-' + rawName),
+        presenceKey: presenceKey,
         rawName: rawName,
         canonicalName: canonicalName,
+        displayName: item.displayName || '',
         email: item.participantEmail || item.email || null,
         firstSeenAt: item.firstSeenAt || item.joinedAt || null,
         lastSeenAt: item.lastSeenAt || item.updatedAt || null,
         rosterPersonId: item.matchedRosterPersonId || item.rosterPersonId || null,
+        matchedRosterPersonName: item.matchedRosterPersonName || '',
         confidence: item.confidence || item.matchConfidence || 'Unmatched',
         source: item.source || 'Zoom API'
       };
@@ -583,8 +607,10 @@
         var groupConnections = asArray(group.connections || group.participants || group.items).map(function (item, itemIndex) {
           return {
             key: item.presenceKey || item.connectionKey || item.id || ('duplicate-' + index + '-' + itemIndex),
+            presenceKey: item.presenceKey || item.connectionKey || null,
             rawName: item.rawDisplayName || item.rawName || item.originalName || item.zoomName || item.displayName || item.participantName || '',
             canonicalName: item.canonicalName || item.displayName || item.participantName || '',
+            displayName: item.displayName || '',
             email: item.participantEmail || item.email || null,
             firstSeenAt: item.firstSeenAt || item.joinedAt || null,
             lastSeenAt: item.lastSeenAt || item.updatedAt || null
@@ -637,6 +663,8 @@
         sequence: person.sequence,
         name: person.name,
         email: roster.email || '',
+        phone: roster.phone || person.phone || '',
+        group: normalizeGroupName(person.group || roster.group || ''),
         organization: person.organization || roster.organization || '',
         attendanceState: person.attendanceState,
         confidence: person.confidence,
@@ -660,6 +688,8 @@
         rosterPersonId: null,
         name: item.participantName,
         email: matching[0] ? matching[0].email || '' : '',
+        phone: '',
+        group: '',
         organization: '',
         attendanceState: item.attendanceState || 'Present',
         confidence: 'Unmatched',
@@ -675,6 +705,107 @@
     return rows;
   }
 
+  /* 보드가 노출하는 그룹 순서를 우선하고, 없으면 명단 등장 순서를 유지한다. */
+  function collectGroups(board) {
+    var ordered = [];
+    var seen = {};
+    function push(value) {
+      var name = normalizeGroupName(value);
+      if (!name) { return; }
+      var key = groupKey(name);
+      if (seen[key]) { return; }
+      seen[key] = true;
+      ordered.push(name);
+    }
+    asArray(board && board.groups).forEach(function (item) {
+      push(item && typeof item === 'object' ? (item.name || item.group || item.title) : item);
+    });
+    asArray(board && board.people).forEach(function (person) { push(person && person.group); });
+    state.roster.forEach(function (person) { push(person && person.group); });
+    return ordered;
+  }
+
+  function renderGroupOptions() {
+    if (!el.groupFilter) { return; }
+    var known = state.groups.slice();
+    /* 명단을 다시 올려 조 구성이 바뀌면 사라진 선택으로 0명 화면에 머물지 않는다. */
+    if (state.group && !known.some(function (name) { return sameGroup(name, state.group); })
+        && (state.board || state.roster.length)) {
+      state.group = '';
+      writeStore(STORAGE.group, '');
+    }
+    el.groupFilter.textContent = '';
+    var all = document.createElement('option');
+    all.value = '';
+    all.textContent = '전체 그룹';
+    el.groupFilter.appendChild(all);
+    known.forEach(function (name) {
+      var option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      el.groupFilter.appendChild(option);
+    });
+    el.groupFilter.value = state.group || '';
+    el.groupFilter.disabled = known.length === 0;
+  }
+
+  /* 그룹 선택 시에도 미매칭 참가자는 검토 대상이므로 항상 남긴다. */
+  function rowInSelectedGroup(row) {
+    if (!state.group) { return true; }
+    if (row.kind === 'unmatched') { return true; }
+    return sameGroup(row.group, state.group);
+  }
+  function scopedRows() {
+    return state.rows.filter(rowInSelectedGroup);
+  }
+  function scopedDuplicates(rosterScoped) {
+    if (!state.group) { return state.duplicates; }
+    var allowed = {};
+    rosterScoped.forEach(function (row) { if (row.rosterPersonId) { allowed[row.rosterPersonId] = true; } });
+    return state.duplicates.filter(function (group) {
+      return !group.rosterPersonId || allowed[group.rosterPersonId];
+    });
+  }
+  function scopedConnectionCount(rosterScoped) {
+    if (!state.group) { return state.connections.length; }
+    var allowed = {};
+    rosterScoped.forEach(function (row) { if (row.rosterPersonId) { allowed[row.rosterPersonId] = true; } });
+    return state.connections.filter(function (connection) {
+      return !connection.rosterPersonId || allowed[connection.rosterPersonId];
+    }).length;
+  }
+  /* 활동 피드도 선택 그룹 인물과 미매칭 이름만 남긴다. */
+  function scopedEvents(events, scoped) {
+    if (!state.group) { return events; }
+    var allowedPeople = {};
+    scoped.forEach(function (row) {
+      if (row.rosterPersonId) { allowedPeople[row.rosterPersonId] = true; }
+    });
+    return asArray(events).filter(function (event) {
+      var personId = event.matchedRosterPersonId || event.rosterPersonId || null;
+      /* 미매칭 활동은 어느 조인지 알 수 없으므로 검토를 위해 계속 표시한다. */
+      return !personId || !!allowedPeople[personId];
+    });
+  }
+  /* 그룹을 바꿔 선택 행이 사라지면 상세를 닫는다. */
+  function resetInvalidSelection(scoped) {
+    if (!state.selectedKey) { return; }
+    var stillVisible = scoped.some(function (row) { return row.key === state.selectedKey; });
+    if (!stillVisible) { state.selectedKey = null; }
+  }
+
+  function applyGroup(value, options) {
+    var opts = options || {};
+    state.group = normalizeGroupName(value);
+    writeStore(STORAGE.group, state.group);
+    if (el.groupFilter) { el.groupFilter.value = state.group || ''; }
+    if (state.board) { renderBoard(state.board); }
+    else { renderGroupOptions(); renderParticipants(); }
+    if (opts.notify) {
+      toast('ok', '그룹 필터 변경', state.group ? state.group + ' 기준으로 표시합니다.' : '전체 그룹을 표시합니다.');
+    }
+  }
+
   function renderBoard(board) {
     if (!board || typeof board !== 'object') { return; }
     state.board = board;
@@ -682,14 +813,21 @@
     state.connections = extractConnections(board);
     state.duplicates = deriveDuplicateGroups(board, state.connections, rosterMap);
     state.rows = buildRows(board, state.connections, state.duplicates, rosterMap);
+    state.groups = collectGroups(board);
+    renderGroupOptions();
 
-    var people = asArray(board.people);
-    var present = people.filter(function (p) { return p.attendanceState === 'Present'; });
-    var absent = people.filter(function (p) { return p.attendanceState !== 'Present'; });
-    var review = state.rows.filter(function (row) { return row.review; });
-    var unmatched = state.rows.filter(function (row) { return row.kind === 'unmatched'; });
-    var total = people.length || state.roster.length;
+    var scoped = scopedRows();
+    var rosterScoped = scoped.filter(function (row) { return row.kind === 'roster'; });
+    var present = rosterScoped.filter(function (row) { return row.attendanceState === 'Present'; });
+    var absent = rosterScoped.filter(function (row) { return row.attendanceState !== 'Present'; });
+    var review = scoped.filter(function (row) { return row.review; });
+    var unmatched = scoped.filter(function (row) { return row.kind === 'unmatched'; });
+    var duplicates = scopedDuplicates(rosterScoped);
+    var connectionCount = scopedConnectionCount(rosterScoped);
+    var total = rosterScoped.length || (state.group ? 0 : state.roster.length);
     var rate = total ? Math.round((present.length / total) * 100) : 0;
+
+    resetInvalidSelection(scoped);
 
     setText(el.summaryTotal, total);
     setText(el.summaryPresent, present.length);
@@ -698,20 +836,21 @@
     setText(el.metricPresent, present.length + '명');
     setText(el.metricAbsent, absent.length + '명');
     setText(el.metricReview, review.length + '명');
-    setText(el.metricDuplicate, state.duplicates.length + '명');
+    setText(el.metricDuplicate, duplicates.length + '명');
     setText(el.summaryTime, formatDateTime(board.generatedAt) + ' 기준');
-    setText(el.participantsMeta, '명단 ' + total + '명 · 현재 Zoom 연결 ' + (state.connections.length || present.length + unmatched.length) + '건');
+    setText(el.participantsMeta, (state.group ? state.group + ' · 명단 ' : '명단 ') + total + '명 · 현재 Zoom 연결 '
+      + (connectionCount || present.length + unmatched.length) + '건');
 
-    setText(el.countAll, state.rows.length);
-    setText(el.countPresent, state.rows.filter(function (row) { return row.attendanceState === 'Present'; }).length);
-    setText(el.countAbsent, state.rows.filter(function (row) { return row.attendanceState !== 'Present'; }).length);
+    setText(el.countAll, scoped.length);
+    setText(el.countPresent, scoped.filter(function (row) { return row.attendanceState === 'Present'; }).length);
+    setText(el.countAbsent, scoped.filter(function (row) { return row.attendanceState !== 'Present'; }).length);
     setText(el.countReview, review.length);
     setText(el.countUnmatched, unmatched.length);
-    setText(el.rosterSummary, '명단 ' + total + '명');
+    setText(el.rosterSummary, state.group ? state.group + ' ' + total + '명' : '명단 ' + total + '명');
 
     renderParticipants();
-    renderActivity(board.recentEvents, state.duplicates);
-    renderDuplicates(state.duplicates);
+    renderActivity(scopedEvents(board.recentEvents, scoped), duplicates);
+    renderDuplicates(duplicates);
   }
 
   function rowMatchesFilter(row) {
@@ -725,7 +864,8 @@
     var query = normalizeSearch(el.participantSearch.value);
     if (!query) { return true; }
     var connectionNames = row.connections.map(function (item) { return item.rawName + ' ' + item.canonicalName + ' ' + (item.email || ''); }).join(' ');
-    return normalizeSearch([row.name, row.email, row.organization, connectionNames].join(' ')).indexOf(query) >= 0;
+    var haystack = [row.name, row.email, row.organization, row.group, row.phone, digitsOnly(row.phone), connectionNames].join(' ');
+    return normalizeSearch(haystack).indexOf(query) >= 0;
   }
 
   function statusInfo(row) {
@@ -758,7 +898,7 @@
 
   function renderParticipants() {
     var scrollTop = el.participantTableWrap.scrollTop;
-    var rows = state.rows.filter(rowMatchesFilter).filter(rowMatchesSearch);
+    var rows = scopedRows().filter(rowMatchesFilter).filter(rowMatchesSearch);
     el.participantRows.textContent = '';
     el.participantsEmpty.hidden = rows.length > 0;
     setText(el.visibleCount, rows.length + '명 표시');
@@ -780,7 +920,18 @@
       nameCell.appendChild(name);
       nameCell.appendChild(secondary);
       tr.appendChild(nameCell);
-      appendTextCell(tr, row.organization || '–');
+      var orgCell = document.createElement('td');
+      var orgPrimary = document.createElement('span');
+      orgPrimary.className = 'participant-name';
+      orgPrimary.textContent = row.organization || '–';
+      orgCell.appendChild(orgPrimary);
+      if (row.group) {
+        var groupTag = document.createElement('span');
+        groupTag.className = 'group-tag';
+        groupTag.textContent = row.group;
+        orgCell.appendChild(groupTag);
+      }
+      tr.appendChild(orgCell);
       appendPillCell(tr, confidenceInfo(row), 'match-pill');
       appendTextCell(tr, formatTime(row.lastJoinedAt));
       appendTextCell(tr, row.attendanceState === 'Left' ? '퇴장 ' + formatTime(row.lastLeftAt) : (row.lastJoinedAt ? '입장 ' + formatTime(row.lastJoinedAt) : '–'));
@@ -803,6 +954,49 @@
   function toggleParticipant(key) {
     state.selectedKey = state.selectedKey === key ? null : key;
     renderParticipants();
+  }
+
+  /* Zoom 이름 변경 버튼 노출 조건. 서버가 최종 판단하므로 클라이언트는 안전한 최소 조건만 본다.
+     서버는 명단 이름으로 변경하므로 버튼 문구도 명단 이름을 그대로 쓴다. */
+  function renameCandidate(row) {
+    if (!row || row.kind !== 'roster') { return null; }
+    if (!state.zoomApp || state.zoomApp.transport !== 'relay') { return null; }
+    if (row.duplicate || row.confidence === 'Possible' || row.confidence === 'Unmatched') { return null; }
+    if (row.connections.length !== 1) { return null; }
+    var app = state.zoomApp || {};
+    if (!app.connected || app.sessionActive === false) { return null; }
+    var connection = row.connections[0];
+    if (!connection) { return null; }
+    var presenceKey = connection.presenceKey || '';
+    if (presenceKey.indexOf('zoom-app:') !== 0) { return null; }
+    var target = normalizeGroupName(row.name);
+    var canonical = normalizeGroupName(connection.canonicalName || connection.displayName || '');
+    var rawName = normalizeGroupName(connection.rawName);
+    if (!target || !rawName || !canonical) { return null; }
+    if (target === rawName || canonical === rawName) { return null; }
+    return { presenceKey: presenceKey, rawName: rawName, target: target };
+  }
+
+  function renameZoomParticipant(candidate) {
+    var meetingId = requireMeetingId();
+    if (!meetingId || !candidate) { return; }
+    beginBusy('Zoom 이름 변경을 요청하는 중…');
+    request('/api/zoom-app/participants/rename', {
+      method: 'POST',
+      json: { meetingId: meetingId, presenceKey: candidate.presenceKey }
+    }).then(function () {
+      endBusy();
+      toast('ok', 'Zoom 이름 변경 요청됨', candidate.rawName + ' → ' + candidate.target);
+      logSession('ok', 'Zoom 이름 변경', candidate.rawName + ' → ' + candidate.target);
+      /* 변경 결과가 참가자 목록에 반영되도록 동기화를 한 번 요청한다. */
+      return Promise.resolve(syncNow({ silent: true })).then(function () {
+        return refreshBoard({ silent: true });
+      });
+    }, function (error) {
+      endBusy();
+      toast('bad', 'Zoom 이름 변경 실패', error.message);
+      logSession('bad', 'Zoom 이름 변경 실패', error.message);
+    });
   }
 
   function buildDetailRow(row) {
@@ -850,6 +1044,26 @@
     });
     connectionBlock.appendChild(cards);
 
+    var candidate = renameCandidate(row);
+    if (candidate) {
+      var renameBox = document.createElement('div');
+      renameBox.className = 'rename-box';
+      var renameButton = document.createElement('button');
+      renameButton.type = 'button';
+      renameButton.className = 'btn secondary compact';
+      renameButton.textContent = 'Zoom 이름을 ' + candidate.target + '으로 변경';
+      renameButton.addEventListener('click', function (event) {
+        event.stopPropagation();
+        renameZoomParticipant(candidate);
+      });
+      var renameNote = document.createElement('p');
+      renameNote.className = 'rename-note';
+      renameNote.textContent = '호스트 또는 공동호스트 권한과 이름 변경을 지원하는 Zoom 클라이언트에서만 적용됩니다.';
+      renameBox.appendChild(renameButton);
+      renameBox.appendChild(renameNote);
+      connectionBlock.appendChild(renameBox);
+    }
+
     var matchBlock = document.createElement('section');
     matchBlock.className = 'detail-block';
     var matchTitle = document.createElement('h3');
@@ -859,7 +1073,9 @@
     dl.className = 'detail-list';
     [
       ['명단 이름', row.name],
+      ['그룹', row.group || '없음'],
       ['이메일', row.email || '없음'],
+      ['전화번호', row.phone || '없음'],
       ['매칭 상태', confidenceInfo(row).label],
       ['첫 입장', formatDateTime(row.lastJoinedAt)],
       ['마지막 퇴장', formatDateTime(row.lastLeftAt)],
@@ -983,14 +1199,18 @@
     var meetingId = requireMeetingId();
     if (!meetingId) { return; }
     beginBusy('CSV를 준비하는 중…');
-    request('/api/meetings/' + encodeURIComponent(meetingId) + '/export', { raw: true }).then(function (response) {
+    var path = '/api/meetings/' + encodeURIComponent(meetingId) + '/export';
+    if (state.group) { path += '?group=' + encodeURIComponent(state.group); }
+    request(path, { raw: true }).then(function (response) {
       return response.blob();
     }).then(function (blob) {
       endBusy();
       var url = URL.createObjectURL(blob);
       var link = document.createElement('a');
       link.href = url;
-      link.download = meetingId + '-attendance.csv';
+      link.download = state.group
+        ? meetingId + '-' + state.group.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') + '-attendance.csv'
+        : meetingId + '-attendance.csv';
       document.body.appendChild(link);
       link.click(); link.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
@@ -1071,19 +1291,378 @@
     else { el.settingsDialog.setAttribute('open', ''); }
   }
 
+  /* ---------- Windows 앱 업데이트 ----------
+     백엔드가 시작할 때 스스로 확인·다운로드하므로 UI는 상태를 읽어 보여주기만 한다.
+     응답 필드 이름이 바뀌어도 화면이 깨지지 않도록 여러 후보 키를 관용적으로 읽는다. */
+
+  function updateSection() {
+    if (!el.btnCheckUpdate || typeof el.btnCheckUpdate.closest !== 'function') { return null; }
+    return el.btnCheckUpdate.closest('.settings-section');
+  }
+
+  function pickField(sources, names) {
+    for (var s = 0; s < sources.length; s += 1) {
+      var source = sources[s];
+      if (!source || typeof source !== 'object') { continue; }
+      for (var n = 0; n < names.length; n += 1) {
+        var value = source[names[n]];
+        if (value !== undefined && value !== null && value !== '') { return value; }
+      }
+    }
+    return undefined;
+  }
+  function pickFlag(sources, names) {
+    var value = pickField(sources, names);
+    if (value === undefined) { return undefined; }
+    if (typeof value === 'boolean') { return value; }
+    var text = String(value).toLowerCase();
+    if (text === 'true' || text === '1' || text === 'yes') { return true; }
+    if (text === 'false' || text === '0' || text === 'no') { return false; }
+    return undefined;
+  }
+  function pickText(sources, names) {
+    var value = pickField(sources, names);
+    if (value === undefined) { return ''; }
+    if (typeof value === 'string') { return value.trim(); }
+    if (typeof value === 'number' || typeof value === 'boolean') { return String(value); }
+    if (typeof value === 'object') {
+      var nested = pickField([value], ['message', 'detail', 'title', 'text', 'error']);
+      return nested === undefined ? '' : String(nested).trim();
+    }
+    return '';
+  }
+  function pickNumber(sources, names) {
+    var value = pickField(sources, names);
+    if (value === undefined) { return null; }
+    var parsed = typeof value === 'number' ? value : parseFloat(String(value).replace('%', ''));
+    return isNaN(parsed) ? null : parsed;
+  }
+
+  function normalizeUpdatePhase(raw) {
+    var key = String(raw || '').toLowerCase().replace(/[^a-z]/g, '');
+    if (!key) { return ''; }
+    if (/^(checking|checkingforupdates|checkforupdate|querying|searching)/.test(key)) { return 'checking'; }
+    if (/^(downloading|download|fetching|downloadinprogress)/.test(key)) { return 'downloading'; }
+    if (/^(verifying|verify|validating|validate|signaturecheck)/.test(key)) { return 'verifying'; }
+    if (/^(ready|readytoinstall|readyforinstall|downloaded|verified|installready|pendingrestart|pendinginstall|staged)/.test(key)) { return 'ready'; }
+    if (/^(installing|install|applying|apply|restarting|updating)/.test(key)) { return 'installing'; }
+    if (/^(available|updateavailable|newversionavailable|found)/.test(key)) { return 'available'; }
+    if (/^(uptodate|latest|current|none|noupdate|notavailable|idle|nonepending)/.test(key)) { return 'idle'; }
+    if (/^(unsupported|notsupported|unavailable|disabled|off|portable|devbuild)/.test(key)) { return 'unsupported'; }
+    if (/^(error|failed|failure|faulted)/.test(key)) { return 'error'; }
+    return '';
+  }
+
+  /* 백엔드는 availability / downloadState 열거형을 문자열로 보낸다. 이름이 바뀌어도
+     아래 매핑에 없으면 일반 단계 추론으로 넘어간다. */
+  function phaseFromAvailability(raw) {
+    var key = String(raw || '').toLowerCase().replace(/[^a-z]/g, '');
+    if (key === 'uptodate') { return 'idle'; }
+    if (key === 'updateavailable') { return 'available'; }
+    if (key === 'disabled' || key === 'unsupported') { return 'unsupported'; }
+    if (key === 'failed') { return 'error'; }
+    return '';
+  }
+  function phaseFromDownloadState(raw) {
+    var key = String(raw || '').toLowerCase().replace(/[^a-z]/g, '');
+    if (key === 'downloading') { return 'downloading'; }
+    if (key === 'verified') { return 'ready'; }
+    if (key === 'verificationfailed' || key === 'failed') { return 'error'; }
+    return '';
+  }
+
+  function formatBytes(value) {
+    var bytes = typeof value === 'number' ? value : parseFloat(value);
+    if (isNaN(bytes) || bytes <= 0) { return ''; }
+    if (bytes < 1024 * 1024) { return Math.max(1, Math.round(bytes / 1024)) + ' KB'; }
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  /* 0~1 비율과 0~100 퍼센트를 모두 받는다. 바이트 수만 오는 경우도 계산한다. */
+  function normalizeUpdateProgress(sources) {
+    var percent = pickNumber(sources, ['progressPercent', 'percentComplete', 'percent', 'downloadPercent', 'progress', 'downloadProgress']);
+    if (percent === null) {
+      var done = pickNumber(sources, ['bytesDownloaded', 'downloadedBytes', 'receivedBytes', 'transferred']);
+      var total = pickNumber(sources, ['totalBytes', 'contentLength', 'sizeBytes', 'totalSize']);
+      if (done !== null && total !== null && total > 0) { percent = (done / total) * 100; }
+    }
+    if (percent === null) { return null; }
+    if (percent > 0 && percent <= 1) { percent *= 100; }
+    return Math.max(0, Math.min(100, Math.round(percent)));
+  }
+
+  function normalizeUpdateStatus(payload) {
+    var sources = [payload];
+    ['update', 'status', 'state', 'data', 'result', 'info', 'details'].forEach(function (key) {
+      var nested = payload && typeof payload === 'object' ? payload[key] : null;
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) { sources.push(nested); }
+    });
+
+    var currentVersion = pickText(sources, ['currentVersion', 'installedVersion', 'current', 'version', 'appVersion', 'runningVersion']);
+    var latestVersion = pickText(sources, ['latestVersion', 'availableVersion', 'newVersion', 'targetVersion', 'nextVersion', 'remoteVersion']);
+    var available = pickFlag(sources, ['updateAvailable', 'isUpdateAvailable', 'hasUpdate', 'isAvailable']);
+    var ready = pickFlag(sources, ['installerReady', 'readyToInstall', 'isReadyToInstall', 'installReady', 'ready', 'isReady', 'downloadComplete', 'pendingRestart']);
+    var verified = pickFlag(sources, ['verified', 'isVerified', 'signatureVerified', 'validated']);
+    var downloading = pickFlag(sources, ['downloading', 'isDownloading']);
+    var checking = pickFlag(sources, ['checking', 'isChecking', 'checkInProgress']);
+    var installing = pickFlag(sources, ['installing', 'isInstalling']);
+    var supportedPlatform = pickFlag(sources, ['supportedPlatform', 'supported', 'isSupported']);
+    var enabled = pickFlag(sources, ['enabled', 'isEnabled', 'updatesEnabled']);
+    var supported = supportedPlatform === false || enabled === false ? false
+      : (supportedPlatform === true || enabled === true ? true : undefined);
+    var error = pickText(sources, ['error', 'errorMessage', 'lastError', 'failureReason', 'errorDetail']);
+    var progress = normalizeUpdateProgress(sources);
+    var lastCheckedAt = pickText(sources, ['lastCheckedAt', 'checkedAt', 'lastChecked', 'lastCheckUtc', 'lastCheckTime']);
+    var releaseNotes = pickText(sources, ['releaseNotes', 'notes', 'changelog', 'releaseNotesUrl']);
+    var message = pickText(sources, ['message', 'statusMessage', 'note']);
+    var installerSize = formatBytes(pickField(sources, ['installerSizeBytes', 'installerSize', 'sizeBytes']));
+    var prerelease = pickFlag(sources, ['latestIsPrerelease', 'isPrerelease', 'prerelease']) === true;
+
+    var availability = pickText(sources, ['availability', 'updateAvailability']);
+    var downloadState = pickText(sources, ['downloadState', 'downloadStatus']);
+    var phase = phaseFromDownloadState(downloadState) || phaseFromAvailability(availability)
+      || normalizeUpdatePhase(pickText(sources, ['phase', 'stage', 'state', 'status', 'updateState', 'statusText']));
+    if (!phase) {
+      if (supported === false) { phase = 'unsupported'; }
+      else if (installing === true) { phase = 'installing'; }
+      else if (ready === true || (available === true && verified === true)) { phase = 'ready'; }
+      else if (downloading === true || (progress !== null && progress > 0 && progress < 100)) { phase = 'downloading'; }
+      else if (checking === true) { phase = 'checking'; }
+      else if (available === true) { phase = 'available'; }
+      else if (error) { phase = 'error'; }
+      else if (available === false) { phase = 'idle'; }
+      else { phase = 'unknown'; }
+    }
+    /* 명시적인 준비 완료 플래그는 문자열 단계보다 우선한다. */
+    if (ready === true && phase !== 'installing') { phase = 'ready'; }
+    if (installing === true) { phase = 'installing'; }
+    /* Verified 로 표시됐지만 설치 파일이 아직 없으면 준비 완료로 보지 않는다. */
+    if (phase === 'ready' && ready === false) { phase = available === false ? 'idle' : 'available'; }
+    if (supported === false) { phase = 'unsupported'; }
+    if (!error && (phase === 'error' || phase === 'unsupported')) { error = message; message = ''; }
+
+    return {
+      phase: phase,
+      currentVersion: currentVersion,
+      latestVersion: latestVersion,
+      available: available === true || phase === 'available' || phase === 'downloading' || phase === 'ready',
+      verified: verified === true || phase === 'ready',
+      progress: progress,
+      error: error,
+      lastCheckedAt: lastCheckedAt,
+      releaseNotes: releaseNotes,
+      message: message,
+      installerSize: installerSize,
+      prerelease: prerelease
+    };
+  }
+
+  var UPDATE_BUSY_PHASES = ['checking', 'downloading', 'verifying', 'installing'];
+
+  function describeUpdateStatus(info) {
+    var target = info.latestVersion ? ' ' + info.latestVersion : '';
+    if (info.phase === 'unsupported') { return '이 설치 방식에서는 자동 업데이트를 사용하지 않습니다.'; }
+    if (info.phase === 'checking') { return '새 버전을 확인하는 중입니다…'; }
+    if (info.phase === 'downloading') {
+      return '새 버전' + target + '을 내려받는 중입니다' + (info.progress === null ? '…' : ' · ' + info.progress + '%');
+    }
+    if (info.phase === 'verifying') { return '내려받은 파일' + target + '의 서명을 확인하는 중입니다…'; }
+    if (info.phase === 'ready') { return '새 버전' + target + ' 확인이 끝났습니다. 원하는 때에 설치하세요.'; }
+    if (info.phase === 'installing') { return '설치를 진행하는 중입니다. 앱이 곧 다시 시작됩니다.'; }
+    if (info.phase === 'available') { return '새 버전' + target + '을 찾았습니다. 백그라운드에서 준비합니다.'; }
+    if (info.phase === 'error') { return '업데이트 확인에 실패했습니다. 잠시 후 다시 시도하세요.'; }
+    if (info.phase === 'idle') {
+      return '최신 버전입니다.' + (info.lastCheckedAt ? ' 마지막 확인 ' + formatDateTime(info.lastCheckedAt) : '');
+    }
+    return '업데이트 상태를 아직 확인하지 못했습니다.';
+  }
+
+  function renderUpdate() {
+    var info = state.update;
+    if (!info || !el.updateStatusText) { return; }
+    var busy = UPDATE_BUSY_PHASES.indexOf(info.phase) >= 0;
+
+    setText(el.updateCurrentVersion, info.currentVersion || '알 수 없음');
+    setText(el.updateStatusText, describeUpdateStatus(info));
+
+    if (el.updateProgress) {
+      var showProgress = info.phase === 'downloading' || info.phase === 'verifying';
+      el.updateProgress.hidden = !showProgress;
+      if (showProgress && el.updateProgressBar) {
+        var indeterminate = info.progress === null;
+        el.updateProgressBar.classList.toggle('is-indeterminate', indeterminate);
+        el.updateProgressBar.style.width = indeterminate ? '' : info.progress + '%';
+      }
+    }
+
+    if (el.updateBadge) {
+      var badge = '';
+      var badgeClass = '';
+      if (info.phase === 'ready') { badge = '설치 준비 완료'; badgeClass = 'is-ready'; }
+      else if (info.phase === 'downloading' || info.phase === 'verifying' || info.phase === 'available') { badge = '준비 중'; }
+      else if (info.phase === 'installing') { badge = '설치 중'; }
+      else if (info.phase === 'error') { badge = '확인 실패'; badgeClass = 'is-bad'; }
+      else if (info.phase === 'unsupported') { badge = '사용 안 함'; badgeClass = 'is-warn'; }
+      else if (info.phase === 'idle') { badge = '최신'; badgeClass = 'is-ready'; }
+      el.updateBadge.hidden = !badge;
+      el.updateBadge.className = 'update-badge' + (badgeClass ? ' ' + badgeClass : '');
+      setText(el.updateBadge, badge);
+    }
+
+    if (el.updateErrorText) {
+      el.updateErrorText.hidden = !info.error;
+      setText(el.updateErrorText, info.error || '');
+    }
+
+    if (el.btnCheckUpdate) {
+      el.btnCheckUpdate.disabled = busy || info.phase === 'unsupported';
+      setText(el.btnCheckUpdate, info.phase === 'checking' ? '확인 중…' : '업데이트 확인');
+    }
+    if (el.btnInstallUpdate) {
+      el.btnInstallUpdate.hidden = info.phase !== 'ready' && info.phase !== 'installing';
+      el.btnInstallUpdate.disabled = info.phase === 'installing';
+      setText(el.btnInstallUpdate, info.phase === 'installing' ? '설치 중…' : '설치하고 다시 시작');
+    }
+
+    if (el.versionText) {
+      var chipLabel = info.currentVersion ? 'v' + String(info.currentVersion).replace(/^v/i, '') : '버전 확인 중';
+      if (info.phase === 'ready') { chipLabel += ' · 업데이트 준비됨'; }
+      else if (info.phase === 'downloading' || info.phase === 'verifying' || info.phase === 'available') { chipLabel += ' · 업데이트 준비 중'; }
+      setText(el.versionText, chipLabel);
+    }
+    if (el.versionDot) {
+      setDot(el.versionDot, info.phase === 'ready' ? true : (info.phase === 'error' ? 'warn' : null));
+    }
+    if (el.btnVersionChip) {
+      el.btnVersionChip.classList.toggle('is-ready', info.phase === 'ready');
+      el.btnVersionChip.title = describeUpdateStatus(info);
+    }
+
+    var section = updateSection();
+    if (section) { section.hidden = info.phase === 'unavailable'; }
+  }
+
+  /* 준비 완료는 회의를 방해하지 않도록 상단 알림과 토스트로 한 번만 알린다. */
+  function announceUpdateReady(info) {
+    var key = info.latestVersion || info.currentVersion || 'ready';
+    if (state.updateAnnouncedFor === key) { return; }
+    state.updateAnnouncedFor = key;
+    var label = info.latestVersion ? '새 버전 ' + info.latestVersion : '새 버전';
+    toast('ok', '업데이트 준비 완료', label + ' 설치가 준비되었습니다. 회의가 끝난 뒤 설치하세요.');
+    showAlert('ok', '업데이트 준비 완료', label + '이 준비되었습니다. 설치는 직접 누를 때만 진행되며 앱이 다시 시작됩니다.',
+      '설치 화면 열기', openUpdateSettings);
+  }
+
+  function openUpdateSettings() {
+    openSettings();
+    var section = updateSection();
+    if (section && typeof section.scrollIntoView === 'function') {
+      section.scrollIntoView({ block: 'nearest' });
+    }
+    if (el.btnInstallUpdate && !el.btnInstallUpdate.hidden) { el.btnInstallUpdate.focus(); }
+    else if (el.btnCheckUpdate) { el.btnCheckUpdate.focus(); }
+  }
+
+  function applyUpdateStatus(payload) {
+    state.update = normalizeUpdateStatus(payload);
+    renderUpdate();
+    if (state.update.phase === 'ready') { announceUpdateReady(state.update); }
+    return state.update;
+  }
+
+  function handleUpdateFailure(error, options) {
+    var opts = options || {};
+    /* 엔드포인트가 없는 빌드에서는 업데이트 UI를 조용히 감춘다. */
+    if (error && (error.status === 404 || error.status === 501)) {
+      state.update = normalizeUpdateStatus({ phase: 'unavailable', currentVersion: state.update ? state.update.currentVersion : '' });
+      state.update.phase = 'unavailable';
+      renderUpdate();
+      var section = updateSection();
+      if (section) { section.hidden = true; }
+      if (el.btnVersionChip) { el.btnVersionChip.hidden = true; }
+      return;
+    }
+    state.update = state.update || normalizeUpdateStatus({});
+    state.update.phase = 'error';
+    state.update.error = error ? error.message : '알 수 없는 오류';
+    renderUpdate();
+    if (!opts.silent) { toast('bad', opts.title || '업데이트 확인 실패', state.update.error); }
+  }
+
+  function loadUpdateStatus(options) {
+    var opts = options || {};
+    return request('/api/update/status').then(function (payload) {
+      applyUpdateStatus(payload || {});
+      return state.update;
+    }, function (error) {
+      handleUpdateFailure(error, { silent: opts.silent !== false });
+      return state.update;
+    });
+  }
+
+  function checkForUpdate() {
+    if (state.update && state.update.phase === 'checking') { return; }
+    state.update = state.update || normalizeUpdateStatus({});
+    state.update.phase = 'checking';
+    state.update.error = '';
+    renderUpdate();
+    request('/api/update/check', { method: 'POST', json: {} }).then(function (payload) {
+      var info = payload && typeof payload === 'object' ? applyUpdateStatus(payload) : null;
+      if (!info) { return loadUpdateStatus({ silent: false }); }
+      if (info.phase === 'idle') { toast('ok', '최신 버전입니다', '설치된 버전 ' + (info.currentVersion || '–')); }
+      else if (info.phase !== 'ready') { toast('ok', '업데이트 확인 완료', describeUpdateStatus(info)); }
+      return info;
+    }, function (error) {
+      handleUpdateFailure(error, { silent: false });
+    });
+  }
+
+  function installUpdate() {
+    var info = state.update;
+    if (!info || info.phase !== 'ready') {
+      toast('warn', '설치할 업데이트가 없습니다', '먼저 업데이트를 확인하세요.');
+      return;
+    }
+    var present = state.board && typeof state.board.presentCount === 'number' ? state.board.presentCount : 0;
+    var warning = present > 0
+      ? '현재 ' + present + '명이 참석 중입니다. 설치하면 앱이 종료되고 다시 시작됩니다. 계속할까요?'
+      : '설치하면 앱이 종료되고 새 버전으로 다시 시작됩니다. 계속할까요?';
+    if (!window.confirm(warning)) { return; }
+
+    state.update.phase = 'installing';
+    state.update.error = '';
+    renderUpdate();
+    hideAlert();
+    beginBusy('업데이트를 설치하는 중…');
+    request('/api/update/install', { method: 'POST', json: {} }).then(function (payload) {
+      endBusy();
+      if (payload && typeof payload === 'object') { applyUpdateStatus(payload); }
+      if (state.update.phase !== 'error') {
+        state.update.phase = 'installing';
+        renderUpdate();
+      }
+      toast('ok', '업데이트 설치 시작', '앱이 종료된 뒤 새 버전으로 다시 시작됩니다.');
+    }, function (error) {
+      endBusy();
+      handleUpdateFailure(error, { silent: false, title: '업데이트 설치 실패' });
+    });
+  }
+
   function cacheElements() {
     [
       'meeting-id','health-dot','health-text','zoom-dot','zoom-status','chk-autorefresh','auto-status','last-sync-time','next-sync-time',
       'btn-sync-zoom','btn-open-settings','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
       'summary-total','summary-present','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
-      'participants-meta','btn-refresh','btn-export','participant-search','participant-table-wrap','participant-rows','participants-empty','visible-count',
+      'participants-meta','btn-refresh','btn-export','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
       'count-all','count-present','count-absent','count-review','count-unmatched','activity-feed','activity-empty','activity-count',
       'duplicate-list','duplicate-empty','duplicate-count','sync-summary','roster-summary','settings-dialog','roster-file','btn-upload-roster',
       'btn-reload-roster','roster-note','api-settings-status','btn-check-zoom','settings-autorefresh','autorefresh-interval','snapshot-names',
       'snapshot-parsed','chk-empty-ok','btn-submit-snapshot','btn-clear-snapshot','session-log','session-log-empty','btn-clear-log',
       'toast-region','busy','busy-text',
       'zoom-app-dot','zoom-app-status','btn-zoom-app-detail','mode-note','zoom-app-settings-status','pairing-code','pairing-expiry',
-      'pairing-session','btn-create-pairing-code','btn-copy-pairing-code','btn-zoom-app-sync','zoom-app-home-url','btn-copy-home-url'
+      'pairing-session','btn-create-pairing-code','btn-copy-pairing-code','btn-zoom-app-sync','zoom-app-home-url','btn-copy-home-url',
+      'update-current-version','update-status-text','update-progress','update-progress-bar','update-badge','update-error-text',
+      'btn-check-update','btn-install-update','btn-version-chip','version-dot','version-text'
     ].forEach(function (id) {
       var key = id.replace(/-([a-z])/g, function (_, letter) { return letter.toUpperCase(); });
       el[key] = $(id);
@@ -1118,6 +1697,9 @@
     el.btnCopyHomeUrl.addEventListener('click', function () {
       copyToClipboard(state.zoomApp && state.zoomApp.homeUrl, 'Home URL 복사됨');
     });
+    if (el.btnCheckUpdate) { el.btnCheckUpdate.addEventListener('click', checkForUpdate); }
+    if (el.btnInstallUpdate) { el.btnInstallUpdate.addEventListener('click', installUpdate); }
+    if (el.btnVersionChip) { el.btnVersionChip.addEventListener('click', openUpdateSettings); }
     el.modeRadios.forEach(function (radio) {
       radio.addEventListener('change', function () {
         if (radio.checked) { applyConnectionMode(radio.value, { notify: true }); }
@@ -1130,6 +1712,9 @@
     el.btnClearLog.addEventListener('click', function () { state.sessionLog = []; renderSessionLog(); });
     el.snapshotNames.addEventListener('input', updateParsedCount);
     el.participantSearch.addEventListener('input', renderParticipants);
+    if (el.groupFilter) {
+      el.groupFilter.addEventListener('change', function () { applyGroup(el.groupFilter.value, { notify: true }); });
+    }
     el.filterButtons.forEach(function (button) {
       button.addEventListener('click', function () { state.filter = button.dataset.filter; syncFilterButtons(); renderParticipants(); });
     });
@@ -1161,6 +1746,8 @@
     el.chkAutoRefresh.checked = auto;
     el.settingsAutoRefresh.checked = auto;
     applyConnectionMode(readStore(STORAGE.connectionMode, 'auto'), { notify: false });
+    state.group = normalizeGroupName(readStore(STORAGE.group, ''));
+    renderGroupOptions();
   }
 
   function init() {
@@ -1182,6 +1769,16 @@
       if (!document.hidden) { checkZoomConnection(false); }
     }, 10000);
     loadRoster(false);
+    /* 시작 시 상태만 읽는다. 실제 확인·다운로드는 백엔드가 자동으로 수행하므로 화면을 막지 않는다. */
+    loadUpdateStatus({ silent: true });
+    state.updatePollId = window.setInterval(function () {
+      if (document.hidden) { return; }
+      var phase = state.update ? state.update.phase : '';
+      if (phase === 'unavailable' || phase === 'unsupported') { return; }
+      var active = UPDATE_BUSY_PHASES.indexOf(phase) >= 0 || phase === 'available' || phase === 'unknown' || phase === '';
+      if (!active) { return; }
+      loadUpdateStatus({ silent: true });
+    }, 15000);
     if (currentMeetingId()) { refreshBoard({ silent: true }); }
   }
 

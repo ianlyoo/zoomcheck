@@ -7,6 +7,8 @@ public sealed record BoardPersonStatus(
     string Sequence,
     string Name,
     string Organization,
+    /// <summary>Roster group (조/분반/그룹/팀/반), or empty when the roster has no group column.</summary>
+    string Group,
     AttendanceState AttendanceState,
     MatchConfidence Confidence,
     string ConfidenceReason,

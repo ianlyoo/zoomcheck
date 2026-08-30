@@ -58,6 +58,28 @@ public sealed record ZoomRelayHeartbeatPayload(
     IReadOnlyList<string>? SupportedApis,
     DateTimeOffset? SentAt);
 
+public sealed record ZoomParticipantRenameRequest(
+    string? MeetingId,
+    string? PresenceKey);
+
+public sealed record ZoomParticipantRenameResponse(
+    string PresenceKey,
+    string PreviousName,
+    string ScreenName,
+    DateTimeOffset CompletedAt);
+
+public sealed record ZoomRelayRenameCommandPayload(
+    string CommandId,
+    string ParticipantUuid,
+    string ScreenName,
+    DateTimeOffset RequestedAt);
+
+public sealed record ZoomRelayRenameResultPayload(
+    string? CommandId,
+    bool Success,
+    string? ErrorCode,
+    DateTimeOffset? CompletedAt);
+
 public sealed record ZoomAppBridgeStatus(
     bool Connected,
     string? MeetingId,

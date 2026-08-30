@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
 using ZoomCheck.Backend.Contracts;
 using ZoomCheck.Backend.Options;
@@ -14,6 +15,7 @@ public sealed class ZoomRelayService : IDisposable
     private readonly ZoomRelayOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ZoomRelayRenameResultPayload>> _pendingRenames = new(StringComparer.Ordinal);
     private RelaySession? _session;
 
     public ZoomRelayService(
@@ -104,6 +106,72 @@ public sealed class ZoomRelayService : IDisposable
         }
     }
 
+    public async Task<ZoomRelayRenameResultPayload> RenameParticipantAsync(
+        string participantUuid,
+        string screenName,
+        CancellationToken cancellationToken = default)
+    {
+        var commandId = Guid.NewGuid().ToString("N");
+        var completion = new TaskCompletionSource<ZoomRelayRenameResultPayload>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await _sessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            RelaySession session;
+            long sequence;
+            lock (_gate)
+            {
+                session = RequireConnectedSession();
+                if (!session.SupportedApis.Contains("setParticipantScreenName"))
+                {
+                    throw new ZoomAppBridgeException(
+                        ZoomAppBridgeError.UnsupportedClient,
+                        "The connected Zoom client does not support changing participant screen names.");
+                }
+                sequence = ++session.SendSequence;
+            }
+
+            if (!_pendingRenames.TryAdd(commandId, completion))
+            {
+                throw new ZoomParticipantRenameException("Could not create a unique rename request.");
+            }
+
+            var envelope = ZoomRelayCryptography.Encrypt(
+                new ZoomRelayRenameCommandPayload(
+                    commandId, participantUuid, screenName, _timeProvider.GetUtcNow()),
+                session.Keys!.DesktopToCompanion,
+                session.Id,
+                RelayDirection.DesktopToCompanion,
+                sequence,
+                "rename-participant");
+            await _client.SendDesktopAsync(session.Id, session.Token, envelope, cancellationToken);
+        }
+        catch
+        {
+            _pendingRenames.TryRemove(commandId, out _);
+            throw;
+        }
+        finally
+        {
+            _sessionGate.Release();
+        }
+
+        try
+        {
+            return await completion.Task.WaitAsync(TimeSpan.FromSeconds(12), cancellationToken);
+        }
+        catch (TimeoutException ex)
+        {
+            throw new ZoomParticipantRenameException(
+                "Zoom did not confirm the participant rename request in time.", ex);
+        }
+        finally
+        {
+            _pendingRenames.TryRemove(commandId, out _);
+        }
+    }
+
     public ZoomAppBridgeStatus GetStatus()
     {
         lock (_gate)
@@ -182,6 +250,7 @@ public sealed class ZoomRelayService : IDisposable
                     session.MeetingId = result.Snapshot.Board.MeetingId;
                     session.MeetingUuid = payload.MeetingUuid;
                     session.Role = NormalizeRole(payload.Role);
+                    session.SetSupportedApis(payload.SupportedApis);
                     session.LastSnapshotAt = payload.CapturedAt ?? _timeProvider.GetUtcNow();
                     session.ActiveParticipants = result.ActiveParticipants;
                 }
@@ -194,7 +263,20 @@ public sealed class ZoomRelayService : IDisposable
                     session.MeetingId = validated.MeetingId;
                     session.MeetingUuid = payload.MeetingUuid;
                     session.Role = validated.Role;
+                    session.SetSupportedApis(payload.SupportedApis);
                     session.LastSeenAt = _timeProvider.GetUtcNow();
+                }
+                else if (string.Equals(envelope.MessageType, "rename-participant-result", StringComparison.Ordinal))
+                {
+                    var payload = ZoomRelayCryptography.Decrypt<ZoomRelayRenameResultPayload>(
+                        envelope, session.Keys.CompanionToDesktop, session.Id, RelayDirection.CompanionToDesktop);
+                    session.LastReceivedSequence = envelope.Sequence;
+                    session.LastSeenAt = _timeProvider.GetUtcNow();
+                    if (!string.IsNullOrWhiteSpace(payload.CommandId)
+                        && _pendingRenames.TryGetValue(payload.CommandId, out var pending))
+                    {
+                        pending.TrySetResult(payload);
+                    }
                 }
                 else
                 {
@@ -235,6 +317,7 @@ public sealed class ZoomRelayService : IDisposable
 
     private void ReplaceSession(RelaySession session)
     {
+        FailPendingRenames("The Zoom relay session changed before the rename was confirmed.");
         lock (_gate)
         {
             _session?.Dispose();
@@ -244,12 +327,22 @@ public sealed class ZoomRelayService : IDisposable
 
     public void Dispose()
     {
+        FailPendingRenames("The Zoom relay service stopped before the rename was confirmed.");
         lock (_gate)
         {
             _session?.Dispose();
             _session = null;
         }
         _sessionGate.Dispose();
+    }
+
+    private void FailPendingRenames(string message)
+    {
+        foreach (var pending in _pendingRenames.Values)
+        {
+            pending.TrySetException(new ZoomParticipantRenameException(message));
+        }
+        _pendingRenames.Clear();
     }
 
     private sealed class RelaySession : IDisposable
@@ -275,11 +368,32 @@ public sealed class ZoomRelayService : IDisposable
         public string? MeetingUuid { get; set; }
         public string? Role { get; set; }
         public int ActiveParticipants { get; set; }
+        public HashSet<string> SupportedApis { get; } = new(StringComparer.Ordinal);
+
+        public void SetSupportedApis(IReadOnlyList<string>? supportedApis)
+        {
+            SupportedApis.Clear();
+            foreach (var api in supportedApis ?? Array.Empty<string>())
+            {
+                if (!string.IsNullOrWhiteSpace(api))
+                {
+                    SupportedApis.Add(api.Trim());
+                }
+            }
+        }
 
         public void Dispose()
         {
             Keys?.Dispose();
             KeyPair.Dispose();
         }
+    }
+}
+
+public sealed class ZoomParticipantRenameException : Exception
+{
+    public ZoomParticipantRenameException(string message, Exception? innerException = null)
+        : base(message, innerException)
+    {
     }
 }

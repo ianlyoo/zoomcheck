@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using ZoomCheck.Core.Enums;
+using ZoomCheck.Core.Models;
 using ZoomCheck.Infrastructure.Persistence;
 
 namespace ZoomCheck.Tests;
@@ -99,5 +100,90 @@ public sealed class SqliteSchemaMigrationTests : IDisposable
         // Re-initializing an already-upgraded database must stay a no-op.
         await repository.InitializeAsync();
         Assert.Single(await repository.GetParticipantEventsAsync("123456789"));
+    }
+
+    [Fact]
+    public async Task Initialize_AddsRosterGroupColumn_AndKeepsExistingRosterRows()
+    {
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = _databasePath }.ToString();
+
+        // Pre-group roster schema with a person already imported.
+        await using (var connection = new SqliteConnection(connectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                CREATE TABLE roster_people (
+                    id TEXT PRIMARY KEY,
+                    import_id TEXT NOT NULL,
+                    sequence TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    organization TEXT NOT NULL,
+                    aliases_json TEXT NOT NULL
+                );
+                INSERT INTO roster_people VALUES ('p1','import-1','1','이순신','이순신','sunshin@example.com','','해군','["이순신"]');
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var repository = new SqliteAttendanceRepository(_databasePath);
+        await repository.InitializeAsync();
+
+        var legacyPerson = Assert.Single(await repository.GetRosterPeopleAsync());
+        Assert.Equal("이순신", legacyPerson.Name);
+        Assert.Equal("해군", legacyPerson.Organization);
+        // Additive column: pre-existing rows read back as ungrouped rather than failing.
+        Assert.Equal(string.Empty, legacyPerson.Group);
+
+        var columns = await GetColumnsAsync(connectionString, "roster_people");
+        Assert.Contains("group_name", columns);
+
+        // Re-initializing must not add the column twice or disturb the row.
+        await repository.InitializeAsync();
+        Assert.Equal(string.Empty, Assert.Single(await repository.GetRosterPeopleAsync()).Group);
+    }
+
+    [Fact]
+    public async Task ReplaceRoster_RoundTripsGroup_OnAFreshDatabase()
+    {
+        var repository = new SqliteAttendanceRepository(_databasePath);
+        await repository.InitializeAsync();
+
+        await repository.ReplaceRosterAsync(new RosterImportResult(
+            ImportId: "import-1",
+            SourcePath: "roster.xlsx",
+            DisplayName: "roster.xlsx",
+            ImportedAt: DateTimeOffset.UtcNow,
+            People: new[]
+            {
+                new RosterPerson("p1", "1", "김영인", "김영인", "", "", "", Array.Empty<string>(), "1조"),
+                new RosterPerson("p2", "2", "이순신", "이순신", "", "", "", Array.Empty<string>())
+            }));
+
+        var people = await repository.GetRosterPeopleAsync();
+
+        Assert.Equal("1조", people.Single(person => person.Id == "p1").Group);
+        Assert.Equal(string.Empty, people.Single(person => person.Id == "p2").Group);
+    }
+
+    private static async Task<IReadOnlyList<string>> GetColumnsAsync(string connectionString, string tableName)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({tableName});";
+
+        var columns = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            columns.Add(reader.GetString(1));
+        }
+
+        return columns;
     }
 }

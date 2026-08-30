@@ -9,6 +9,13 @@ namespace ZoomCheck.Infrastructure.Roster;
 
 public sealed class ExcelRosterParser
 {
+    /// <summary>
+    /// Group header names in priority order. The first header present in the sheet wins, so a
+    /// roster carrying both "조" and "반" is read as 조. Matching is exact on the trimmed header
+    /// text, which keeps "분반" from being mistaken for "반".
+    /// </summary>
+    private static readonly string[] GroupColumnNames = { "조", "분반", "그룹", "팀", "반" };
+
     public RosterImportResult Parse(string filePath)
     {
         using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -47,8 +54,11 @@ public sealed class ExcelRosterParser
             var phone = NormalizePhone(GetValue(row, columns, "연락처"));
             var organization = GetValue(row, columns, "소속기관");
             var sequence = GetValue(row, columns, "번호");
+            var group = NormalizeWhitespace(GetGroupValue(row, columns));
             var aliases = BuildAliases(name, email, phone, organization);
 
+            // The group is deliberately excluded from the id key: regrouping people between
+            // imports must not orphan their attendance history.
             var personId = BuildStablePersonId(sequence, NameNormalizer.Normalize(name));
             if (people.Any(person => string.Equals(person.Id, personId, StringComparison.Ordinal)))
             {
@@ -63,7 +73,8 @@ public sealed class ExcelRosterParser
                 Email: email,
                 Phone: phone,
                 Organization: organization.Trim(),
-                Aliases: aliases));
+                Aliases: aliases,
+                Group: group));
         }
 
         return new RosterImportResult(
@@ -122,6 +133,58 @@ public sealed class ExcelRosterParser
         return columns.TryGetValue(columnName, out var index)
             ? row[index]?.ToString()?.Trim() ?? string.Empty
             : string.Empty;
+    }
+
+    private static string GetGroupValue(DataRow row, IReadOnlyDictionary<string, int> columns)
+    {
+        foreach (var columnName in GroupColumnNames)
+        {
+            if (!columns.TryGetValue(columnName, out var index))
+            {
+                continue;
+            }
+
+            var value = row[index]?.ToString()?.Trim() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Trims and collapses internal whitespace runs to a single space so "1 조" and "1\u00a0\u00a0조"
+    /// group together instead of splitting the board into look-alike groups.
+    /// </summary>
+    private static string NormalizeWhitespace(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        var pendingSpace = false;
+        foreach (var character in value.Trim())
+        {
+            if (char.IsWhiteSpace(character))
+            {
+                pendingSpace = builder.Length > 0;
+                continue;
+            }
+
+            if (pendingSpace)
+            {
+                builder.Append(' ');
+                pendingSpace = false;
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString();
     }
 
     private static string NormalizePhone(string value)
