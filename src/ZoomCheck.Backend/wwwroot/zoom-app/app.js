@@ -71,7 +71,7 @@
   }
   function initializeSdk() {
     if (!sdk) { show('Zoom Apps SDK를 불러오지 못했습니다. Zoom 클라이언트 안에서 다시 여세요.', 'bad'); el.roleBadge.className = 'role-badge bad'; return; }
-    sdk.config({ version:'0.16.9', capabilities:CAPABILITIES }).then(function () {
+    sdk.config({ version:'0.16', capabilities:CAPABILITIES }).then(function () {
       return Promise.all([sdk.getSupportedJsApis(), sdk.getMeetingContext(), sdk.getMeetingUUID().catch(function () { return {}; }), sdk.getUserContext()]);
     }).then(function (values) {
       state.supported = values[0].supportedApis || []; state.meetingId = values[1].meetingID; state.meetingUuid = values[2].meetingUUID || null; state.role = values[3].role;

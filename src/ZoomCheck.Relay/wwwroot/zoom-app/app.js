@@ -76,6 +76,27 @@
     return fallback;
   }
 
+  function sdkDiagnostic(error) {
+    var code = String((error && (error.code || error.errorCode)) || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24);
+    var message = String((error && error.message) || '알 수 없는 오류')
+      .replace(/https?:\/\/\S+/gi, '[URL]')
+      .replace(/[a-zA-Z0-9_-]{20,}/g, '[값]')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 160);
+    return (code ? code + ' · ' : '') + message;
+  }
+
+  function sdkStageLabel(stage) {
+    return {
+      config: 'SDK 연결',
+      supported: '허용 API 확인',
+      meeting: '회의 컨텍스트',
+      user: '사용자 컨텍스트',
+      validation: '권한 검증'
+    }[stage] || '초기화';
+  }
+
   // ---------------------------------------------------------------- 키 교환
 
   function deriveDirectionKey(secretBits, saltBytes, sessionId, direction) {
@@ -446,20 +467,31 @@
       return;
     }
 
-    sdk.config({ version: '0.16.9', capabilities: CAPABILITIES }).then(function () {
-      return Promise.all([
-        sdk.getSupportedJsApis(),
-        sdk.getMeetingContext(),
-        sdk.getMeetingUUID().catch(function () { return {}; }),
-        sdk.getUserContext()
-      ]);
-    }).then(function (values) {
-      zoom.supported = (values[0] && values[0].supportedApis) || [];
-      zoom.meetingId = (values[1] && values[1].meetingID) || null;
-      zoom.meetingUuid = (values[2] && values[2].meetingUUID) || null;
-      zoom.role = values[3] && values[3].role;
-      zoom.userId = (values[3] && (values[3].participantUUID || values[3].participantId)) || null;
-      zoom.screenName = (values[3] && values[3].screenName) || null;
+    var stage = 'config';
+    var context = { meeting: {}, uuid: {}, user: {} };
+
+    sdk.config({ version: '0.16', capabilities: CAPABILITIES }).then(function () {
+      stage = 'supported';
+      return sdk.getSupportedJsApis();
+    }).then(function (supported) {
+      zoom.supported = (supported && supported.supportedApis) || [];
+      stage = 'meeting';
+      return sdk.getMeetingContext();
+    }).then(function (meeting) {
+      context.meeting = meeting || {};
+      return sdk.getMeetingUUID().catch(function () { return {}; });
+    }).then(function (uuid) {
+      context.uuid = uuid || {};
+      stage = 'user';
+      return sdk.getUserContext();
+    }).then(function (user) {
+      context.user = user || {};
+      stage = 'validation';
+      zoom.meetingId = context.meeting.meetingID || context.meeting.meetingId || null;
+      zoom.meetingUuid = context.uuid.meetingUUID || context.meeting.meetingUUID || null;
+      zoom.role = context.user.role;
+      zoom.userId = context.user.participantUUID || context.user.participantId || null;
+      zoom.screenName = context.user.screenName || null;
 
       var missing = REQUIRED.filter(function (name) { return zoom.supported.indexOf(name) < 0; });
       var allowed = isHostRole(zoom.role);
@@ -486,7 +518,14 @@
       flags.sdkReady = false;
       el.btnConnect.disabled = true;
       el.roleBadge.className = 'role-badge bad';
-      show(redact(error, 'Zoom SDK를 준비하지 못했습니다.'), 'bad');
+      setText(el.roleBadge, '사용 불가');
+      if (error instanceof RedactedError) {
+        show(error.message, 'bad');
+      } else if (stage === 'meeting') {
+        show('회의 컨텍스트 확인 실패. 진행 중인 회의 창의 Apps에서 ZoomCheck를 다시 여세요. · ' + sdkDiagnostic(error), 'bad');
+      } else {
+        show('Zoom SDK 준비 실패 · ' + sdkStageLabel(stage) + ' · ' + sdkDiagnostic(error), 'bad');
+      }
     });
   }
 
