@@ -14,6 +14,11 @@ on:
 permissions:
   contents: write
 
+env:
+  PACKAGE_VERSION: 0.4.${{ github.run_number }}
+  INSTALLER_PATH: dist/installer/ZoomCheck-Setup-x64.exe
+  PORTABLE_PATH: dist/portable/ZoomCheck-portable-win-x64.zip
+
 jobs:
   build-installer:
     runs-on: windows-latest
@@ -28,7 +33,7 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Install Inno Setup
-        run: choco install innosetup -y
+        run: choco install innosetup -y --no-progress
 
       - name: Restore
         run: dotnet restore ZoomCheck.sln
@@ -36,25 +41,106 @@ jobs:
       - name: Test
         run: dotnet test ZoomCheck.sln -c Release --no-restore
 
-      - name: Build installer
+      # Publishes ZoomCheck.Backend (win-x64, self-contained) as the single
+      # package root, runs the packaging guard, then emits the portable ZIP and
+      # the installer.
+      - name: Build package, portable ZIP and installer
         shell: powershell
-        run: .\deploy\windows\build-installer.ps1 -Configuration Release -Runtime win-x64 -Version 0.1.${{ github.run_number }}
+        run: .\deploy\windows\build-installer.ps1 -Configuration Release -Runtime win-x64 -Version ${{ env.PACKAGE_VERSION }}
+
+      - name: Verify build outputs
+        shell: pwsh
+        run: |
+          $expected = @(
+            "${{ env.INSTALLER_PATH }}",
+            "${{ env.PORTABLE_PATH }}",
+            "dist/windows/package/ZoomCheck.Backend.exe",
+            "dist/windows/package/wwwroot/index.html"
+          )
+          $missing = $expected | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            $missing | ForEach-Object { Write-Error "Missing expected output: $_" }
+            exit 1
+          }
+          if (Get-ChildItem dist/windows/package -Filter "ZoomCheck.App*" -Recurse -Force -ErrorAction SilentlyContinue) {
+            Write-Error "Avalonia desktop shell (ZoomCheck.App) must not be packaged."
+            exit 1
+          }
+          Write-Host "All expected outputs present."
+
+      # Independent audit of the shipped ZIP: the packaging guard runs against
+      # the publish folder, this one inspects the archive that users download.
+      - name: Audit portable ZIP for secrets, databases and user data
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipPath = (Resolve-Path "${{ env.PORTABLE_PATH }}").Path
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            $entries = $zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
+          } finally {
+            $zip.Dispose()
+          }
+
+          $forbidden = @(
+            '\.db$', '\.db-shm$', '\.db-wal$', '\.sqlite3?$',
+            '(^|/)\.env($|\.)', '\.env$',
+            '\.pfx$', '\.p12$', '\.pem$', '\.key$', '\.keystore$', '\.jks$',
+            '(^|/)secrets\.json$', '\.secrets\.json$',
+            '(^|/)appsettings\.(Development|Local)\.json$',
+            '\.log$', '\.xlsx?$', '\.csv$',
+            '(^|/)data/', '(^|/)logs/',
+            '(^|/)ZoomCheck\.App'
+          )
+
+          $violations = foreach ($entry in $entries) {
+            foreach ($pattern in $forbidden) {
+              if ($entry -match $pattern) {
+                "$entry (matched $pattern)"
+                break
+              }
+            }
+          }
+
+          if ($violations) {
+            Write-Host "Portable ZIP audit failed:"
+            $violations | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+
+          # Shipped appsettings.json must not contain populated Zoom credentials.
+          $config = Get-Content dist/windows/package/appsettings.json -Raw | ConvertFrom-Json
+          foreach ($secretKey in @("WebhookSecretToken", "ClientId", "ClientSecret", "AccountId")) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$config.Zoom.$secretKey)) {
+              Write-Error "appsettings.json ships a populated Zoom secret: Zoom.$secretKey"
+              exit 1
+            }
+          }
+
+          Write-Host "Portable ZIP audit passed ($($entries.Count) entries)."
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: ZoomCheck-Setup-x64
-          path: dist/installer/ZoomCheck-Setup-x64.exe
+          path: ${{ env.INSTALLER_PATH }}
+          if-no-files-found: error
 
-      - name: Upload packaged app folder
+      - name: Upload portable ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ZoomCheck-win-x64-package
-          path: dist/windows/package
+          name: ZoomCheck-portable-win-x64
+          path: ${{ env.PORTABLE_PATH }}
+          if-no-files-found: error
 
       - name: Create GitHub release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${{ inputs.release_tag }}" dist/installer/ZoomCheck-Setup-x64.exe --title "ZoomCheck ${{ inputs.release_tag }}" --notes "Windows self-contained ZoomCheck installer built by GitHub Actions."
+        run: >
+          gh release create "${{ inputs.release_tag }}"
+          "${{ env.INSTALLER_PATH }}"
+          "${{ env.PORTABLE_PATH }}"
+          --target "${{ github.sha }}"
+          --title "ZoomCheck ${{ inputs.release_tag }}"
+          --notes "Windows web dashboard build. Installer and portable ZIP both contain the self-contained ZoomCheck.Backend.exe; launch it and the dashboard opens in your browser. No secrets, databases or attendance data are bundled."

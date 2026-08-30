@@ -72,14 +72,31 @@ public sealed class SqliteAttendanceRepository
             """
             ,
             """
-            CREATE TABLE IF NOT EXISTS participant_presence (
+            CREATE TABLE IF NOT EXISTS participant_snapshots (
                 meeting_id TEXT NOT NULL,
                 source TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                present_count INTEGER NOT NULL,
+                PRIMARY KEY (meeting_id, source)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS participant_presence_v2 (
+                meeting_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                presence_key TEXT NOT NULL,
                 normalized_name TEXT NOT NULL,
                 display_name TEXT NOT NULL,
                 first_seen_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
-                PRIMARY KEY (meeting_id, source, normalized_name)
+                participant_email TEXT NULL,
+                PRIMARY KEY (meeting_id, source, presence_key)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
             );
             """
         };
@@ -90,6 +107,23 @@ public sealed class SqliteAttendanceRepository
             command.CommandText = sql;
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
+
+        if (await TableExistsAsync(connection, "participant_presence", cancellationToken))
+        {
+            await EnsureColumnExistsAsync(
+                connection,
+                tableName: "participant_presence",
+                columnName: "participant_email",
+                definition: "TEXT NULL",
+                cancellationToken);
+
+            await using var migratePresence = connection.CreateCommand();
+            migratePresence.CommandText =
+                "INSERT OR IGNORE INTO participant_presence_v2 (meeting_id, source, presence_key, normalized_name, display_name, first_seen_at, last_seen_at, participant_email) SELECT meeting_id, source, normalized_name, normalized_name, display_name, first_seen_at, last_seen_at, participant_email FROM participant_presence WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE migration_id = 'presence-v2'); " +
+                "INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES ('presence-v2', $appliedAt);";
+            migratePresence.Parameters.AddWithValue("$appliedAt", DateTimeOffset.UtcNow.ToString("O"));
+            await migratePresence.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     public async Task ReplaceRosterAsync(RosterImportResult roster, CancellationToken cancellationToken = default)
@@ -97,7 +131,11 @@ public sealed class SqliteAttendanceRepository
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
 
-        foreach (var text in new[] { "DELETE FROM roster_people;", "DELETE FROM roster_imports;" })
+        foreach (var text in new[]
+        {
+            "DELETE FROM roster_people;",
+            "DELETE FROM roster_imports;"
+        })
         {
             await using var clear = connection.CreateCommand();
             clear.Transaction = transaction;
@@ -209,7 +247,7 @@ public sealed class SqliteAttendanceRepository
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT normalized_name, display_name, first_seen_at, last_seen_at FROM participant_presence WHERE meeting_id = $meetingId AND source = $source;";
+            "SELECT normalized_name, display_name, first_seen_at, last_seen_at, participant_email, presence_key FROM participant_presence_v2 WHERE meeting_id = $meetingId AND source = $source;";
         command.Parameters.AddWithValue("$meetingId", meetingId);
         command.Parameters.AddWithValue("$source", source);
 
@@ -221,10 +259,36 @@ public sealed class SqliteAttendanceRepository
                 reader.GetString(0),
                 reader.GetString(1),
                 DateTimeOffset.Parse(reader.GetString(2)),
-                DateTimeOffset.Parse(reader.GetString(3))));
+                DateTimeOffset.Parse(reader.GetString(3)),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.GetString(5)));
         }
 
         return entries;
+    }
+
+    public async Task<IReadOnlyList<ParticipantSnapshotSourceState>> GetParticipantSnapshotSourcesAsync(
+        string meetingId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT meeting_id, source, captured_at, present_count FROM participant_snapshots WHERE meeting_id = $meetingId ORDER BY captured_at DESC;";
+        command.Parameters.AddWithValue("$meetingId", meetingId);
+
+        var snapshots = new List<ParticipantSnapshotSourceState>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            snapshots.Add(new ParticipantSnapshotSourceState(
+                reader.GetString(0),
+                reader.GetString(1),
+                DateTimeOffset.Parse(reader.GetString(2)),
+                reader.GetInt32(3)));
+        }
+
+        return snapshots;
     }
 
     /// <summary>
@@ -234,6 +298,7 @@ public sealed class SqliteAttendanceRepository
     public async Task ApplyParticipantSnapshotAsync(
         string meetingId,
         string source,
+        DateTimeOffset capturedAt,
         IReadOnlyList<ParticipantSnapshotEntry> presentEntries,
         IReadOnlyList<ParticipantEvent> derivedEvents,
         CancellationToken cancellationToken = default)
@@ -252,7 +317,7 @@ public sealed class SqliteAttendanceRepository
         await using (var clearPresence = connection.CreateCommand())
         {
             clearPresence.Transaction = transaction;
-            clearPresence.CommandText = "DELETE FROM participant_presence WHERE meeting_id = $meetingId AND source = $source;";
+            clearPresence.CommandText = "DELETE FROM participant_presence_v2 WHERE meeting_id = $meetingId AND source = $source;";
             clearPresence.Parameters.AddWithValue("$meetingId", meetingId);
             clearPresence.Parameters.AddWithValue("$source", source);
             await clearPresence.ExecuteNonQueryAsync(cancellationToken);
@@ -263,14 +328,28 @@ public sealed class SqliteAttendanceRepository
             await using var insertPresence = connection.CreateCommand();
             insertPresence.Transaction = transaction;
             insertPresence.CommandText =
-                "INSERT INTO participant_presence (meeting_id, source, normalized_name, display_name, first_seen_at, last_seen_at) VALUES ($meetingId, $source, $normalizedName, $displayName, $firstSeenAt, $lastSeenAt);";
+                "INSERT INTO participant_presence_v2 (meeting_id, source, presence_key, normalized_name, display_name, first_seen_at, last_seen_at, participant_email) VALUES ($meetingId, $source, $presenceKey, $normalizedName, $displayName, $firstSeenAt, $lastSeenAt, $participantEmail);";
             insertPresence.Parameters.AddWithValue("$meetingId", meetingId);
             insertPresence.Parameters.AddWithValue("$source", source);
+            insertPresence.Parameters.AddWithValue("$presenceKey", entry.PresenceKey ?? entry.NormalizedName);
             insertPresence.Parameters.AddWithValue("$normalizedName", entry.NormalizedName);
             insertPresence.Parameters.AddWithValue("$displayName", entry.DisplayName);
             insertPresence.Parameters.AddWithValue("$firstSeenAt", entry.FirstSeenAt.ToString("O"));
             insertPresence.Parameters.AddWithValue("$lastSeenAt", entry.LastSeenAt.ToString("O"));
+            insertPresence.Parameters.AddWithValue("$participantEmail", (object?)entry.ParticipantEmail ?? DBNull.Value);
             await insertPresence.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var upsertSnapshot = connection.CreateCommand())
+        {
+            upsertSnapshot.Transaction = transaction;
+            upsertSnapshot.CommandText =
+                "INSERT INTO participant_snapshots (meeting_id, source, captured_at, present_count) VALUES ($meetingId, $source, $capturedAt, $presentCount) ON CONFLICT(meeting_id, source) DO UPDATE SET captured_at = excluded.captured_at, present_count = excluded.present_count;";
+            upsertSnapshot.Parameters.AddWithValue("$meetingId", meetingId);
+            upsertSnapshot.Parameters.AddWithValue("$source", source);
+            upsertSnapshot.Parameters.AddWithValue("$capturedAt", capturedAt.ToString("O"));
+            upsertSnapshot.Parameters.AddWithValue("$presentCount", presentEntries.Count);
+            await upsertSnapshot.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
@@ -281,7 +360,7 @@ public sealed class SqliteAttendanceRepository
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT id, meeting_id, occurred_at, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload FROM participant_events WHERE meeting_id = $meetingId ORDER BY occurred_at ASC;";
+            "SELECT id, meeting_id, occurred_at, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload FROM participant_events WHERE meeting_id = $meetingId ORDER BY occurred_at ASC, rowid ASC;";
         command.Parameters.AddWithValue("$meetingId", meetingId);
 
         var events = new List<ParticipantEvent>();
@@ -310,6 +389,42 @@ public sealed class SqliteAttendanceRepository
         var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
         return connection;
+    }
+
+    private static async Task EnsureColumnExistsAsync(
+        SqliteConnection connection,
+        string tableName,
+        string columnName,
+        string definition,
+        CancellationToken cancellationToken)
+    {
+        await using var inspect = connection.CreateCommand();
+        inspect.CommandText = $"PRAGMA table_info({tableName});";
+
+        await using var reader = await inspect.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        await reader.DisposeAsync();
+        await using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definition};";
+        await alter.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task<bool> TableExistsAsync(
+        SqliteConnection connection,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $tableName LIMIT 1;";
+        command.Parameters.AddWithValue("$tableName", tableName);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
     private static void BindParticipantEvent(SqliteCommand command, ParticipantEvent participantEvent)

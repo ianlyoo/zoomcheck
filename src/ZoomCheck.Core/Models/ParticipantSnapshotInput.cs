@@ -8,4 +8,6 @@ public sealed record ParticipantSnapshotInput(
     string MeetingId,
     IReadOnlyList<string> ParticipantNames,
     string Source,
-    DateTimeOffset CapturedAt);
+    DateTimeOffset CapturedAt,
+    IReadOnlyDictionary<string, string?>? ParticipantEmails = null,
+    IReadOnlyList<ParticipantSnapshotParticipant>? Participants = null);

@@ -15,6 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\ZoomCheck.Backend\ZoomCheck.Backend.csproj" />
     <ProjectReference Include="..\..\src\ZoomCheck.Core\ZoomCheck.Core.csproj" />
     <ProjectReference Include="..\..\src\ZoomCheck.Infrastructure\ZoomCheck.Infrastructure.csproj" />
   </ItemGroup>

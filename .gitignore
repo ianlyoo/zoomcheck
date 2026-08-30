@@ -12,5 +12,7 @@ data/
 tmp/
 dist/
 .DS_Store
+.playwright-cli/
+output/
 *.xlsx
 *.xls

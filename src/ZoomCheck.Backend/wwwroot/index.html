@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="referrer" content="no-referrer" />
+  <link rel="icon" href="data:," />
+  <title>ZoomCheck 출석 대시보드</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+
+  <header class="app-header">
+    <div class="wrap">
+      <p class="eyebrow">ZOOMCHECK · 로컬 운영 콘솔</p>
+      <h1>출석 대시보드</h1>
+      <p class="tagline">
+        공식 Zoom API에서 현재 참가자를 코드로 불러와 Excel 명단과 대조합니다. 출석 데이터는 이 PC의 로컬
+        백엔드에 저장되며 외부 폰트·분석 스크립트를 사용하지 않습니다.
+      </p>
+      <p class="conn-line">
+        <span class="dot" id="health-dot" aria-hidden="true"></span>
+        <span id="health-text" role="status">백엔드 상태 확인 중…</span>
+      </p>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+
+    <section class="card" aria-labelledby="h-setup">
+      <h2 id="h-setup">1. 회의 ID와 명단</h2>
+
+      <form id="setup-form" novalidate>
+        <div class="field">
+          <label for="meeting-id">회의 ID <span class="req" aria-hidden="true">*</span></label>
+          <input
+            type="text"
+            id="meeting-id"
+            name="meetingId"
+            inputmode="numeric"
+            autocomplete="off"
+            spellcheck="false"
+            required
+            aria-describedby="meeting-id-help"
+            placeholder="예: 82312345678" />
+          <p class="help" id="meeting-id-help">호스트/공동 호스트 화면에 표시된 Zoom 회의 ID를 입력하세요. 이 브라우저에만 저장됩니다.</p>
+        </div>
+
+        <div class="field">
+          <label for="roster-file">명단 파일 업로드 (.xlsx / .xls)</label>
+          <input
+            type="file"
+            id="roster-file"
+            name="file"
+            accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+            aria-describedby="roster-file-help" />
+          <p class="help" id="roster-file-help">순번·이름·소속·이메일 열이 있는 엑셀 파일을 선택하고 [명단 올리기]를 누르세요.</p>
+          <div class="btn-row">
+            <button type="button" class="btn primary" id="btn-upload-roster">명단 올리기</button>
+            <button type="button" class="btn ghost" id="btn-reload-roster">명단 다시 읽기</button>
+          </div>
+        </div>
+      </form>
+
+      <div class="roster-status" id="roster-status" role="status" aria-live="polite">
+        <p class="roster-count"><strong id="roster-count">–</strong> <span class="unit">명</span></p>
+        <p class="roster-note" id="roster-note">명단 상태를 확인하는 중입니다…</p>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-zoom-sync">
+      <h2 id="h-zoom-sync">2. Zoom API 실시간 동기화</h2>
+
+      <div class="callout" role="note">
+        <h3>Server-to-Server OAuth 연결</h3>
+        <p>
+          Zoom 계정 관리자가 만든 앱의 Account ID, Client ID, Client Secret과
+          <code>dashboard:read:list_meeting_participants:admin</code> 권한이 필요합니다. 기존 classic 앱은
+          <code>dashboard_meetings:read:admin</code>을 사용합니다. 공동호스트 권한만으로는 API가 열리지 않습니다.
+        </p>
+      </div>
+
+      <p class="conn-line">
+        <span class="dot" id="zoom-dot" aria-hidden="true"></span>
+        <span id="zoom-status" role="status" aria-live="polite">Zoom API 설정 확인 중…</span>
+      </p>
+
+      <div class="btn-row">
+        <button type="button" class="btn primary" id="btn-sync-zoom">지금 참가자 불러오기</button>
+        <button type="button" class="btn ghost" id="btn-check-zoom">연결 설정 확인</button>
+        <label class="inline-check">
+          <input type="checkbox" id="chk-autorefresh" />
+          <span>실시간 자동 동기화</span>
+        </label>
+        <label class="inline-num">
+          <span class="vh" id="interval-label">Zoom API 동기화 간격(초)</span>
+          <input type="number" id="autorefresh-interval" min="5" max="600" step="5" value="10"
+                 aria-labelledby="interval-label" />
+          <span aria-hidden="true">초</span>
+        </label>
+        <label class="inline-check">
+          <input type="checkbox" id="chk-api-empty-ok" />
+          <span>이번 1회 0명 응답 허용 (전원 퇴장 확정)</span>
+        </label>
+      </div>
+
+      <p class="sync-line">
+        <span class="dot" id="sync-dot" aria-hidden="true"></span>
+        <span id="sync-text" role="status" aria-live="polite">실시간 동기화 꺼짐</span>
+      </p>
+      <p class="help">
+        Zoom이 일시적으로 빈 목록을 보내도 기존 출석은 자동으로 보존됩니다. 회의가 실제로 끝나 0명이 맞을 때만
+        위 옵션을 체크한 뒤 [지금 참가자 불러오기]를 누르세요. 자동 동기화에는 적용되지 않습니다.
+      </p>
+    </section>
+
+    <section class="card" aria-labelledby="h-snapshot">
+      <h2 id="h-snapshot">백업 · 참가자 목록 직접 붙여넣기</h2>
+
+      <div class="callout warn" role="note" aria-labelledby="warn-title">
+        <h3 id="warn-title">API를 쓸 수 없을 때만, 반드시 &lt;전체&gt; 목록을 붙여넣으세요</h3>
+        <p>
+          붙여넣은 목록은 <strong>지금 이 순간 회의에 있는 사람 전체</strong>로 처리됩니다.
+          목록에 없는 사람은 모두 <strong>퇴장</strong>으로 기록됩니다.
+          Zoom 참가자 패널을 <strong>끝까지 스크롤</strong>해 전원을 선택·복사한 뒤 붙여넣으세요.
+          일부만 붙여넣으면 출석 기록이 잘못됩니다.
+        </p>
+      </div>
+
+      <div class="field">
+        <label for="snapshot-names">참가자 이름 (한 줄에 한 명)</label>
+        <textarea
+          id="snapshot-names"
+          name="participantNames"
+          rows="10"
+          spellcheck="false"
+          aria-describedby="snapshot-help snapshot-parsed"
+          placeholder="김민수&#10;이서연 (기획팀)&#10;Park, Jiwon"></textarea>
+        <p class="help" id="snapshot-help">빈 줄과 중복 이름은 자동으로 무시됩니다. 최대 2000명까지 보낼 수 있습니다.</p>
+        <p class="parsed" id="snapshot-parsed" role="status" aria-live="polite">인식된 이름: 0명</p>
+      </div>
+
+      <div class="btn-row">
+        <button type="button" class="btn primary" id="btn-submit-snapshot">스냅샷 제출 · 출석 갱신</button>
+        <button type="button" class="btn ghost" id="btn-clear-snapshot">입력 지우기</button>
+        <label class="inline-check">
+          <input type="checkbox" id="chk-empty-ok" />
+          <span>빈 목록 제출 허용 (전원 퇴장 기록)</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-summary">
+      <div class="card-head">
+        <h2 id="h-summary">3. 출석 요약</h2>
+        <div class="head-tools">
+          <button type="button" class="btn ghost" id="btn-refresh">보드 새로고침</button>
+          <button type="button" class="btn ghost" id="btn-export">CSV 내려받기</button>
+        </div>
+      </div>
+
+      <p class="meta" id="board-meta">아직 보드를 불러오지 않았습니다.</p>
+
+      <dl class="summary" id="summary">
+        <div class="stat"><dt>명단 인원</dt><dd id="stat-roster">–</dd></div>
+        <div class="stat ok"><dt>현재 참석</dt><dd id="stat-present">–</dd></div>
+        <div class="stat bad"><dt>미참석</dt><dd id="stat-absent">–</dd></div>
+        <div class="stat warn"><dt>검토 필요</dt><dd id="stat-review">–</dd></div>
+        <div class="stat neutral"><dt>미매칭 Zoom 이름</dt><dd id="stat-unmatched">–</dd></div>
+        <div class="stat neutral"><dt>참석률</dt><dd id="stat-rate">–</dd></div>
+      </dl>
+
+      <div class="snapshot-diff" id="snapshot-diff" hidden>
+        <h3>최근 스냅샷 결과</h3>
+        <ul id="snapshot-diff-list"></ul>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-detail">
+      <h2 id="h-detail">4. 상세 보기</h2>
+
+      <div class="tabs" role="tablist" aria-label="출석 상세 분류">
+        <button type="button" role="tab" id="tab-present" aria-controls="panel-present" aria-selected="true" tabindex="0">
+          현재 참석 <span class="pill" id="cnt-present">0</span>
+        </button>
+        <button type="button" role="tab" id="tab-absent" aria-controls="panel-absent" aria-selected="false" tabindex="-1">
+          미참석 명단 <span class="pill" id="cnt-absent">0</span>
+        </button>
+        <button type="button" role="tab" id="tab-review" aria-controls="panel-review" aria-selected="false" tabindex="-1">
+          검토 필요 <span class="pill" id="cnt-review">0</span>
+        </button>
+        <button type="button" role="tab" id="tab-unmatched" aria-controls="panel-unmatched" aria-selected="false" tabindex="-1">
+          미매칭 Zoom 이름 <span class="pill" id="cnt-unmatched">0</span>
+        </button>
+        <button type="button" role="tab" id="tab-events" aria-controls="panel-events" aria-selected="false" tabindex="-1">
+          입·퇴장 로그 <span class="pill" id="cnt-events">0</span>
+        </button>
+        <button type="button" role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1">
+          앱 동작 로그 <span class="pill" id="cnt-activity">0</span>
+        </button>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-present" aria-labelledby="tab-present" tabindex="0">
+        <p class="panel-desc">명단과 매칭되어 현재 회의에 있는 사람입니다.</p>
+        <div class="table-scroll">
+          <table>
+            <caption class="vh">현재 참석자 목록</caption>
+            <thead>
+              <tr><th scope="col">순번</th><th scope="col">이름</th><th scope="col">소속</th><th scope="col">신뢰도</th><th scope="col">입장 시각</th><th scope="col">입장 횟수</th></tr>
+            </thead>
+            <tbody id="tbody-present"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="empty-present" hidden>표시할 항목이 없습니다.</p>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-absent" aria-labelledby="tab-absent" tabindex="0" hidden>
+        <p class="panel-desc">명단에는 있으나 현재 회의에 없는 사람입니다. 한 번도 입장하지 않았거나 이미 퇴장했습니다.</p>
+        <div class="table-scroll">
+          <table>
+            <caption class="vh">미참석 명단</caption>
+            <thead>
+              <tr><th scope="col">순번</th><th scope="col">이름</th><th scope="col">소속</th><th scope="col">상태</th><th scope="col">마지막 퇴장</th><th scope="col">입장 횟수</th></tr>
+            </thead>
+            <tbody id="tbody-absent"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="empty-absent" hidden>표시할 항목이 없습니다.</p>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-review" aria-labelledby="tab-review" tabindex="0" hidden>
+        <p class="panel-desc">이름만 같거나 유사도로 추정 매칭된 항목입니다. 사람이 직접 확인하세요.</p>
+        <div class="table-scroll">
+          <table>
+            <caption class="vh">검토가 필요한 매칭</caption>
+            <thead>
+              <tr><th scope="col">순번</th><th scope="col">이름</th><th scope="col">소속</th><th scope="col">상태</th><th scope="col">신뢰도</th><th scope="col">판단 근거</th></tr>
+            </thead>
+            <tbody id="tbody-review"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="empty-review" hidden>표시할 항목이 없습니다.</p>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-unmatched" aria-labelledby="tab-unmatched" tabindex="0" hidden>
+        <p class="panel-desc">명단에서 찾을 수 없는 Zoom 표시 이름입니다. 별명 등록이 필요할 수 있습니다.</p>
+        <div class="table-scroll">
+          <table>
+            <caption class="vh">미매칭 Zoom 이름</caption>
+            <thead>
+              <tr><th scope="col">Zoom 표시 이름</th><th scope="col">상태</th><th scope="col">마지막 관측</th><th scope="col">이벤트 수</th></tr>
+            </thead>
+            <tbody id="tbody-unmatched"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="empty-unmatched" hidden>표시할 항목이 없습니다.</p>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-events" aria-labelledby="tab-events" tabindex="0" hidden>
+        <p class="panel-desc">Zoom API 스냅샷 차이로 감지해 SQLite에 저장한 입장·퇴장 이벤트입니다.</p>
+        <div class="table-scroll">
+          <table>
+            <caption class="vh">최근 출석 이벤트</caption>
+            <thead>
+              <tr><th scope="col">시각</th><th scope="col">구분</th><th scope="col">이름</th><th scope="col">신뢰도</th><th scope="col">출처</th></tr>
+            </thead>
+            <tbody id="tbody-events"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="empty-events" hidden>표시할 항목이 없습니다.</p>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" tabindex="0" hidden>
+        <p class="panel-desc">이 브라우저 세션에서 수행한 동기화·업로드·오류 기록입니다. 서버에 저장되지 않습니다.</p>
+        <div class="btn-row">
+          <button type="button" class="btn ghost" id="btn-clear-log">로그 지우기</button>
+        </div>
+        <ol class="activity-log" id="activity-log"></ol>
+        <p class="empty" id="empty-activity" hidden>아직 기록된 활동이 없습니다.</p>
+      </div>
+    </section>
+
+    <p class="privacy-note">
+      이 페이지는 외부 CDN·폰트·분석 스크립트를 전혀 불러오지 않습니다. 이름 데이터는 이 PC의 로컬 백엔드로만 전송됩니다.
+    </p>
+  </main>
+
+  <div class="toast-region" id="toast-region" aria-live="assertive" aria-atomic="false"></div>
+
+  <div class="busy" id="busy" hidden role="status" aria-live="polite">
+    <span class="spinner" aria-hidden="true"></span>
+    <span id="busy-text">처리 중…</span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

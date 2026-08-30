@@ -133,6 +133,21 @@ public sealed class ExcelRosterParserTests : IDisposable
     }
 
     [Fact]
+    public void Parse_AssignsStableIdsAcrossReimports()
+    {
+        var path = WriteRoster("stable.xlsx", new List<string?[]>
+        {
+            Header(),
+            new string?[] { "1", "김영인", "youngin@example.com", "", "" }
+        });
+
+        var firstId = Assert.Single(_parser.Parse(path).People).Id;
+        var secondId = Assert.Single(_parser.Parse(path).People).Id;
+
+        Assert.Equal(firstId, secondId);
+    }
+
+    [Fact]
     public void Parse_Throws_WhenNoRosterHeadersPresent()
     {
         var path = WriteRoster("not-a-roster.xlsx", new List<string?[]>

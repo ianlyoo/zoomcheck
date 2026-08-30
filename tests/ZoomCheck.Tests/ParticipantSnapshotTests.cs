@@ -117,6 +117,66 @@ public sealed class ParticipantSnapshotTests : IAsyncLifetime
         Assert.Equal(AttendanceState.NotJoined, secondBoard.People.Single(person => person.RosterPersonId == "p1").AttendanceState);
     }
 
+    [Fact]
+    public async Task ApplySnapshot_RosterReimportPreservesAttendanceAndAliases()
+    {
+        await Apply("meeting-1", "manual-snapshot", "김영인");
+        await _service.SaveAliasAsync("영인쌤", "p1", "test");
+
+        await _repository.ReplaceRosterAsync(new RosterImportResult(
+            ImportId: "replacement",
+            SourcePath: "test.xlsx",
+            DisplayName: "test.xlsx",
+            ImportedAt: DateTimeOffset.UtcNow,
+            People: new[]
+            {
+                Person("p1", "김영인", "1"),
+                Person("p2", "이순신", "2")
+            }));
+
+        var board = await _service.BuildBoardAsync("meeting-1");
+        var aliases = await _repository.GetAliasMapAsync();
+
+        Assert.Equal(AttendanceState.Present, board.People.Single(person => person.RosterPersonId == "p1").AttendanceState);
+        Assert.Equal("p1", aliases[NameNormalizer.Normalize("영인쌤")]);
+    }
+
+    [Fact]
+    public async Task ApplySnapshot_ZoomSourceOverridesManualSourceForCurrentPresence()
+    {
+        await Apply("meeting-1", "manual-snapshot", "김영인");
+        await Apply("meeting-1", "zoom-live-participants", "이순신");
+
+        var manualUpdate = await Apply("meeting-1", "manual-snapshot", "김영인", "이순신");
+
+        Assert.Equal(AttendanceState.Left, manualUpdate.Board.People.Single(person => person.RosterPersonId == "p1").AttendanceState);
+        Assert.Equal(AttendanceState.Present, manualUpdate.Board.People.Single(person => person.RosterPersonId == "p2").AttendanceState);
+    }
+
+    [Fact]
+    public async Task ApplySnapshot_EmailMatchesRosterWhenDisplayNameDiffers()
+    {
+        await _repository.ReplaceRosterAsync(new RosterImportResult(
+            ImportId: "email-roster",
+            SourcePath: "test.xlsx",
+            DisplayName: "test.xlsx",
+            ImportedAt: DateTimeOffset.UtcNow,
+            People: new[]
+            {
+                Person("p1", "김영인", "1") with { Email = "youngin@example.com" }
+            }));
+
+        var result = await _service.ApplyParticipantSnapshotAsync(new ParticipantSnapshotInput(
+            "meeting-email",
+            new[] { "Youngin's iPhone" },
+            "zoom-live-participants",
+            DateTimeOffset.UtcNow,
+            new Dictionary<string, string?> { ["Youngin's iPhone"] = "youngin@example.com" }));
+
+        Assert.Equal(AttendanceState.Present, Assert.Single(result.Board.People).AttendanceState);
+        Assert.Empty(result.Board.UnmatchedParticipants);
+    }
+
     private Task<ParticipantSnapshotResult> Apply(string meetingId, string source, params string[] names)
         => _service.ApplyParticipantSnapshotAsync(new ParticipantSnapshotInput(
             meetingId,

@@ -212,6 +212,17 @@ public class AttendanceMatcherTests
         Assert.Null(result.Person);
     }
 
+    [Fact]
+    public void Match_DoesNotFuzzyMatchTwoCharacterKoreanSubstring()
+    {
+        var roster = new[] { Person("p1", "김민") };
+
+        var result = _matcher.Match(roster, NoAliases(), "김민수", null);
+
+        Assert.Equal(MatchConfidence.Unmatched, result.Confidence);
+        Assert.Null(result.Person);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

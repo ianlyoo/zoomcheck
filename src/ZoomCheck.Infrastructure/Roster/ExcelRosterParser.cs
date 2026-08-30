@@ -1,4 +1,5 @@
 using System.Data;
+using System.Security.Cryptography;
 using System.Text;
 using ExcelDataReader;
 using ZoomCheck.Core.Models;
@@ -10,9 +11,20 @@ public sealed class ExcelRosterParser
 {
     public RosterImportResult Parse(string filePath)
     {
+        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        return Parse(stream, Path.GetFullPath(filePath), Path.GetFileName(filePath));
+    }
+
+    public RosterImportResult Parse(Stream stream, string sourcePath, string displayName)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (!stream.CanRead)
+        {
+            throw new ArgumentException("Roster stream must be readable.", nameof(stream));
+        }
+
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         using var reader = ExcelReaderFactory.CreateReader(stream);
         var dataSet = reader.AsDataSet();
         var table = dataSet.Tables.Cast<DataTable>().FirstOrDefault(IsRosterTable)
@@ -37,8 +49,14 @@ public sealed class ExcelRosterParser
             var sequence = GetValue(row, columns, "번호");
             var aliases = BuildAliases(name, email, phone, organization);
 
+            var personId = BuildStablePersonId(sequence, NameNormalizer.Normalize(name));
+            if (people.Any(person => string.Equals(person.Id, personId, StringComparison.Ordinal)))
+            {
+                personId = BuildStablePersonId(sequence, $"{NameNormalizer.Normalize(name)}|{rowIndex}");
+            }
+
             people.Add(new RosterPerson(
-                Id: Guid.NewGuid().ToString("N"),
+                Id: personId,
                 Sequence: sequence,
                 Name: name.Trim(),
                 NormalizedName: NameNormalizer.Normalize(name),
@@ -50,8 +68,8 @@ public sealed class ExcelRosterParser
 
         return new RosterImportResult(
             ImportId: Guid.NewGuid().ToString("N"),
-            SourcePath: Path.GetFullPath(filePath),
-            DisplayName: Path.GetFileName(filePath),
+            SourcePath: sourcePath,
+            DisplayName: displayName,
             ImportedAt: DateTimeOffset.UtcNow,
             People: people);
     }
@@ -109,6 +127,12 @@ public sealed class ExcelRosterParser
     private static string NormalizePhone(string value)
     {
         return new string(value.Where(char.IsDigit).ToArray());
+    }
+
+    private static string BuildStablePersonId(string sequence, string normalizedName)
+    {
+        var key = $"sequence-name:{sequence.Trim()}|{normalizedName}";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant()[..32];
     }
 
     private static IReadOnlyList<string> BuildAliases(string name, string email, string phone, string organization)

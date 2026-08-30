@@ -1,59 +1,87 @@
-# zoomcheck
+# ZoomCheck
 
-Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.
+Windows에서 Excel 명단과 진행 중인 Zoom 회의 참가자를 공식 API로 대조하는 로컬 웹 대시보드입니다.
 
-[English](README.md)
+[English](README.md) · [Windows 실회의 테스트](docs/windows-live-test-ko.md) · [MIT License](LICENSE)
 
 [![CI](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release: v0.1.0](https://img.shields.io/github/v/release/ianlyoo/zoomcheck?label=v0.1.0)](https://github.com/ianlyoo/zoomcheck/releases/tag/v0.1.0)
-[![Pages](https://img.shields.io/badge/Pages-GitHub_Pages-2ea44f)](https://ianlyoo.github.io/zoomcheck/)
+[![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)
+[![Latest release](https://img.shields.io/github/v/release/ianlyoo/zoomcheck)](https://github.com/ianlyoo/zoomcheck/releases/latest)
 
-수업과 교육에서 이름, 별명, 기기명이 섞인 Zoom 출석을 처리합니다. Excel 로스터를 불러오고 Zoom 참여/퇴장 이벤트를 webhook으로 받아 로스터와 매칭합니다. 높은 신뢰도 매칭은 별도 확인 없이 처리하고 모호한 경우만 리뷰 큐로 보냅니다.
+Zoom 참가자 패널을 화면 인식하거나 UI Automation으로 읽지 않습니다. 공식 Zoom Dashboard API를 주기적으로 조회하고, Excel 명단과 매칭해 관측된 입장·퇴장 변화를 SQLite에 저장합니다.
 
-- .NET 8 + Avalonia 데스크톱, ASP.NET Core 백엔드, SQLite
-- 설치 파일: `deploy/windows/` 아래 `ZoomCheck-Setup-x64.exe`
-- 백엔드 `http://127.0.0.1:5078`에서 CSV 내보내기
+## 주요 기능
 
-## 빠른 시작 — dotnet와 webhook으로 roster-matching
+- 브라우저에서 Excel `.xlsx`/`.xls` 직접 업로드
+- Zoom 현재 참가자 즉시 조회 및 5~600초 자동 동기화
+- 이메일 우선 매칭, 이름·별칭 매칭, 검토 필요/미매칭 분리
+- SQLite 기반 입장·퇴장 액티브 로그와 현재 참석 상태
+- CSV 내보내기와 API 장애 시 전체 참가자 목록 수동 붙여넣기
+- 별도 .NET 설치가 필요 없는 Windows 설치 파일과 portable ZIP
+- `http://127.0.0.1:5078`에만 바인딩되는 로컬 웹 대시보드
 
-dotnet 파이프라인으로 roster-matching과 webhook 기반 dashboard를 실행합니다.
+## Zoom API 준비
 
-### GitHub Release tarball로 설치
+공동호스트 권한만으로는 API 권한이 생기지 않습니다. 회의가 속한 Zoom 계정의 소유자/관리자가 Zoom Marketplace에서 Server-to-Server OAuth 앱을 만들고 활성화해야 합니다.
 
-```bash
-gh release download v0.1.0 --repo ianlyoo/zoomcheck --pattern "zoomcheck-*.tar.gz"
-tar -xzf zoomcheck-0.1.0.tar.gz
+- 최신 granular scope: `dashboard:read:list_meeting_participants:admin`
+- 기존 classic scope: `dashboard_meetings:read:admin`
+- Zoom Dashboard API 접근이 포함된 계정 권한도 필요합니다. 실제 권한이 부족하면 대시보드가 403 원인을 표시합니다.
+
+Windows PowerShell에서 자격증명을 현재 사용자 환경 변수로 한 번 저장한 뒤 ZoomCheck를 완전히 종료하고 다시 실행합니다.
+
+```powershell
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_Zoom__AccountId", "여기에_ACCOUNT_ID", "User")
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_Zoom__ClientId", "여기에_CLIENT_ID", "User")
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_Zoom__ClientSecret", "여기에_CLIENT_SECRET", "User")
 ```
 
-`gh`가 없을 때 — 소스에서 빌드:
+이 값은 GitHub, ZIP, `appsettings.json`에 넣지 마세요. 설치 파일과 portable ZIP은 OAuth 값, DB, Excel, CSV, 로그를 포함하지 않도록 빌드 단계에서 검사합니다.
 
-```bash
-git clone https://github.com/ianlyoo/zoomcheck.git
-cd zoomcheck
-dotnet build ZoomCheck.sln
+## 회의 중 사용 순서
+
+1. ZoomCheck를 실행하고 실제 회의 ID를 입력합니다.
+2. 번호·성명 열이 있는 Excel 명단을 올립니다.
+3. **지금 참가자 불러오기**를 눌러 현재 인원과 첫 입장 로그를 확인합니다.
+4. **실시간 자동 동기화**를 켭니다. 기본 10초를 권장합니다.
+5. 현재 참석, 미참석, 검토 필요, 미매칭 Zoom 이름, 입·퇴장 로그를 확인합니다.
+6. 회의가 실제로 0명이 되었을 때만 **이번 1회 0명 응답 허용**을 체크하고 다시 동기화해 전원 퇴장을 확정합니다.
+7. 회의가 끝나면 CSV를 내려받습니다.
+
+액티브 로그 시각은 실제 Zoom 이벤트 시각이 아니라 API 폴링에서 변화를 관측한 시각입니다. 따라서 최대 한 폴링 간격과 Zoom API 반영 시간만큼 늦을 수 있습니다. API 오류, 불완전한 pagination, 확인되지 않은 빈 응답은 기존 출석 상태를 전원 퇴장으로 덮어쓰지 않습니다.
+
+Windows 데이터베이스는 `%LOCALAPPDATA%\ZoomCheck\data\zoomcheck.db`에 저장됩니다.
+
+## 구조
+
+```mermaid
+flowchart LR
+  A[Zoom Dashboard API] --> B[ASP.NET Core 로컬 서버]
+  C[Excel 명단] --> B
+  B --> D[(SQLite)]
+  B --> E[이름·이메일 매칭]
+  E --> F[브라우저 대시보드]
+  F --> G[CSV 내보내기]
 ```
 
-## 사용 사례 — attendance와 workflow-automation
+실시간 조회는 `GET /v2/metrics/meetings/{meetingId}/participants?type=live`를 사용합니다. pagination을 모두 따라가고, 짧은 `429 Retry-After`는 한 번 재시도하며, `status=in_meeting`인 참가자만 현재 참석으로 반영합니다.
 
-대규모 수업에서 수동 확인이 어려운 출석 워크플로우에 적합합니다.
+## 소스에서 실행
 
-## 아키텍처: csharp Avalonia와 dotnet 백엔드
+```bash
+dotnet restore ZoomCheck.sln
+dotnet test ZoomCheck.sln -c Release
+dotnet run --project src/ZoomCheck.Backend
+```
 
-csharp, Avalonia, dotnet, attendance 흐름은 영문 README와 동일합니다.
+Windows 패키지 출력:
 
-## 벤치마크: 측정된 실행에서의 roster-matching
+- `dist\installer\ZoomCheck-Setup-x64.exe`
+- `dist\portable\ZoomCheck-portable-win-x64.zip`
 
-> 검증된 증거만 제시합니다. 출석 보장이 아닙니다.
+## 주의
 
-**설정 (인접한 제한사항):** 120명 합성 클래스, 조건당 1회 실행, 100명 로스터, 픽스처 기반 Zoom 이벤트 재생, 로컬 SQLite, 측정 중 라이브 Zoom 연결 없음.
-
-Limitations restated: 합성 픽스처, 1회 실행, 휴리스틱 임계값, 라이브 연결 없음, 로컬 데이터만, 출석 보증 없음.
-
-## 프로젝트 링크
-
-- Repository: https://github.com/ianlyoo/zoomcheck
-- Pages: https://ianlyoo.github.io/zoomcheck/
+출석 정보는 민감한 데이터입니다. 공식 기록으로 사용하기 전에 검토 필요 항목과 CSV 결과를 사람이 확인하세요.
 
 ## 라이선스
 

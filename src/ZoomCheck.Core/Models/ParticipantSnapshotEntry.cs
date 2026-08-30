@@ -7,4 +7,6 @@ public sealed record ParticipantSnapshotEntry(
     string NormalizedName,
     string DisplayName,
     DateTimeOffset FirstSeenAt,
-    DateTimeOffset LastSeenAt);
+    DateTimeOffset LastSeenAt,
+    string? ParticipantEmail = null,
+    string? PresenceKey = null);
