@@ -14,7 +14,8 @@ public sealed class RelaySecurityHeadersMiddleware
     {
         var headers = context.Response.Headers;
         headers["X-Content-Type-Options"] = "nosniff";
-        headers["Referrer-Policy"] = "no-referrer";
+        // Zoom Marketplace currently validates this exact OWASP-recommended value.
+        headers["Referrer-Policy"] = "no-referrer-when-downgrade";
         headers["Cache-Control"] = "no-store";
         headers["Content-Security-Policy"] =
             "default-src 'self'; script-src 'self' https://appssdk.zoom.us; style-src 'self'; " +

@@ -39,6 +39,12 @@ public static class RelayApp
         {
             options.SerializerOptions.PropertyNameCaseInsensitive = true;
         });
+        builder.Services.AddHsts(options =>
+        {
+            // Zoom Apps validates the Home URL against its OWASP header profile.
+            options.MaxAge = TimeSpan.FromDays(365);
+            options.IncludeSubDomains = true;
+        });
 
         // TryAdd so a test host (or an embedding host) can supply a controllable clock.
         builder.Services.TryAddSingleton(TimeProvider.System);

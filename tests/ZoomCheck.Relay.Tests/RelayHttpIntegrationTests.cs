@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Hosting;
 using ZoomCheck.Relay.Contracts;
 using ZoomCheck.Relay.Tests.Support;
 
@@ -24,6 +25,22 @@ public sealed class RelayHttpIntegrationTests
         Assert.Contains("ZoomCheck", await companion.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         Assert.Contains("appssdk.zoom.us", companion.Headers.GetValues("Content-Security-Policy").Single());
         Assert.Equal("nosniff", companion.Headers.GetValues("X-Content-Type-Options").Single());
+        Assert.Equal("no-referrer-when-downgrade", companion.Headers.GetValues("Referrer-Policy").Single());
+    }
+
+    [Fact]
+    public async Task ProductionHttps_UsesZoomRequiredHstsPolicy()
+    {
+        await using var app = await StartAsync(Environments.Production);
+        var client = app.GetTestClient();
+        client.BaseAddress = new Uri("https://zoomcheck-relay.example");
+
+        using var companion = await client.GetAsync("/zoom-app/");
+
+        Assert.Equal(HttpStatusCode.OK, companion.StatusCode);
+        Assert.Equal(
+            "max-age=31536000; includeSubDomains",
+            companion.Headers.GetValues("Strict-Transport-Security").Single());
     }
 
     [Fact]
@@ -60,11 +77,11 @@ public sealed class RelayHttpIntegrationTests
         Assert.Equal(envelope.Ciphertext, payload.Messages[0].Ciphertext);
     }
 
-    private static async Task<WebApplication> StartAsync()
+    private static async Task<WebApplication> StartAsync(string environmentName = "Development")
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
-            EnvironmentName = "Development",
+            EnvironmentName = environmentName,
             ContentRootPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../src/ZoomCheck.Relay"))
         });
         builder.WebHost.UseTestServer();
