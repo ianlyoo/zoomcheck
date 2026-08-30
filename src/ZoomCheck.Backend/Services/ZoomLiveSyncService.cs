@@ -65,7 +65,10 @@ public sealed class ZoomLiveSyncService
             apiParticipants.Count,
             snapshot.PresentCount,
             apiParticipants.Count - active.Length,
-            snapshot);
+            snapshot,
+            snapshot.Board.CurrentConnections,
+            snapshot.Board.DuplicateConnectionGroups,
+            snapshot.NameChanges);
     }
 
     private static bool IsActiveParticipant(ZoomMeetingParticipant participant)

@@ -8,4 +8,6 @@ public sealed record AttendanceBoard(
     IReadOnlyList<BoardPersonStatus> People,
     IReadOnlyList<UnmatchedParticipantStatus> UnmatchedParticipants,
     IReadOnlyList<ParticipantEvent> RecentEvents,
-    IReadOnlyDictionary<MatchConfidence, int> ConfidenceCounts);
+    IReadOnlyDictionary<MatchConfidence, int> ConfidenceCounts,
+    IReadOnlyList<CurrentParticipantConnection>? CurrentConnections = null,
+    IReadOnlyList<DuplicateConnectionGroup>? DuplicateConnectionGroups = null);

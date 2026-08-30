@@ -99,12 +99,22 @@ public sealed class MeetingsController : ControllerBase
 
         var source = string.IsNullOrWhiteSpace(request.Source) ? DefaultSnapshotSource : request.Source.Trim();
 
+        var connections = request.Participants?
+            .Where(participant => !string.IsNullOrWhiteSpace(participant.PresenceKey) && !string.IsNullOrWhiteSpace(participant.DisplayName))
+            .Select(participant => new ParticipantSnapshotParticipant(
+                participant.PresenceKey!.Trim(),
+                participant.DisplayName!.Trim(),
+                string.IsNullOrWhiteSpace(participant.Email) ? null : participant.Email.Trim()))
+            .ToArray();
+
         var result = await _attendanceService.ApplyParticipantSnapshotAsync(
             new ParticipantSnapshotInput(
                 meetingId.Trim(),
                 request.ParticipantNames,
                 source,
-                request.CapturedAt ?? DateTimeOffset.UtcNow),
+                request.CapturedAt ?? DateTimeOffset.UtcNow,
+                ParticipantEmails: null,
+                Participants: connections is { Length: > 0 } ? connections : null),
             cancellationToken);
 
         return Ok(result);

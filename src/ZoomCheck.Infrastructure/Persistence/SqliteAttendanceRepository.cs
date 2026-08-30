@@ -67,7 +67,12 @@ public sealed class SqliteAttendanceRepository
                 confidence TEXT NOT NULL,
                 matched_roster_person_id TEXT NULL,
                 source TEXT NOT NULL,
-                raw_payload TEXT NOT NULL
+                raw_payload TEXT NOT NULL,
+                presence_key TEXT NULL,
+                raw_participant_name TEXT NULL,
+                canonical_participant_name TEXT NULL,
+                previous_participant_name TEXT NULL,
+                previous_raw_participant_name TEXT NULL
             );
             """
             ,
@@ -90,6 +95,8 @@ public sealed class SqliteAttendanceRepository
                 first_seen_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
                 participant_email TEXT NULL,
+                raw_display_name TEXT NULL,
+                canonical_name TEXT NULL,
                 PRIMARY KEY (meeting_id, source, presence_key)
             );
             """,
@@ -106,6 +113,22 @@ public sealed class SqliteAttendanceRepository
             await using var command = connection.CreateCommand();
             command.CommandText = sql;
             await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        // Older databases predate the name-change / canonical-name columns. Add them in place so
+        // existing attendance history and the presence-v2 migration below keep working.
+        foreach (var (table, column) in new[]
+        {
+            ("participant_events", "presence_key"),
+            ("participant_events", "raw_participant_name"),
+            ("participant_events", "canonical_participant_name"),
+            ("participant_events", "previous_participant_name"),
+            ("participant_events", "previous_raw_participant_name"),
+            ("participant_presence_v2", "raw_display_name"),
+            ("participant_presence_v2", "canonical_name")
+        })
+        {
+            await EnsureColumnExistsAsync(connection, table, column, "TEXT NULL", cancellationToken);
         }
 
         if (await TableExistsAsync(connection, "participant_presence", cancellationToken))
@@ -247,7 +270,7 @@ public sealed class SqliteAttendanceRepository
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT normalized_name, display_name, first_seen_at, last_seen_at, participant_email, presence_key FROM participant_presence_v2 WHERE meeting_id = $meetingId AND source = $source;";
+            "SELECT normalized_name, display_name, first_seen_at, last_seen_at, participant_email, presence_key, raw_display_name, canonical_name FROM participant_presence_v2 WHERE meeting_id = $meetingId AND source = $source;";
         command.Parameters.AddWithValue("$meetingId", meetingId);
         command.Parameters.AddWithValue("$source", source);
 
@@ -261,7 +284,9 @@ public sealed class SqliteAttendanceRepository
                 DateTimeOffset.Parse(reader.GetString(2)),
                 DateTimeOffset.Parse(reader.GetString(3)),
                 reader.IsDBNull(4) ? null : reader.GetString(4),
-                reader.GetString(5)));
+                reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6),
+                reader.IsDBNull(7) ? null : reader.GetString(7)));
         }
 
         return entries;
@@ -328,7 +353,7 @@ public sealed class SqliteAttendanceRepository
             await using var insertPresence = connection.CreateCommand();
             insertPresence.Transaction = transaction;
             insertPresence.CommandText =
-                "INSERT INTO participant_presence_v2 (meeting_id, source, presence_key, normalized_name, display_name, first_seen_at, last_seen_at, participant_email) VALUES ($meetingId, $source, $presenceKey, $normalizedName, $displayName, $firstSeenAt, $lastSeenAt, $participantEmail);";
+                "INSERT INTO participant_presence_v2 (meeting_id, source, presence_key, normalized_name, display_name, first_seen_at, last_seen_at, participant_email, raw_display_name, canonical_name) VALUES ($meetingId, $source, $presenceKey, $normalizedName, $displayName, $firstSeenAt, $lastSeenAt, $participantEmail, $rawDisplayName, $canonicalName);";
             insertPresence.Parameters.AddWithValue("$meetingId", meetingId);
             insertPresence.Parameters.AddWithValue("$source", source);
             insertPresence.Parameters.AddWithValue("$presenceKey", entry.PresenceKey ?? entry.NormalizedName);
@@ -337,6 +362,8 @@ public sealed class SqliteAttendanceRepository
             insertPresence.Parameters.AddWithValue("$firstSeenAt", entry.FirstSeenAt.ToString("O"));
             insertPresence.Parameters.AddWithValue("$lastSeenAt", entry.LastSeenAt.ToString("O"));
             insertPresence.Parameters.AddWithValue("$participantEmail", (object?)entry.ParticipantEmail ?? DBNull.Value);
+            insertPresence.Parameters.AddWithValue("$rawDisplayName", (object?)entry.RawDisplayName ?? DBNull.Value);
+            insertPresence.Parameters.AddWithValue("$canonicalName", (object?)entry.CanonicalName ?? DBNull.Value);
             await insertPresence.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -360,7 +387,7 @@ public sealed class SqliteAttendanceRepository
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT id, meeting_id, occurred_at, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload FROM participant_events WHERE meeting_id = $meetingId ORDER BY occurred_at ASC, rowid ASC;";
+            "SELECT id, meeting_id, occurred_at, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload, presence_key, raw_participant_name, canonical_participant_name, previous_participant_name, previous_raw_participant_name FROM participant_events WHERE meeting_id = $meetingId ORDER BY occurred_at ASC, rowid ASC;";
         command.Parameters.AddWithValue("$meetingId", meetingId);
 
         var events = new List<ParticipantEvent>();
@@ -378,7 +405,12 @@ public sealed class SqliteAttendanceRepository
                 Enum.Parse<MatchConfidence>(reader.GetString(7)),
                 reader.IsDBNull(8) ? null : reader.GetString(8),
                 reader.GetString(9),
-                reader.GetString(10)));
+                reader.GetString(10),
+                reader.IsDBNull(11) ? null : reader.GetString(11),
+                reader.IsDBNull(12) ? null : reader.GetString(12),
+                reader.IsDBNull(13) ? null : reader.GetString(13),
+                reader.IsDBNull(14) ? null : reader.GetString(14),
+                reader.IsDBNull(15) ? null : reader.GetString(15)));
         }
 
         return events;
@@ -430,7 +462,7 @@ public sealed class SqliteAttendanceRepository
     private static void BindParticipantEvent(SqliteCommand command, ParticipantEvent participantEvent)
     {
         command.CommandText =
-            "INSERT INTO participant_events (id, meeting_id, occurred_at, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload) VALUES ($id, $meetingId, $occurredAt, $eventType, $participantName, $normalizedParticipantName, $participantEmail, $confidence, $matchedRosterPersonId, $source, $rawPayload);";
+            "INSERT INTO participant_events (id, meeting_id, occurred_at, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload, presence_key, raw_participant_name, canonical_participant_name, previous_participant_name, previous_raw_participant_name) VALUES ($id, $meetingId, $occurredAt, $eventType, $participantName, $normalizedParticipantName, $participantEmail, $confidence, $matchedRosterPersonId, $source, $rawPayload, $presenceKey, $rawParticipantName, $canonicalParticipantName, $previousParticipantName, $previousRawParticipantName);";
         command.Parameters.AddWithValue("$id", participantEvent.Id);
         command.Parameters.AddWithValue("$meetingId", participantEvent.MeetingId);
         command.Parameters.AddWithValue("$occurredAt", participantEvent.OccurredAt.ToString("O"));
@@ -442,5 +474,10 @@ public sealed class SqliteAttendanceRepository
         command.Parameters.AddWithValue("$matchedRosterPersonId", (object?)participantEvent.MatchedRosterPersonId ?? DBNull.Value);
         command.Parameters.AddWithValue("$source", participantEvent.Source);
         command.Parameters.AddWithValue("$rawPayload", participantEvent.RawPayload);
+        command.Parameters.AddWithValue("$presenceKey", (object?)participantEvent.PresenceKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("$rawParticipantName", (object?)participantEvent.RawParticipantName ?? DBNull.Value);
+        command.Parameters.AddWithValue("$canonicalParticipantName", (object?)participantEvent.CanonicalParticipantName ?? DBNull.Value);
+        command.Parameters.AddWithValue("$previousParticipantName", (object?)participantEvent.PreviousParticipantName ?? DBNull.Value);
+        command.Parameters.AddWithValue("$previousRawParticipantName", (object?)participantEvent.PreviousRawParticipantName ?? DBNull.Value);
     }
 }

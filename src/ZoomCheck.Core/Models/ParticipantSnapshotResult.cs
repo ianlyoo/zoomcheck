@@ -12,4 +12,6 @@ public sealed record ParticipantSnapshotResult(
     IReadOnlyList<string> JoinedNames,
     IReadOnlyList<string> LeftNames,
     IReadOnlyList<string> IgnoredNames,
-    AttendanceBoard Board);
+    AttendanceBoard Board,
+    /// <summary>Display-name changes observed on connections that were already present.</summary>
+    IReadOnlyList<ParticipantNameChange>? NameChanges = null);

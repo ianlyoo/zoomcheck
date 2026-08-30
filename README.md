@@ -16,6 +16,8 @@ ZoomCheck does not read the Zoom participant panel, use screen recognition, or a
 - Live Zoom participant sync, manual refresh, and 5–600 second auto-sync
 - Email-first matching plus name, alias, and review confidence levels
 - Persistent join/leave activity log and current attendance state
+- Expandable participant rows with raw/canonical Zoom names and connection history
+- Safe Korean name canonicalization, rename activity, and duplicate connection groups
 - CSV export, manual full-list fallback, responsive local dashboard
 - Self-contained Windows installer and portable ZIP; no separate .NET install
 - Local-only listener at `http://127.0.0.1:5078`; data under `%LOCALAPPDATA%\ZoomCheck`
@@ -40,8 +42,9 @@ Credentials are never bundled in source, the installer, or the portable archive.
 2. Enter the live meeting ID and upload an Excel roster containing number/name columns.
 3. Select **Sync Zoom participants now** and verify the current count.
 4. Enable automatic sync; 10 seconds is the recommended default.
-5. Review ambiguous or unmatched names, then export CSV at the end.
-6. If the meeting has truly reached zero participants, explicitly allow one empty API snapshot to record everyone as left.
+5. Select a participant row to inspect raw Zoom names, safe canonicalization, connections, and attendance history.
+6. Review ambiguous, duplicate, or unmatched names, then export CSV at the end.
+7. If the meeting has truly reached zero participants, confirm the empty snapshot from the warning bar to record everyone as left.
 
 Times in the activity log are polling observation times and may lag Zoom by one polling interval. API errors, incomplete pagination, and unconfirmed empty responses leave the previous attendance snapshot unchanged.
 

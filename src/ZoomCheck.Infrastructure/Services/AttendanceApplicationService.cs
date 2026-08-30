@@ -53,20 +53,25 @@ public sealed class AttendanceApplicationService
     {
         var roster = await _repository.GetRosterPeopleAsync(cancellationToken);
         var aliases = await _repository.GetAliasMapAsync(cancellationToken);
-        var candidate = _matcher.Match(roster, aliases, input.ParticipantName, input.ParticipantEmail);
+        var rawName = input.ParticipantName;
+        var canonicalName = ResolveCanonicalName(rawName, input.ParticipantEmail, roster, aliases);
+        var effectiveName = canonicalName ?? rawName;
+        var candidate = MatchParticipant(roster, aliases, rawName, effectiveName, input.ParticipantEmail);
 
         var participantEvent = new ParticipantEvent(
             Id: Guid.NewGuid().ToString("N"),
             MeetingId: input.MeetingId,
             OccurredAt: input.OccurredAt,
             EventType: input.EventType,
-            ParticipantName: input.ParticipantName,
-            NormalizedParticipantName: NameNormalizer.Normalize(input.ParticipantName),
+            ParticipantName: effectiveName,
+            NormalizedParticipantName: NameNormalizer.Normalize(effectiveName),
             ParticipantEmail: input.ParticipantEmail,
             Confidence: candidate.Confidence,
             MatchedRosterPersonId: candidate.Person?.Id,
             Source: input.Source,
-            RawPayload: input.RawPayload);
+            RawPayload: input.RawPayload,
+            RawParticipantName: rawName,
+            CanonicalParticipantName: canonicalName);
 
         await _repository.AppendParticipantEventAsync(participantEvent, cancellationToken);
         return participantEvent;
@@ -97,7 +102,9 @@ public sealed class AttendanceApplicationService
         var source = input.Source.Trim();
         var capturedAt = input.CapturedAt;
 
-        var present = new Dictionary<string, (string DisplayName, string NormalizedName, string? Email)>(StringComparer.Ordinal);
+        var rosterForCanonicalization = await _repository.GetRosterPeopleAsync(cancellationToken);
+        var aliasesForCanonicalization = await _repository.GetAliasMapAsync(cancellationToken);
+        var present = new Dictionary<string, PresentParticipant>(StringComparer.Ordinal);
         var emails = new Dictionary<string, string?>(StringComparer.Ordinal);
         var ignored = new List<string>();
         if (input.ParticipantEmails is not null)
@@ -116,9 +123,16 @@ public sealed class AttendanceApplicationService
         {
             foreach (var participant in input.Participants)
             {
-                var displayName = participant.DisplayName?.Trim() ?? string.Empty;
-                var normalized = NameNormalizer.Normalize(displayName);
+                var rawName = participant.DisplayName?.Trim() ?? string.Empty;
                 var presenceKey = participant.PresenceKey?.Trim() ?? string.Empty;
+                var participantEmail = string.IsNullOrWhiteSpace(participant.Email) ? null : participant.Email.Trim();
+                var canonicalName = ResolveCanonicalName(
+                    rawName,
+                    participantEmail,
+                    rosterForCanonicalization,
+                    aliasesForCanonicalization);
+                var displayName = canonicalName ?? rawName;
+                var normalized = NameNormalizer.Normalize(displayName);
                 if (string.IsNullOrWhiteSpace(displayName) || string.IsNullOrWhiteSpace(normalized) || string.IsNullOrWhiteSpace(presenceKey))
                 {
                     continue;
@@ -126,14 +140,27 @@ public sealed class AttendanceApplicationService
 
                 present.TryAdd(
                     presenceKey,
-                    (displayName, normalized, string.IsNullOrWhiteSpace(participant.Email) ? null : participant.Email.Trim()));
+                    new PresentParticipant(
+                        rawName,
+                        displayName,
+                        canonicalName,
+                        normalized,
+                        participantEmail));
             }
         }
         else
         {
             foreach (var rawName in input.ParticipantNames ?? Array.Empty<string>())
             {
-                var displayName = rawName?.Trim() ?? string.Empty;
+                var trimmedRawName = rawName?.Trim() ?? string.Empty;
+                var rawNormalized = NameNormalizer.Normalize(trimmedRawName);
+                emails.TryGetValue(rawNormalized, out var participantEmail);
+                var canonicalName = ResolveCanonicalName(
+                    trimmedRawName,
+                    participantEmail,
+                    rosterForCanonicalization,
+                    aliasesForCanonicalization);
+                var displayName = canonicalName ?? trimmedRawName;
                 var normalized = NameNormalizer.Normalize(displayName);
                 if (string.IsNullOrEmpty(normalized))
                 {
@@ -145,10 +172,17 @@ public sealed class AttendanceApplicationService
                     continue;
                 }
 
-                emails.TryGetValue(normalized, out var participantEmail);
+                if (participantEmail is null && !emails.TryGetValue(normalized, out participantEmail))
+                {
+                    emails.TryGetValue(rawNormalized, out participantEmail);
+                }
 
-                // Manual snapshots have no stable Zoom identity, so normalized name is the key.
-                present.TryAdd(normalized, (displayName, normalized, participantEmail));
+                // Manual snapshots have no stable Zoom identity. Keep their key tied to the raw
+                // submitted name so importing a roster later cannot manufacture a leave + join
+                // merely because canonicalization became available.
+                present.TryAdd(
+                    rawNormalized,
+                    new PresentParticipant(trimmedRawName, displayName, canonicalName, normalized, participantEmail));
             }
         }
 
@@ -165,35 +199,90 @@ public sealed class AttendanceApplicationService
             var derivedEvents = new List<ParticipantEvent>();
             var joinedNames = new List<string>();
             var leftNames = new List<string>();
+            var nameChanges = new List<ParticipantNameChange>();
             var presentEntries = new List<ParticipantSnapshotEntry>(present.Count);
 
             foreach (var (presenceKey, participant) in present)
             {
-                var (displayName, normalized, participantEmail) = participant;
+                var rawName = participant.RawName;
+                var displayName = participant.DisplayName;
+                var canonicalName = participant.CanonicalName;
+                var normalized = participant.NormalizedName;
+                var participantEmail = participant.Email;
                 if (previousByKey.TryGetValue(presenceKey, out var existing))
                 {
-                    presentEntries.Add(existing with
+                    var resolvedEmail = participantEmail ?? existing.ParticipantEmail;
+                    var updated = existing with
                     {
                         DisplayName = displayName,
+                        NormalizedName = normalized,
+                        RawDisplayName = rawName,
+                        CanonicalName = canonicalName,
                         LastSeenAt = capturedAt,
-                        ParticipantEmail = participantEmail ?? existing.ParticipantEmail
-                    });
+                        ParticipantEmail = resolvedEmail
+                    };
+                    presentEntries.Add(updated);
+
+                    // Same connection, different name: record it so the operator can see the rename.
+                    // Compare on the normalized name so re-submitting the same name with different
+                    // spacing or punctuation is not reported as a rename.
+                    var previousRawName = existing.EffectiveRawDisplayName;
+                    if (!string.Equals(existing.NormalizedName, normalized, StringComparison.Ordinal))
+                    {
+                        nameChanges.Add(new ParticipantNameChange(
+                            PresenceKey: presenceKey,
+                            PreviousRawName: previousRawName,
+                            PreviousName: existing.DisplayName,
+                            RawName: rawName,
+                            Name: displayName,
+                            CanonicalName: canonicalName,
+                            OccurredAt: capturedAt));
+
+                        derivedEvents.Add(CreateSnapshotEvent(
+                            meetingId,
+                            capturedAt,
+                            ParticipantEventType.NameChanged,
+                            rawName,
+                            displayName,
+                            canonicalName,
+                            normalized,
+                            resolvedEmail,
+                            source,
+                            roster,
+                            aliases,
+                            present.Count,
+                            presenceKey,
+                            previousName: existing.DisplayName,
+                            previousRawName: previousRawName));
+                    }
+
                     continue;
                 }
 
-                presentEntries.Add(new ParticipantSnapshotEntry(normalized, displayName, capturedAt, capturedAt, participantEmail, presenceKey));
+                presentEntries.Add(new ParticipantSnapshotEntry(
+                    normalized,
+                    displayName,
+                    capturedAt,
+                    capturedAt,
+                    participantEmail,
+                    presenceKey,
+                    rawName,
+                    canonicalName));
                 joinedNames.Add(displayName);
                 derivedEvents.Add(CreateSnapshotEvent(
                     meetingId,
                     capturedAt,
                     ParticipantEventType.Joined,
+                    rawName,
                     displayName,
+                    canonicalName,
                     normalized,
                     participantEmail,
                     source,
                     roster,
                     aliases,
-                    present.Count));
+                    present.Count,
+                    presenceKey));
             }
 
             foreach (var entry in previous)
@@ -208,13 +297,16 @@ public sealed class AttendanceApplicationService
                     meetingId,
                     capturedAt,
                     ParticipantEventType.Left,
+                    entry.EffectiveRawDisplayName,
                     entry.DisplayName,
+                    entry.CanonicalName,
                     entry.NormalizedName,
                     entry.ParticipantEmail,
                     source,
                     roster,
                     aliases,
-                    present.Count));
+                    present.Count,
+                    entry.PresenceKey ?? entry.NormalizedName));
             }
 
             await _repository.ApplyParticipantSnapshotAsync(meetingId, source, capturedAt, presentEntries, derivedEvents, cancellationToken);
@@ -228,7 +320,8 @@ public sealed class AttendanceApplicationService
                 JoinedNames: joinedNames,
                 LeftNames: leftNames,
                 IgnoredNames: ignored,
-                Board: board);
+                Board: board,
+                NameChanges: nameChanges);
         }
         finally
         {
@@ -236,19 +329,75 @@ public sealed class AttendanceApplicationService
         }
     }
 
+    private sealed record PresentParticipant(
+        string RawName,
+        string DisplayName,
+        string? CanonicalName,
+        string NormalizedName,
+        string? Email);
+
+    private string? ResolveCanonicalName(
+        string rawName,
+        string? participantEmail,
+        IReadOnlyList<RosterPerson> roster,
+        IReadOnlyDictionary<string, string> aliases)
+    {
+        if (!KoreanNameCanonicalizer.TryCanonicalize(rawName, roster, out var canonicalName, out var canonicalPerson))
+        {
+            return null;
+        }
+
+        // Explicit identity evidence must win over an automatic display-name rewrite. If an
+        // email or operator-saved alias says this is a different roster person, leave the raw
+        // name untouched instead of presenting a misleading canonical name.
+        var rawCandidate = _matcher.Match(roster, aliases, rawName, participantEmail);
+        var hasExplicitRawMatch = rawCandidate.Confidence is MatchConfidence.Verified or MatchConfidence.AliasVerified;
+        if (hasExplicitRawMatch
+            && rawCandidate.Person is not null
+            && !string.Equals(rawCandidate.Person.Id, canonicalPerson!.Id, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return canonicalName;
+    }
+
+    private MatchCandidate MatchParticipant(
+        IReadOnlyList<RosterPerson> roster,
+        IReadOnlyDictionary<string, string> aliases,
+        string rawName,
+        string displayName,
+        string? participantEmail)
+    {
+        var rawCandidate = _matcher.Match(roster, aliases, rawName, participantEmail);
+        if (rawCandidate.Confidence is MatchConfidence.Verified or MatchConfidence.AliasVerified)
+        {
+            return rawCandidate;
+        }
+
+        return string.Equals(rawName, displayName, StringComparison.Ordinal)
+            ? rawCandidate
+            : _matcher.Match(roster, aliases, displayName, participantEmail);
+    }
+
     private ParticipantEvent CreateSnapshotEvent(
         string meetingId,
         DateTimeOffset occurredAt,
         ParticipantEventType eventType,
+        string rawName,
         string displayName,
+        string? canonicalName,
         string normalizedName,
         string? participantEmail,
         string source,
         IReadOnlyList<RosterPerson> roster,
         IReadOnlyDictionary<string, string> aliases,
-        int snapshotSize)
+        int snapshotSize,
+        string? presenceKey = null,
+        string? previousName = null,
+        string? previousRawName = null)
     {
-        var candidate = _matcher.Match(roster, aliases, displayName, participantEmail);
+        var candidate = MatchParticipant(roster, aliases, rawName, displayName, participantEmail);
         return new ParticipantEvent(
             Id: Guid.NewGuid().ToString("N"),
             MeetingId: meetingId,
@@ -266,8 +415,18 @@ public sealed class AttendanceApplicationService
                 source,
                 capturedAt = occurredAt,
                 snapshotSize,
-                name = displayName
-            }));
+                name = displayName,
+                rawName,
+                canonicalName,
+                presenceKey,
+                previousName,
+                previousRawName
+            }),
+            PresenceKey: presenceKey,
+            RawParticipantName: rawName,
+            CanonicalParticipantName: canonicalName,
+            PreviousParticipantName: previousName,
+            PreviousRawParticipantName: previousRawName);
     }
 
     public async Task<AttendanceBoard> BuildBoardAsync(string meetingId, CancellationToken cancellationToken = default)
@@ -280,28 +439,72 @@ public sealed class AttendanceApplicationService
             string.Equals(snapshot.Source, "zoom-live-participants", StringComparison.Ordinal));
         var authoritativeSnapshots = zoomSnapshot is null ? snapshots : new[] { zoomSnapshot };
         var currentPresence = new List<ParticipantSnapshotEntry>();
+        var sourceByPresenceKey = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var snapshot in authoritativeSnapshots)
         {
-            currentPresence.AddRange(await _repository.GetParticipantPresenceAsync(meetingId, snapshot.Source, cancellationToken));
+            var entries = await _repository.GetParticipantPresenceAsync(meetingId, snapshot.Source, cancellationToken);
+            currentPresence.AddRange(entries);
+            foreach (var entry in entries)
+            {
+                sourceByPresenceKey[entry.PresenceKey ?? entry.NormalizedName] = snapshot.Source;
+            }
         }
 
         var currentCandidates = currentPresence
             .Select(entry => new
             {
                 Entry = entry,
-                Candidate = _matcher.Match(roster, aliases, entry.DisplayName, entry.ParticipantEmail)
+                Candidate = MatchParticipant(
+                    roster,
+                    aliases,
+                    entry.EffectiveRawDisplayName,
+                    entry.DisplayName,
+                    entry.ParticipantEmail)
             })
             .ToArray();
-        var ambiguousPersonIds = currentCandidates
-            .Where(item => item.Candidate.Person is not null)
-            .GroupBy(item => item.Candidate.Person!.Id, StringComparer.Ordinal)
-            .Where(group => group.Count() > 1)
-            .Select(group => group.Key)
-            .ToHashSet(StringComparer.Ordinal);
-        var currentlyPresentPersonIds = currentCandidates
-            .Where(item => item.Candidate.Person is not null && !ambiguousPersonIds.Contains(item.Candidate.Person.Id))
-            .Select(item => item.Candidate.Person!.Id)
-            .ToHashSet(StringComparer.Ordinal);
+        var currentConnections = currentCandidates
+            .Select(item =>
+            {
+                var presenceKey = item.Entry.PresenceKey ?? item.Entry.NormalizedName;
+                sourceByPresenceKey.TryGetValue(presenceKey, out var connectionSource);
+                return new CurrentParticipantConnection(
+                    PresenceKey: presenceKey,
+                    Source: connectionSource ?? string.Empty,
+                    RawName: item.Entry.EffectiveRawDisplayName,
+                    DisplayName: item.Entry.DisplayName,
+                    CanonicalName: item.Entry.CanonicalName,
+                    NormalizedName: item.Entry.NormalizedName,
+                    Email: item.Entry.ParticipantEmail,
+                    FirstSeenAt: item.Entry.FirstSeenAt,
+                    LastSeenAt: item.Entry.LastSeenAt,
+                    MatchedRosterPersonId: item.Candidate.Person?.Id,
+                    MatchedRosterPersonName: item.Candidate.Person?.Name,
+                    Confidence: item.Candidate.Confidence,
+                    MatchScore: item.Candidate.Score,
+                    MatchReason: item.Candidate.Reason);
+            })
+            .OrderBy(connection => connection.FirstSeenAt)
+            .ToArray();
+
+        // A roster person matched by several live connections is still present exactly once.
+        // The extra connections surface as review metadata instead of cancelling attendance.
+        var connectionsByPerson = currentConnections
+            .Where(connection => connection.MatchedRosterPersonId is not null)
+            .GroupBy(connection => connection.MatchedRosterPersonId!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+
+        var duplicateConnectionGroups = connectionsByPerson
+            .Where(pair => pair.Value.Length > 1)
+            .Select(pair => new DuplicateConnectionGroup(
+                RosterPersonId: pair.Key,
+                RosterPersonName: pair.Value[0].MatchedRosterPersonName ?? string.Empty,
+                ConnectionCount: pair.Value.Length,
+                Connections: pair.Value))
+            .OrderByDescending(group => group.ConnectionCount)
+            .ThenBy(group => group.RosterPersonId, StringComparer.Ordinal)
+            .ToArray();
+
+        var currentlyPresentPersonIds = connectionsByPerson.Keys.ToHashSet(StringComparer.Ordinal);
 
         var groupedByRosterPerson = events
             .Where(evt => !string.IsNullOrWhiteSpace(evt.MatchedRosterPersonId))
@@ -314,7 +517,7 @@ public sealed class AttendanceApplicationService
             personEvents ??= new List<ParticipantEvent>();
 
             var joined = personEvents.Where(evt => evt.EventType == ParticipantEventType.Joined).ToList();
-            var lastEvent = personEvents.LastOrDefault();
+            var lastEvent = personEvents.LastOrDefault(evt => evt.EventType != ParticipantEventType.NameChanged);
             var lastJoin = joined.LastOrDefault()?.OccurredAt;
             var lastLeft = personEvents.LastOrDefault(evt => evt.EventType == ParticipantEventType.Left)?.OccurredAt;
             var confidence = personEvents.Any() ? personEvents.MaxBy(evt => evt.Confidence)?.Confidence ?? MatchConfidence.Unmatched : MatchConfidence.Unmatched;
@@ -337,7 +540,9 @@ public sealed class AttendanceApplicationService
                 ConfidenceReason: reason,
                 LastJoinedAt: lastJoin,
                 LastLeftAt: lastLeft,
-                JoinCount: joined.Count);
+                JoinCount: joined.Count,
+                ActiveConnectionCount: connectionsByPerson.TryGetValue(person.Id, out var personConnections) ? personConnections.Length : 0,
+                HasDuplicateConnections: connectionsByPerson.TryGetValue(person.Id, out var duplicateCheck) && duplicateCheck.Length > 1);
         }).OrderBy(item => ParseSequence(item.Sequence)).ToArray();
 
         var unmatched = snapshots.Count == 0
@@ -356,7 +561,7 @@ public sealed class AttendanceApplicationService
                 .OrderByDescending(item => item.LastSeenAt)
                 .ToArray()
             : currentCandidates
-                .Where(item => item.Candidate.Person is null || ambiguousPersonIds.Contains(item.Candidate.Person.Id))
+                .Where(item => item.Candidate.Person is null)
                 .Select(item =>
                 {
                     var eventCount = events.Count(evt => evt.NormalizedParticipantName == item.Entry.NormalizedName);
@@ -380,7 +585,9 @@ public sealed class AttendanceApplicationService
             People: people,
             UnmatchedParticipants: unmatched,
             RecentEvents: events.OrderByDescending(evt => evt.OccurredAt).Take(30).ToArray(),
-            ConfidenceCounts: confidenceCounts);
+            ConfidenceCounts: confidenceCounts,
+            CurrentConnections: currentConnections,
+            DuplicateConnectionGroups: duplicateConnectionGroups);
     }
 
     public async Task<string> BuildBoardCsvAsync(string meetingId, CancellationToken cancellationToken = default)
@@ -458,7 +665,13 @@ public sealed class AttendanceApplicationService
             return AttendanceState.NotJoined;
         }
 
-        return participantEvent.EventType == ParticipantEventType.Joined ? AttendanceState.Present : AttendanceState.Left;
+        return participantEvent.EventType switch
+        {
+            ParticipantEventType.Joined => AttendanceState.Present,
+            // A rename does not change whether the participant is in the meeting.
+            ParticipantEventType.NameChanged => AttendanceState.Present,
+            _ => AttendanceState.Left
+        };
     }
 
     private static int ParseSequence(string value) => int.TryParse(value, out var parsed) ? parsed : int.MaxValue;
