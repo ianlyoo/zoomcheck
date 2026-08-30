@@ -18,7 +18,14 @@ public sealed class SqliteAttendanceRepository
             Directory.CreateDirectory(directory);
         }
 
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = fullPath }.ToString();
+        // The app opens short-lived connections for each repository operation. Disabling
+        // pooling ensures those connections release the database file immediately on
+        // Windows as well, which is important for clean shutdowns and portable builds.
+        _connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = fullPath,
+            Pooling = false
+        }.ToString();
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
