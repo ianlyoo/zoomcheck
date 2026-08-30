@@ -179,7 +179,8 @@ if (-not $isccCandidates) {
 }
 
 Write-Step "Building installer with Inno Setup"
-& $isccCandidates[0] "/DMyAppVersion=$Version" (Join-Path $PSScriptRoot "ZoomCheck.iss")
+$isccPath = $isccCandidates | Select-Object -First 1
+& $isccPath "/DMyAppVersion=$Version" (Join-Path $PSScriptRoot "ZoomCheck.iss")
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE."
 }
