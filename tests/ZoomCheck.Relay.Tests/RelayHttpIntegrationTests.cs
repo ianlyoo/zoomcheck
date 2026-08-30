@@ -22,7 +22,12 @@ public sealed class RelayHttpIntegrationTests
 
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
         Assert.Equal(HttpStatusCode.OK, companion.StatusCode);
-        Assert.Contains("ZoomCheck", await companion.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        var companionHtml = await companion.Content.ReadAsStringAsync();
+        Assert.Contains("ZoomCheck", companionHtml, StringComparison.Ordinal);
+        Assert.Contains("<meta name=\"referrer\" content=\"no-referrer\" />", companionHtml, StringComparison.Ordinal);
+        Assert.True(
+            companionHtml.IndexOf("bootstrap.js", StringComparison.Ordinal)
+            < companionHtml.IndexOf("appssdk.zoom.us", StringComparison.Ordinal));
         Assert.Contains("appssdk.zoom.us", companion.Headers.GetValues("Content-Security-Policy").Single());
         Assert.Equal("nosniff", companion.Headers.GetValues("X-Content-Type-Options").Single());
         Assert.Equal("no-referrer-when-downgrade", companion.Headers.GetValues("Referrer-Policy").Single());
