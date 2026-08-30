@@ -1,5 +1,6 @@
 using ZoomCheck.Backend.Contracts;
 using ZoomCheck.Core.Models;
+using ZoomCheck.Core.Services;
 using ZoomCheck.Infrastructure.Services;
 
 namespace ZoomCheck.Backend.Services;
@@ -22,7 +23,7 @@ public sealed class ZoomLiveSyncService
         bool allowEmptySnapshot = false,
         CancellationToken cancellationToken = default)
     {
-        var normalizedMeetingId = NormalizeMeetingId(meetingId);
+        var normalizedMeetingId = MeetingIdNormalizer.Normalize(meetingId);
         var apiParticipants = await _zoomApiClient.GetLiveParticipantsAsync(normalizedMeetingId, cancellationToken);
 
         var active = apiParticipants
@@ -100,26 +101,6 @@ public sealed class ZoomLiveSyncService
             : $"zoom-name:{normalizedName}|{normalizedEmail}";
     }
 
-    private static string NormalizeMeetingId(string meetingId)
-    {
-        if (string.IsNullOrWhiteSpace(meetingId))
-        {
-            throw new ArgumentException("Meeting id is required.", nameof(meetingId));
-        }
-
-        var trimmed = meetingId.Trim();
-        if (trimmed.All(character => char.IsDigit(character) || char.IsWhiteSpace(character) || character == '-'))
-        {
-            trimmed = new string(trimmed.Where(char.IsDigit).ToArray());
-        }
-
-        if (string.IsNullOrWhiteSpace(trimmed) || trimmed.Length > 512)
-        {
-            throw new ArgumentException("Meeting id is invalid.", nameof(meetingId));
-        }
-
-        return trimmed;
-    }
 }
 
 public sealed class ZoomLiveSyncException : Exception

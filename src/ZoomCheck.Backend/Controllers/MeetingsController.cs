@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using ZoomCheck.Backend.Contracts;
 using ZoomCheck.Core.Models;
+using ZoomCheck.Core.Services;
 using ZoomCheck.Infrastructure.Services;
 
 namespace ZoomCheck.Backend.Controllers;
@@ -22,20 +23,32 @@ public sealed class MeetingsController : ControllerBase
     [HttpGet("{meetingId}/board")]
     public async Task<IActionResult> GetBoard(string meetingId, CancellationToken cancellationToken)
     {
-        var board = await _attendanceService.BuildBoardAsync(meetingId, cancellationToken);
+        if (!MeetingIdNormalizer.TryNormalize(meetingId, out var normalizedMeetingId))
+        {
+            return InvalidMeetingId();
+        }
+        var board = await _attendanceService.BuildBoardAsync(normalizedMeetingId, cancellationToken);
         return Ok(board);
     }
 
     [HttpPost("{meetingId}/seed-demo")]
     public async Task<IActionResult> SeedDemo(string meetingId, CancellationToken cancellationToken)
     {
-        await _attendanceService.SeedDemoEventsAsync(meetingId, cancellationToken);
-        return Accepted(new { meetingId, message = "Demo events seeded." });
+        if (!MeetingIdNormalizer.TryNormalize(meetingId, out var normalizedMeetingId))
+        {
+            return InvalidMeetingId();
+        }
+        await _attendanceService.SeedDemoEventsAsync(normalizedMeetingId, cancellationToken);
+        return Accepted(new { meetingId = normalizedMeetingId, message = "Demo events seeded." });
     }
 
     [HttpPost("{meetingId}/events")]
     public async Task<IActionResult> IngestParticipantEvents(string meetingId, [FromBody] IReadOnlyList<ParticipantEventRequest> events, CancellationToken cancellationToken)
     {
+        if (!MeetingIdNormalizer.TryNormalize(meetingId, out var normalizedMeetingId))
+        {
+            return InvalidMeetingId();
+        }
         if (events.Count == 0)
         {
             return Ok(new { accepted = 0 });
@@ -46,7 +59,7 @@ public sealed class MeetingsController : ControllerBase
         {
             await _attendanceService.RecordParticipantEventAsync(
                 new ParticipantEventInput(
-                    meetingId,
+                    normalizedMeetingId,
                     item.OccurredAt ?? DateTimeOffset.UtcNow,
                     item.EventType,
                     item.ParticipantName,
@@ -65,12 +78,9 @@ public sealed class MeetingsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ApplyParticipantSnapshot(string meetingId, [FromBody] ParticipantSnapshotRequest? request, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(meetingId))
+        if (!MeetingIdNormalizer.TryNormalize(meetingId, out var normalizedMeetingId))
         {
-            return Problem(
-                title: "Invalid meeting id.",
-                detail: "meetingId is required.",
-                statusCode: StatusCodes.Status400BadRequest);
+            return InvalidMeetingId();
         }
 
         if (request is null)
@@ -109,7 +119,7 @@ public sealed class MeetingsController : ControllerBase
 
         var result = await _attendanceService.ApplyParticipantSnapshotAsync(
             new ParticipantSnapshotInput(
-                meetingId.Trim(),
+                normalizedMeetingId,
                 request.ParticipantNames,
                 source,
                 request.CapturedAt ?? DateTimeOffset.UtcNow,
@@ -123,7 +133,17 @@ public sealed class MeetingsController : ControllerBase
     [HttpGet("{meetingId}/export")]
     public async Task<IActionResult> ExportCsv(string meetingId, CancellationToken cancellationToken)
     {
-        var csv = await _attendanceService.BuildBoardCsvAsync(meetingId, cancellationToken);
-        return File(System.Text.Encoding.UTF8.GetBytes(csv), "text/csv", $"{meetingId}-attendance.csv");
+        if (!MeetingIdNormalizer.TryNormalize(meetingId, out var normalizedMeetingId))
+        {
+            return InvalidMeetingId();
+        }
+        var csv = await _attendanceService.BuildBoardCsvAsync(normalizedMeetingId, cancellationToken);
+        return File(System.Text.Encoding.UTF8.GetBytes(csv), "text/csv", $"{normalizedMeetingId}-attendance.csv");
     }
+
+    private ObjectResult InvalidMeetingId()
+        => Problem(
+            title: "Invalid meeting id.",
+            detail: "meetingId is required and must be valid. Spaces and hyphens in numeric Zoom meeting IDs are ignored.",
+            statusCode: StatusCodes.Status400BadRequest);
 }

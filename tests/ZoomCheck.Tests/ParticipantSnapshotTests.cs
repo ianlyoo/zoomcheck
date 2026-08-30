@@ -118,6 +118,17 @@ public sealed class ParticipantSnapshotTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NumericMeetingId_WithSpacesAndHyphens_UsesOneAttendanceBoard()
+    {
+        await Apply("123 456-789", "zoom-live-participants", "김영인");
+
+        var board = await _service.BuildBoardAsync("123456789");
+
+        Assert.Equal("123456789", board.MeetingId);
+        Assert.Equal(AttendanceState.Present, board.People.Single(person => person.RosterPersonId == "p1").AttendanceState);
+    }
+
+    [Fact]
     public async Task ApplySnapshot_RosterReimportPreservesAttendanceAndAliases()
     {
         await Apply("meeting-1", "manual-snapshot", "김영인");

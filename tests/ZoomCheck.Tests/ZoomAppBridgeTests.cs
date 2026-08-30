@@ -84,6 +84,7 @@ public sealed class ZoomAppBridgeTests : IAsyncLifetime
             }));
 
         Assert.Equal(2, result.ActiveParticipants);
+        Assert.Equal("123456789", result.Snapshot.Board.MeetingId);
         Assert.All(result.Snapshot.Board.People, person => Assert.Equal(AttendanceState.Present, person.AttendanceState));
         Assert.Contains(result.Snapshot.Board.CurrentConnections!, item =>
             item.PresenceKey == "zoom-app:uuid-1"

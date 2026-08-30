@@ -83,7 +83,16 @@
   function normalizeSearch(value) {
     return String(value || '').toLocaleLowerCase('ko-KR').replace(/\s+/g, ' ').trim();
   }
-  function currentMeetingId() { return el.meetingId.value.trim(); }
+  function normalizeMeetingId(value) {
+    var trimmed = String(value || '').trim();
+    if (/^[0-9\s-]+$/.test(trimmed)) { return trimmed.replace(/\D/g, ''); }
+    return trimmed;
+  }
+  function currentMeetingId() {
+    var normalized = normalizeMeetingId(el.meetingId.value);
+    if (el.meetingId.value !== normalized) { el.meetingId.value = normalized; }
+    return normalized;
+  }
   function intervalSeconds() {
     var value = parseInt(el.intervalInput.value, 10);
     if (isNaN(value)) { value = 10; }

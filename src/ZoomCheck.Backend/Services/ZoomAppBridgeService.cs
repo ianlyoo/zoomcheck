@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using ZoomCheck.Backend.Contracts;
 using ZoomCheck.Backend.Options;
 using ZoomCheck.Core.Models;
+using ZoomCheck.Core.Services;
 using ZoomCheck.Infrastructure.Services;
 
 namespace ZoomCheck.Backend.Services;
@@ -423,18 +424,11 @@ public sealed class ZoomAppBridgeService
 
     private static string NormalizeMeetingId(string? meetingId)
     {
-        var trimmed = meetingId?.Trim() ?? string.Empty;
-        if (trimmed.All(character => char.IsDigit(character) || char.IsWhiteSpace(character) || character == '-'))
-        {
-            trimmed = new string(trimmed.Where(char.IsDigit).ToArray());
-        }
-
-        if (string.IsNullOrWhiteSpace(trimmed) || trimmed.Length > 512)
+        if (!MeetingIdNormalizer.TryNormalize(meetingId, out var normalized))
         {
             throw new ZoomAppBridgeException(ZoomAppBridgeError.InvalidRequest, "A valid meeting id is required.");
         }
-
-        return trimmed;
+        return normalized;
     }
 
     private static string NormalizeRole(string? role)

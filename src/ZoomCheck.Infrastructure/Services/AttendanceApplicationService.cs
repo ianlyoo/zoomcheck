@@ -47,10 +47,11 @@ public sealed class AttendanceApplicationService
         => _repository.GetRosterPeopleAsync(cancellationToken);
 
     public Task<IReadOnlyList<ParticipantEvent>> GetParticipantEventsForMeetingAsync(string meetingId, CancellationToken cancellationToken = default)
-        => _repository.GetParticipantEventsAsync(meetingId, cancellationToken);
+        => _repository.GetParticipantEventsAsync(MeetingIdNormalizer.Normalize(meetingId), cancellationToken);
 
     public async Task<ParticipantEvent> RecordParticipantEventAsync(ParticipantEventInput input, CancellationToken cancellationToken = default)
     {
+        var meetingId = MeetingIdNormalizer.Normalize(input.MeetingId);
         var roster = await _repository.GetRosterPeopleAsync(cancellationToken);
         var aliases = await _repository.GetAliasMapAsync(cancellationToken);
         var rawName = input.ParticipantName;
@@ -60,7 +61,7 @@ public sealed class AttendanceApplicationService
 
         var participantEvent = new ParticipantEvent(
             Id: Guid.NewGuid().ToString("N"),
-            MeetingId: input.MeetingId,
+            MeetingId: meetingId,
             OccurredAt: input.OccurredAt,
             EventType: input.EventType,
             ParticipantName: effectiveName,
@@ -88,17 +89,12 @@ public sealed class AttendanceApplicationService
     /// </summary>
     public async Task<ParticipantSnapshotResult> ApplyParticipantSnapshotAsync(ParticipantSnapshotInput input, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(input.MeetingId))
-        {
-            throw new ArgumentException("Meeting id is required.", nameof(input));
-        }
-
         if (string.IsNullOrWhiteSpace(input.Source))
         {
             throw new ArgumentException("Snapshot source is required.", nameof(input));
         }
 
-        var meetingId = input.MeetingId.Trim();
+        var meetingId = MeetingIdNormalizer.Normalize(input.MeetingId);
         var source = input.Source.Trim();
         var capturedAt = input.CapturedAt;
 
@@ -487,6 +483,7 @@ public sealed class AttendanceApplicationService
 
     public async Task<AttendanceBoard> BuildBoardAsync(string meetingId, CancellationToken cancellationToken = default)
     {
+        meetingId = MeetingIdNormalizer.Normalize(meetingId);
         var roster = await _repository.GetRosterPeopleAsync(cancellationToken);
         var events = await _repository.GetParticipantEventsAsync(meetingId, cancellationToken);
         var aliases = await _repository.GetAliasMapAsync(cancellationToken);
@@ -684,6 +681,7 @@ public sealed class AttendanceApplicationService
 
     public async Task SeedDemoEventsAsync(string meetingId, CancellationToken cancellationToken = default)
     {
+        meetingId = MeetingIdNormalizer.Normalize(meetingId);
         var roster = await _repository.GetRosterPeopleAsync(cancellationToken);
         if (roster.Count == 0)
         {
