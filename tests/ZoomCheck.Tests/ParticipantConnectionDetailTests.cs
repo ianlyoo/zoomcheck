@@ -261,6 +261,40 @@ public sealed class ParticipantConnectionDetailTests : IAsyncLifetime
         Assert.False(absent.HasDuplicateConnections);
     }
 
+    [Fact]
+    public async Task Snapshot_ConnectorIdChangeForUniquePerson_DoesNotCreateFalseLeaveAndJoin()
+    {
+        await Apply("meeting-1", Connection("zoom-id:dashboard-1", "이순신"));
+
+        var switched = await Apply("meeting-1", Connection("zoom-app:uuid-1", "이순신"));
+
+        Assert.Empty(switched.JoinedNames);
+        Assert.Empty(switched.LeftNames);
+        Assert.Single(switched.Board.CurrentConnections!);
+        Assert.Equal("zoom-id:dashboard-1", switched.Board.CurrentConnections![0].PresenceKey);
+        Assert.Equal(
+            1,
+            switched.Board.RecentEvents.Count(item =>
+                item.ParticipantName == "이순신" && item.EventType == ParticipantEventType.Joined));
+    }
+
+    [Fact]
+    public async Task Snapshot_ConnectorIdChangeForDuplicateNames_RemainsAmbiguous()
+    {
+        await Apply(
+            "meeting-1",
+            Connection("zoom-id:old-1", "동명이인"),
+            Connection("zoom-id:old-2", "동명이인"));
+
+        var switched = await Apply(
+            "meeting-1",
+            Connection("zoom-app:new-1", "동명이인"),
+            Connection("zoom-app:new-2", "동명이인"));
+
+        Assert.Equal(2, switched.JoinedNames.Count);
+        Assert.Equal(2, switched.LeftNames.Count);
+    }
+
     private static ParticipantSnapshotParticipant Connection(string presenceKey, string displayName, string? email = null)
         => new(presenceKey, displayName, email);
 

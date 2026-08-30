@@ -5,7 +5,15 @@
   var STORAGE = {
     meetingId: 'zoomcheck.meetingId',
     autoRefresh: 'zoomcheck.autoRefresh',
-    interval: 'zoomcheck.autoRefreshSeconds'
+    interval: 'zoomcheck.autoRefreshSeconds',
+    connectionMode: 'zoomcheck.connectionMode'
+  };
+  var CONNECTION_MODES = ['auto', 'business', 'zoomApp', 'manual'];
+  var MODE_LABEL = {
+    auto: '자동',
+    business: 'Business API',
+    zoomApp: 'Zoom 앱 (Pro)',
+    manual: '직접 입력'
   };
   var MAX_ROSTER_BYTES = 20 * 1024 * 1024;
   var MAX_SNAPSHOT_NAMES = 2000;
@@ -35,12 +43,17 @@
     pending: 0,
     timerId: null,
     clockId: null,
+    connectionPollId: null,
     nextSyncAt: null,
     lastSyncAt: null,
     lastSyncOk: null,
     sessionLog: [],
     alertAction: null,
-    zoomConfigured: false
+    zoomConfigured: false,
+    connectionMode: 'auto',
+    recommendedMode: null,
+    zoomApp: null,
+    pairing: null
   };
   var el = {};
 
@@ -219,19 +232,117 @@
     });
   }
 
+  function normalizeMode(value) {
+    return CONNECTION_MODES.indexOf(value) >= 0 ? value : 'auto';
+  }
+
+  /* 자동 모드에서 실제로 사용할 경로를 결정한다. Zoom 앱 연결이 살아 있으면 그것을 우선한다. */
+  function effectiveMode() {
+    if (state.connectionMode !== 'auto') { return state.connectionMode; }
+    if (state.zoomApp && state.zoomApp.connected) { return 'zoomApp'; }
+    if (state.zoomConfigured) { return 'business'; }
+    if (state.recommendedMode && state.recommendedMode !== 'auto') { return state.recommendedMode; }
+    return 'business';
+  }
+
+  function applyConnectionMode(mode, options) {
+    var opts = options || {};
+    state.connectionMode = normalizeMode(mode);
+    writeStore(STORAGE.connectionMode, state.connectionMode);
+    el.modeRadios.forEach(function (radio) { radio.checked = radio.value === state.connectionMode; });
+    renderModeNote();
+    renderZoomAppStrip();
+    if (opts.notify) {
+      toast('ok', '연결 방식 변경', MODE_LABEL[state.connectionMode] + '으로 동기화합니다.');
+    }
+  }
+
+  function renderModeNote() {
+    var active = effectiveMode();
+    var note = '선택: ' + MODE_LABEL[state.connectionMode];
+    if (state.connectionMode === 'auto') { note += ' · 현재 적용: ' + MODE_LABEL[active]; }
+    if (state.recommendedMode) { note += ' · 권장: ' + (MODE_LABEL[state.recommendedMode] || state.recommendedMode); }
+    if (active === 'manual') { note += ' · 아래 “전체 참가자 목록 직접 붙여넣기”를 사용하세요.'; }
+    setText(el.modeNote, note);
+  }
+
+  function describeZoomAppRole(role) {
+    if (role === 'host') { return '호스트'; }
+    if (role === 'coHost' || role === 'cohost' || role === 'co-host') { return '공동호스트'; }
+    return role ? String(role) : '권한 미확인';
+  }
+
+  function renderZoomAppStrip() {
+    var app = state.zoomApp || {};
+    var connected = !!app.connected;
+    setDot(el.zoomAppDot, connected ? true : (state.connectionMode === 'zoomApp' ? false : null));
+    setText(el.zoomAppStatus, connected ? describeZoomAppRole(app.role) + ' 연결' : '미연결');
+    if (connected) {
+      setText(el.zoomAppSettingsStatus, 'Zoom 앱이 연결되어 있습니다 · 회의 ' + (app.meetingId || '–')
+        + ' · ' + describeZoomAppRole(app.role) + ' · 마지막 수신 ' + formatTime(app.lastSeenAt));
+      setText(el.pairingSession, '연결된 Zoom 앱: 회의 ' + (app.meetingId || '–') + ' · ' + describeZoomAppRole(app.role));
+    } else {
+      setText(el.zoomAppSettingsStatus, '연결된 Zoom 앱이 없습니다. 페어링 코드를 만들고 회의 안의 ZoomCheck 앱에 입력하세요.');
+      setText(el.pairingSession, '아직 연결된 Zoom 앱이 없습니다.');
+    }
+    if (app.homeUrl) {
+      setText(el.zoomAppHomeUrl, app.homeUrl);
+    } else {
+      setText(el.zoomAppHomeUrl, '미설정 — Zoom Marketplace에서 Home URL을 등록하세요.');
+    }
+    renderPairingCode();
+  }
+
+  function renderPairingCode() {
+    if (!state.pairing) {
+      setText(el.pairingCode, '– – – – – –');
+      setText(el.pairingExpiry, '코드를 생성하면 유효 시간이 표시됩니다.');
+      return;
+    }
+    setText(el.pairingCode, String(state.pairing.code || '').split('').join(' '));
+    var expiresAt = state.pairing.expiresAt ? new Date(state.pairing.expiresAt) : null;
+    if (!expiresAt || isNaN(expiresAt.getTime())) {
+      setText(el.pairingExpiry, '유효 시간 정보를 확인할 수 없습니다.');
+      return;
+    }
+    var remaining = Math.round((expiresAt.getTime() - Date.now()) / 1000);
+    if (remaining <= 0) {
+      setText(el.pairingExpiry, '코드가 만료되었습니다. 다시 생성하세요.');
+      return;
+    }
+    setText(el.pairingExpiry, formatTime(expiresAt) + '까지 유효 · 남은 시간 '
+      + Math.floor(remaining / 60) + '분 ' + pad(remaining % 60) + '초');
+  }
+
   function checkZoomConnection(showToast) {
     return request('/api/zoom/connection-status').then(function (status) {
-      state.zoomConfigured = !!(status && status.configured);
+      var payload = status || {};
+      var business = payload.business || {};
+      /* configured/business.configured 둘 다 지원해 기존 응답과 호환한다. */
+      state.zoomConfigured = business.configured !== undefined ? !!business.configured : !!payload.configured;
+      state.zoomApp = payload.zoomApp || null;
+      state.recommendedMode = payload.recommendedMode ? normalizeMode(payload.recommendedMode) : null;
+      if (state.zoomApp && state.zoomApp.connected) {
+        state.pairing = null;
+        if (!currentMeetingId() && state.zoomApp.meetingId) {
+          el.meetingId.value = state.zoomApp.meetingId;
+          writeStore(STORAGE.meetingId, state.zoomApp.meetingId);
+        }
+      } else if (state.zoomApp && state.zoomApp.pairingCodeExpiresAt && !state.pairing) {
+        state.pairing = { code: null, expiresAt: state.zoomApp.pairingCodeExpiresAt };
+      }
       setDot(el.zoomDot, state.zoomConfigured);
       setText(el.zoomStatus, state.zoomConfigured ? '설정됨' : '미설정');
       setText(el.apiSettingsStatus, state.zoomConfigured
         ? 'OAuth 자격증명이 설정되어 있습니다. 실제 권한은 지금 동기화에서 확인됩니다.'
-        : 'Windows 사용자 환경 변수 Account ID, Client ID, Client Secret을 설정한 뒤 앱을 다시 시작하세요.');
+        : 'Windows 사용자 환경 변수 Account ID, Client ID, Client Secret을 설정한 뒤 앱을 다시 시작하세요. Pro 요금제라면 Zoom 앱 페어링을 사용하세요.');
+      renderZoomAppStrip();
+      renderModeNote();
       if (showToast) {
         toast(state.zoomConfigured ? 'ok' : 'warn', state.zoomConfigured ? 'Zoom API 설정됨' : 'Zoom API 설정 필요',
           state.zoomConfigured ? '실제 권한은 지금 동기화로 확인합니다.' : 'Server-to-Server OAuth 자격증명이 필요합니다.');
       }
-      return status;
+      return payload;
     }, function (error) {
       state.zoomConfigured = false;
       setDot(el.zoomDot, false);
@@ -239,6 +350,77 @@
       setText(el.apiSettingsStatus, error.message);
       if (showToast) { toast('bad', 'Zoom API 상태 확인 실패', error.message); }
     });
+  }
+
+  function createPairingCode() {
+    beginBusy('페어링 코드를 만드는 중…');
+    return request('/api/zoom-app/pairing-code', { method: 'POST', json: {} }).then(function (result) {
+      endBusy();
+      state.pairing = { code: result && result.code ? result.code : null, expiresAt: result ? result.expiresAt : null };
+      if (result && result.homeUrl) {
+        state.zoomApp = state.zoomApp || {};
+        state.zoomApp.homeUrl = result.homeUrl;
+      }
+      renderZoomAppStrip();
+      toast('ok', '페어링 코드 생성', '회의 안 ZoomCheck 앱에 코드를 입력하세요.');
+      return result;
+    }, function (error) {
+      endBusy();
+      toast('bad', '페어링 코드 생성 실패', error.message);
+      return null;
+    });
+  }
+
+  function copyToClipboard(value, okTitle) {
+    if (!value) { toast('warn', '복사할 내용이 없습니다', '먼저 값을 생성하거나 설정하세요.'); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value).then(function () {
+        toast('ok', okTitle, value);
+      }, function () {
+        toast('warn', '복사할 수 없습니다', '값을 직접 선택해 복사하세요.');
+      });
+      return;
+    }
+    toast('warn', '복사할 수 없습니다', '이 브라우저는 클립보드를 지원하지 않습니다.');
+  }
+
+  function requestZoomAppSync(options) {
+    var opts = options || {};
+    if (!opts.silent) { beginBusy('Zoom 앱에 동기화를 요청하는 중…'); }
+    return request('/api/zoom-app/sync', { method: 'POST', json: {} }).then(function (result) {
+      if (!opts.silent) { endBusy(); }
+      hideAlert();
+      markSync(true, ' Zoom 앱 동기화 요청됨');
+      scheduleNextSync();
+      logSession('ok', 'Zoom 앱 동기화 요청', result && result.requestedRevision !== undefined ? 'revision ' + result.requestedRevision : '');
+      if (!opts.silent) { toast('ok', 'Zoom 앱 동기화 요청', '회의 안 앱이 참가자 목록을 곧 전송합니다.'); }
+      /* 앱이 스냅샷을 올릴 시간을 주고 저장된 보드를 다시 읽는다. */
+      window.setTimeout(function () { refreshBoard({ silent: true }); }, 2500);
+      return result;
+    }, function (error) {
+      if (!opts.silent) { endBusy(); }
+      markSync(false, ' Zoom 앱 동기화 실패');
+      scheduleNextSync();
+      showAlert('warn', 'Zoom 앱 동기화 실패', error.message, '페어링 코드 만들기', function () { openSettings(); createPairingCode(); });
+      logSession('bad', 'Zoom 앱 동기화 실패', error.message);
+      if (!opts.silent) { toast('bad', 'Zoom 앱 동기화 실패', error.message); }
+      return null;
+    });
+  }
+
+  /* 선택된 연결 방식에 따라 동기화 경로를 나눈다. */
+  function syncNow(options) {
+    var opts = options || {};
+    var mode = effectiveMode();
+    if (mode === 'zoomApp') { return requestZoomAppSync(opts); }
+    if (mode === 'manual') {
+      if (!opts.silent) {
+        openSettings();
+        toast('warn', '직접 입력 모드', '설정에서 현재 참가자 전체 목록을 붙여넣어 적용하세요.');
+      }
+      return Promise.resolve(null);
+    }
+    return syncZoomParticipants(opts);
   }
 
   function loadRoster(showToast) {
@@ -846,12 +1028,17 @@
     setText(el.autoStatus, checked ? '활성' : '꺼짐');
     if (checked) {
       state.timerId = window.setInterval(function () {
-        if (!document.hidden && state.pending === 0 && currentMeetingId()) { syncZoomParticipants({ silent: true }); }
+        if (document.hidden || state.pending !== 0) { return; }
+        var mode = effectiveMode();
+        if (mode === 'manual') { return; }
+        if (mode === 'zoomApp') { requestZoomAppSync({ silent: true }); return; }
+        if (currentMeetingId()) { syncZoomParticipants({ silent: true }); }
       }, intervalSeconds() * 1000);
       scheduleNextSync();
     } else { updateClock(); }
   }
   function updateClock() {
+    renderPairingCode();
     if (!el.chkAutoRefresh.checked || !state.nextSyncAt) { setText(el.nextSyncTime, '–'); return; }
     var seconds = Math.max(0, Math.ceil((state.nextSyncAt.getTime() - Date.now()) / 1000));
     setText(el.nextSyncTime, '00:' + pad(seconds));
@@ -873,12 +1060,15 @@
       'duplicate-list','duplicate-empty','duplicate-count','sync-summary','roster-summary','settings-dialog','roster-file','btn-upload-roster',
       'btn-reload-roster','roster-note','api-settings-status','btn-check-zoom','settings-autorefresh','autorefresh-interval','snapshot-names',
       'snapshot-parsed','chk-empty-ok','btn-submit-snapshot','btn-clear-snapshot','session-log','session-log-empty','btn-clear-log',
-      'toast-region','busy','busy-text'
+      'toast-region','busy','busy-text',
+      'zoom-app-dot','zoom-app-status','btn-zoom-app-detail','mode-note','zoom-app-settings-status','pairing-code','pairing-expiry',
+      'pairing-session','btn-create-pairing-code','btn-copy-pairing-code','btn-zoom-app-sync','zoom-app-home-url','btn-copy-home-url'
     ].forEach(function (id) {
       var key = id.replace(/-([a-z])/g, function (_, letter) { return letter.toUpperCase(); });
       el[key] = $(id);
     });
     el.filterButtons = Array.prototype.slice.call(document.querySelectorAll('[data-filter]'));
+    el.modeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="connection-mode"]'));
     el.chkAutoRefresh = el.chkAutorefresh;
     el.alertAction = el.btnAlertAction;
     el.alertBar = el.alertBar;
@@ -891,13 +1081,27 @@
   }
 
   function bindEvents() {
-    el.btnSyncZoom.addEventListener('click', function () { syncZoomParticipants({ silent: false }); });
+    el.btnSyncZoom.addEventListener('click', function () { syncNow({ silent: false }); });
     el.btnRefresh.addEventListener('click', function () { refreshBoard({ notify: true }); });
     el.btnExport.addEventListener('click', exportCsv);
     el.btnOpenSettings.addEventListener('click', openSettings);
     el.btnHealthDetail.addEventListener('click', checkHealth);
     el.btnApiDetail.addEventListener('click', function () { openSettings(); checkZoomConnection(false); });
+    el.btnZoomAppDetail.addEventListener('click', function () { openSettings(); checkZoomConnection(false); });
     el.btnCheckZoom.addEventListener('click', function () { checkZoomConnection(true); });
+    el.btnCreatePairingCode.addEventListener('click', createPairingCode);
+    el.btnCopyPairingCode.addEventListener('click', function () {
+      copyToClipboard(state.pairing && state.pairing.code, '페어링 코드 복사됨');
+    });
+    el.btnZoomAppSync.addEventListener('click', function () { requestZoomAppSync({ silent: false }); });
+    el.btnCopyHomeUrl.addEventListener('click', function () {
+      copyToClipboard(state.zoomApp && state.zoomApp.homeUrl, 'Home URL 복사됨');
+    });
+    el.modeRadios.forEach(function (radio) {
+      radio.addEventListener('change', function () {
+        if (radio.checked) { applyConnectionMode(radio.value, { notify: true }); }
+      });
+    });
     el.btnUploadRoster.addEventListener('click', uploadRoster);
     el.btnReloadRoster.addEventListener('click', function () { loadRoster(true); });
     el.btnSubmitSnapshot.addEventListener('click', submitSnapshot);
@@ -921,7 +1125,7 @@
     document.addEventListener('keydown', function (event) {
       if (event.key === '/' && !el.settingsDialog.open && document.activeElement !== el.participantSearch) { event.preventDefault(); el.participantSearch.focus(); }
       if ((event.key === 'r' || event.key === 'R') && !event.metaKey && !event.ctrlKey && !event.altKey && !el.settingsDialog.open && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
-        event.preventDefault(); syncZoomParticipants({ silent: false });
+        event.preventDefault(); syncNow({ silent: false });
       }
     });
   }
@@ -933,6 +1137,7 @@
     var auto = readStore(STORAGE.autoRefresh, '0') === '1';
     el.chkAutoRefresh.checked = auto;
     el.settingsAutoRefresh.checked = auto;
+    applyConnectionMode(readStore(STORAGE.connectionMode, 'auto'), { notify: false });
   }
 
   function init() {
@@ -943,8 +1148,16 @@
     updateParsedCount();
     applyAutoRefresh(el.chkAutoRefresh.checked);
     state.clockId = window.setInterval(updateClock, 1000);
+    state.connectionPollId = window.setInterval(function () {
+      checkZoomConnection(false).then(function () {
+        if (state.zoomApp && state.zoomApp.connected && currentMeetingId()) { refreshBoard({ silent: true }); }
+      });
+    }, 5000);
     checkHealth();
     checkZoomConnection(false);
+    state.statusPollId = window.setInterval(function () {
+      if (!document.hidden) { checkZoomConnection(false); }
+    }, 10000);
     loadRoster(false);
     if (currentMeetingId()) { refreshBoard({ silent: true }); }
   }

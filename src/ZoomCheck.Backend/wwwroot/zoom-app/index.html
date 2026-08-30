@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>ZoomCheck 컴패니언</title>
+  <link rel="stylesheet" href="styles.css?v=20260830.1" />
+  <script src="https://appssdk.zoom.us/sdk.min.js"></script>
+</head>
+<body>
+  <main class="companion">
+    <header class="topbar">
+      <div class="brand"><span>Zoom</span>Check</div>
+      <span class="role-badge" id="role-badge">SDK 확인 중</span>
+    </header>
+
+    <section class="card status-card" aria-labelledby="status-title">
+      <div class="section-head"><div><p>회의 연결</p><h1 id="status-title">Zoom App 컴패니언</h1></div><span class="status-dot" id="status-dot"></span></div>
+      <dl class="status-list">
+        <div><dt>회의</dt><dd id="meeting-state">확인 중</dd></div>
+        <div><dt>내 권한</dt><dd id="role-state">확인 중</dd></div>
+        <div><dt>ZoomCheck</dt><dd id="bridge-state">미연결</dd></div>
+        <div><dt>참가자</dt><dd id="participant-count">–</dd></div>
+        <div><dt>마지막 전송</dt><dd id="last-sent">–</dd></div>
+      </dl>
+    </section>
+
+    <section class="card" aria-labelledby="pair-title">
+      <div class="section-head"><div><p>10분·1회용 코드</p><h2 id="pair-title">Windows 대시보드와 연결</h2></div></div>
+      <label class="field" for="backend-url"><span>ZoomCheck HTTPS 주소</span><input type="url" id="backend-url" readonly aria-readonly="true" /></label>
+      <label class="field" for="pairing-code"><span>페어링 코드</span><input type="text" id="pairing-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="123456" /></label>
+      <p class="hint">대시보드 설정에서 만든 6자리 코드를 입력하세요. 참가자 정보는 이 Zoom App을 제공한 동일 HTTPS 주소로만 전송됩니다.</p>
+      <div class="button-row"><button type="button" class="btn primary" id="btn-connect">연결하기</button><button type="button" class="btn" id="btn-sync" disabled>지금 전송</button><button type="button" class="btn ghost" id="btn-disconnect" disabled>연결 해제</button></div>
+      <p class="message" id="message" role="status">ZoomCheck를 준비하고 있습니다.</p>
+    </section>
+
+    <section class="privacy"><strong>전송 정보</strong><span>참가자 UUID, Zoom 표시 이름, 회의 내 역할만 전송합니다. 이메일과 Zoom 로그인 정보는 읽지 않습니다.</span></section>
+  </main>
+  <script src="app.js?v=20260830.1"></script>
+</body>
+</html>

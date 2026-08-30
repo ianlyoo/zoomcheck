@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light" />
   <title>ZoomCheck 회의 출석 대시보드</title>
-  <link rel="stylesheet" href="styles.css?v=20260830.2" />
+  <link rel="stylesheet" href="styles.css?v=20260830.3" />
 </head>
 <body>
   <a class="skip-link" href="#participant-search">참가자 검색으로 이동</a>
@@ -30,6 +30,10 @@
       <button type="button" class="connection-item" id="btn-api-detail">
         <span class="status-dot" id="zoom-dot" aria-hidden="true"></span>
         <span>Zoom API</span><strong id="zoom-status">확인 중</strong>
+      </button>
+      <button type="button" class="connection-item" id="btn-zoom-app-detail">
+        <span class="status-dot" id="zoom-app-dot" aria-hidden="true"></span>
+        <span>Zoom 앱</span><strong id="zoom-app-status">확인 중</strong>
       </button>
       <label class="connection-item auto-item">
         <input type="checkbox" id="chk-autorefresh" />
@@ -174,11 +178,53 @@
         </section>
 
         <section class="settings-section">
+          <div class="settings-copy"><h3>연결 방식</h3><p>자동을 권장합니다. 자동은 Zoom 앱(Pro) 연결이 살아 있으면 그것을 쓰고, 없으면 Business API로 넘어갑니다.</p></div>
+          <div class="settings-control">
+            <div class="mode-options" role="radiogroup" aria-label="연결 방식 선택">
+              <label class="mode-option"><input type="radio" name="connection-mode" value="auto" id="mode-auto" /><span><strong>자동</strong><small>Zoom 앱 우선, 실패 시 Business API</small></span></label>
+              <label class="mode-option"><input type="radio" name="connection-mode" value="business" id="mode-business" /><span><strong>Business API</strong><small>Server-to-Server OAuth 대시보드 API</small></span></label>
+              <label class="mode-option"><input type="radio" name="connection-mode" value="zoomApp" id="mode-zoom-app" /><span><strong>Zoom 앱 (Pro)</strong><small>회의 안에서 실행되는 컴패니언 앱</small></span></label>
+              <label class="mode-option"><input type="radio" name="connection-mode" value="manual" id="mode-manual" /><span><strong>직접 입력</strong><small>참가자 목록을 붙여넣어 반영</small></span></label>
+            </div>
+            <p class="setting-status" id="mode-note">권장 방식을 확인하는 중…</p>
+          </div>
+        </section>
+
+        <section class="settings-section">
           <div class="settings-copy"><h3>Zoom API 연결</h3><p>공동호스트 권한과 별개로 Zoom 계정 관리자의 Server-to-Server OAuth 앱이 필요합니다.</p></div>
           <div class="settings-control">
             <p class="setting-status" id="api-settings-status">연결 상태 확인 중…</p>
             <code>dashboard:read:list_meeting_participants:admin</code>
             <button type="button" class="btn secondary" id="btn-check-zoom">연결 설정 확인</button>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-copy"><h3>Zoom 앱 (Pro) 페어링</h3><p>Pro 요금제에서는 Dashboard API를 쓸 수 없습니다. 대신 회의 안에서 Zoom 앱을 열고 페어링 코드를 입력하면 호스트·공동호스트 화면의 참가자 목록이 이 PC로 전달됩니다.</p></div>
+          <div class="settings-control">
+            <p class="setting-status" id="zoom-app-settings-status">Zoom 앱 연결 상태 확인 중…</p>
+            <div class="pairing-box">
+              <div class="pairing-code" id="pairing-code" aria-live="polite">– – – – – –</div>
+              <div class="pairing-meta">
+                <span id="pairing-expiry">코드를 생성하면 유효 시간이 표시됩니다.</span>
+                <span id="pairing-session">아직 연결된 Zoom 앱이 없습니다.</span>
+              </div>
+            </div>
+            <div class="button-row">
+              <button type="button" class="btn primary" id="btn-create-pairing-code">페어링 코드 생성</button>
+              <button type="button" class="btn secondary" id="btn-copy-pairing-code">코드 복사</button>
+              <button type="button" class="btn secondary" id="btn-zoom-app-sync">Zoom 앱 동기화 요청</button>
+            </div>
+            <label class="pairing-home" for="zoom-app-home-url">Zoom 앱 Home URL</label>
+            <div class="pairing-home-row">
+              <code id="zoom-app-home-url">미설정 — Zoom Marketplace에서 Home URL을 등록하세요.</code>
+              <button type="button" class="btn secondary compact" id="btn-copy-home-url">복사</button>
+            </div>
+            <ol class="pairing-steps">
+              <li>Zoom Marketplace에서 General App을 만들고 위 Home URL을 등록합니다.</li>
+              <li>회의를 호스트 또는 공동호스트로 참여한 뒤 Zoom 앱 패널에서 ZoomCheck를 엽니다.</li>
+              <li>여기서 만든 6자리 페어링 코드를 앱에 입력하면 연결이 시작됩니다.</li>
+            </ol>
           </div>
         </section>
 
@@ -211,6 +257,6 @@
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
   <div class="busy" id="busy" hidden role="status" aria-live="polite"><span class="spinner"></span><span id="busy-text">처리 중…</span></div>
-  <script src="app.js?v=20260830.2"></script>
+  <script src="app.js?v=20260830.3"></script>
 </body>
 </html>

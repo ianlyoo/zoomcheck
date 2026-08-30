@@ -11,21 +11,38 @@ public sealed class ZoomLiveController : ControllerBase
 {
     private readonly ZoomLiveSyncService _liveSyncService;
     private readonly ZoomOAuthTokenService _tokenService;
+    private readonly ZoomAppBridgeService _zoomAppBridge;
 
-    public ZoomLiveController(ZoomLiveSyncService liveSyncService, ZoomOAuthTokenService tokenService)
+    public ZoomLiveController(
+        ZoomLiveSyncService liveSyncService,
+        ZoomOAuthTokenService tokenService,
+        ZoomAppBridgeService zoomAppBridge)
     {
         _liveSyncService = liveSyncService;
         _tokenService = tokenService;
+        _zoomAppBridge = zoomAppBridge;
     }
 
     [HttpGet("connection-status")]
     public ActionResult GetConnectionStatus()
     {
+        var zoomApp = _zoomAppBridge.GetStatus();
+        var recommendedMode = zoomApp.Connected ? "zoomApp" : _tokenService.IsConfigured ? "business" : "manual";
         return Ok(new
         {
-            configured = _tokenService.IsConfigured,
+            configured = _tokenService.IsConfigured || zoomApp.Connected,
             tokenCached = _tokenService.HasUsableCachedToken,
             tokenExpiresAt = _tokenService.ExpiresAt,
+            business = new
+            {
+                configured = _tokenService.IsConfigured,
+                tokenCached = _tokenService.HasUsableCachedToken,
+                tokenExpiresAt = _tokenService.ExpiresAt,
+                requiredScope = "dashboard:read:list_meeting_participants:admin",
+                endpoint = "GET /v2/metrics/meetings/{meetingId}/participants?type=live"
+            },
+            zoomApp,
+            recommendedMode,
             requiredScope = "dashboard:read:list_meeting_participants:admin",
             classicScope = "dashboard_meetings:read:admin",
             endpoint = "GET /v2/metrics/meetings/{meetingId}/participants?type=live"

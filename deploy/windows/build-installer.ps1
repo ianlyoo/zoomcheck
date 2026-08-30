@@ -89,6 +89,9 @@ if (-not (Test-Path (Join-Path $packageRoot $mainExeName))) {
 if (-not (Test-Path (Join-Path $packageRoot "wwwroot\index.html"))) {
     $problems.Add("Missing web dashboard: wwwroot\index.html is not in the package.")
 }
+if (-not (Test-Path (Join-Path $packageRoot "wwwroot\zoom-app\index.html"))) {
+    $problems.Add("Missing Pro companion: wwwroot\zoom-app\index.html is not in the package.")
+}
 
 # The Avalonia desktop shell must no longer be shipped.
 Get-ChildItem -Path $packageRoot -Filter "ZoomCheck.App*" -Recurse -Force -ErrorAction SilentlyContinue |

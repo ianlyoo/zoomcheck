@@ -55,7 +55,8 @@ jobs:
             "${{ env.INSTALLER_PATH }}",
             "${{ env.PORTABLE_PATH }}",
             "dist/windows/package/ZoomCheck.Backend.exe",
-            "dist/windows/package/wwwroot/index.html"
+            "dist/windows/package/wwwroot/index.html",
+            "dist/windows/package/wwwroot/zoom-app/index.html"
           )
           $missing = $expected | Where-Object { -not (Test-Path $_) }
           if ($missing) {

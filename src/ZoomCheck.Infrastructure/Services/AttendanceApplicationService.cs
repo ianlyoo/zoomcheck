@@ -191,6 +191,7 @@ public sealed class AttendanceApplicationService
         try
         {
             var previous = await _repository.GetParticipantPresenceAsync(meetingId, source, cancellationToken);
+            ReconcileChangedConnectorKeys(present, previous);
             var previousByKey = previous.ToDictionary(entry => entry.PresenceKey ?? entry.NormalizedName, StringComparer.Ordinal);
 
             var roster = await _repository.GetRosterPeopleAsync(cancellationToken);
@@ -328,6 +329,61 @@ public sealed class AttendanceApplicationService
             snapshotLock.Release();
         }
     }
+
+    /// <summary>
+    /// Dashboard API ids and Zoom Apps participantUUIDs are not guaranteed to use the
+    /// same value. During a connector switch, preserve an existing connection key only
+    /// when one missing old connection and one new connection share a unique identity.
+    /// Ambiguous duplicate names are deliberately left untouched for operator review.
+    /// </summary>
+    private static void ReconcileChangedConnectorKeys(
+        Dictionary<string, PresentParticipant> present,
+        IReadOnlyList<ParticipantSnapshotEntry> previous)
+    {
+        var missingPrevious = previous
+            .Where(entry => !present.ContainsKey(entry.PresenceKey ?? entry.NormalizedName))
+            .GroupBy(IdentityKey)
+            .Where(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.Single(), StringComparer.Ordinal);
+        var newConnections = present
+            .Where(item => !previous.Any(entry => string.Equals(entry.PresenceKey ?? entry.NormalizedName, item.Key, StringComparison.Ordinal)))
+            .GroupBy(item => IdentityKey(item.Value))
+            .Where(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.Single(), StringComparer.Ordinal);
+
+        foreach (var identity in missingPrevious.Keys.Intersect(newConnections.Keys, StringComparer.Ordinal))
+        {
+            var oldKey = missingPrevious[identity].PresenceKey ?? missingPrevious[identity].NormalizedName;
+            var incoming = newConnections[identity];
+            if (!IsConnectorSwitch(oldKey, incoming.Key))
+            {
+                continue;
+            }
+
+            present.Remove(incoming.Key);
+            present.TryAdd(oldKey, incoming.Value);
+        }
+    }
+
+    private static string IdentityKey(ParticipantSnapshotEntry entry)
+        => !string.IsNullOrWhiteSpace(entry.ParticipantEmail)
+            ? $"email:{entry.ParticipantEmail.Trim().ToLowerInvariant()}"
+            : $"name:{entry.NormalizedName}";
+
+    private static string IdentityKey(PresentParticipant participant)
+        => !string.IsNullOrWhiteSpace(participant.Email)
+            ? $"email:{participant.Email.Trim().ToLowerInvariant()}"
+            : $"name:{participant.NormalizedName}";
+
+    private static bool IsConnectorSwitch(string previousKey, string incomingKey)
+        => previousKey.StartsWith("zoom-app:", StringComparison.Ordinal)
+            != incomingKey.StartsWith("zoom-app:", StringComparison.Ordinal)
+            && (IsBusinessZoomKey(previousKey) || IsBusinessZoomKey(incomingKey));
+
+    private static bool IsBusinessZoomKey(string key)
+        => key.StartsWith("zoom-id:", StringComparison.Ordinal)
+            || key.StartsWith("zoom-user:", StringComparison.Ordinal)
+            || key.StartsWith("zoom-name:", StringComparison.Ordinal);
 
     private sealed record PresentParticipant(
         string RawName,

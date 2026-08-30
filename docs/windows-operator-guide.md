@@ -6,14 +6,14 @@ For a detailed Korean live-meeting checklist, see [`windows-live-test-ko.md`](wi
 
 1. Install `ZoomCheck-Setup-x64.exe`
 2. Double-click the **ZoomCheck** shortcut
-3. Configure Server-to-Server OAuth as described in README.ko.md, then open or join the Zoom meeting
+3. Choose Business Server-to-Server OAuth or the Pro Zoom App bridge described in README.ko.md, then open or join the Zoom meeting
 4. Type the meeting ID in ZoomCheck
 5. Choose the roster Excel file and click **명단 올리기**
 6. Click **지금 참가자 불러오기**, then enable real-time synchronization
 7. Check the **Review queue** for weak or unmatched names
 8. Save aliases when needed
 9. Click **Export** at the end of class
-10. When the meeting truly has zero participants, use the one-time empty snapshot confirmation to record all remaining participants as left
+10. In Business mode, confirm a true empty snapshot manually; the Pro bridge confirms two consecutive empty snapshots automatically
 
 ## Does the user need .NET installed?
 
@@ -43,6 +43,9 @@ The operator does not need to open a terminal or launch a second program.
 - Check the OAuth status shown in the dashboard
 - Verify that the meeting is live and belongs to the OAuth app account
 - For 403 responses, verify Dashboard API access and the required scope
+- For Pro mode, confirm the companion was opened by a host/co-host, the pairing code has not expired, and the Home URL uses the configured HTTPS origin
+- Assign co-host before opening the Zoom App. If the app is closed or reloaded, create a new pairing code
+- The Pro path does not request participant email, so review name-only matches carefully
 
 ### Zoom names look unfamiliar
 

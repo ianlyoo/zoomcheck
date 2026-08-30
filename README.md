@@ -1,6 +1,6 @@
 # ZoomCheck
 
-Windows local web dashboard that compares an Excel roster with participants in a live Zoom meeting through the official Zoom Dashboard API.
+Windows web dashboard that compares an Excel roster with a live Zoom meeting through either the Business Dashboard API or an in-meeting Zoom App bridge suitable for Pro accounts.
 
 [한국어](README.ko.md) · [Operator guide](docs/windows-operator-guide.md) · [MIT License](LICENSE)
 
@@ -8,7 +8,7 @@ Windows local web dashboard that compares an Excel roster with participants in a
 [![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)
 [![Latest release](https://img.shields.io/github/v/release/ianlyoo/zoomcheck)](https://github.com/ianlyoo/zoomcheck/releases/latest)
 
-ZoomCheck does not read the Zoom participant panel, use screen recognition, or automate the Zoom desktop UI. It polls the official API, matches participants to the roster, records observed join/leave changes in SQLite, and keeps ambiguous names in a review queue.
+ZoomCheck does not scrape the participant panel or automate Zoom UI. Business accounts can use the Dashboard API; Pro deployments can use the official Zoom Apps SDK from a host/co-host's in-meeting app. Both feed the same local matching and attendance engine.
 
 ## Features
 
@@ -21,8 +21,9 @@ ZoomCheck does not read the Zoom participant panel, use screen recognition, or a
 - CSV export, manual full-list fallback, responsive local dashboard
 - Self-contained Windows installer and portable ZIP; no separate .NET install
 - Local-only listener at `http://127.0.0.1:5078`; data under `%LOCALAPPDATA%\ZoomCheck`
+- Auto, Business API, Pro Zoom App, and manual connection modes
 
-## Zoom API requirement
+## Business Dashboard API
 
 A co-host role by itself does **not** grant API access. A Zoom account owner or admin must create and activate a Server-to-Server OAuth app for the account that owns the meeting. Add the granular scope `dashboard:read:list_meeting_participants:admin`; classic apps use `dashboard_meetings:read:admin`. The account must also have access to the Zoom Dashboard API.
 
@@ -36,6 +37,18 @@ Set these as Windows user environment variables, then restart ZoomCheck:
 
 Credentials are never bundled in source, the installer, or the portable archive.
 
+## Pro Zoom App bridge
+
+Expose the Windows ZoomCheck listener through a stable HTTPS origin. Create a user-managed Zoom General App, select Meetings, enable Zoom App SDK, and add only `getSupportedJsApis`, `getMeetingContext`, `getMeetingUUID`, `getUserContext`, `getMeetingParticipants`, and `onParticipantChange`. Keep Guest Mode disabled. Set Home URL, OAuth Redirect URL, and OAuth Allow List to `https://YOUR-HTTPS-HOST/zoom-app/`; set Domain Allow List to `YOUR-HTTPS-HOST`. Configure the same URL in ZoomCheck:
+
+```powershell
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_ZoomApp__HomeUrl", "https://YOUR-HTTPS-HOST/zoom-app/", "User")
+```
+
+ZoomCheck checks the runtime role and available APIs instead of assuming the co-host's subscription. The in-meeting user must actually be host/co-host before opening the app and the client must expose `getMeetingParticipants`. The account running the companion must install/approve the app; cross-account or cross-organization testing may require internal distribution or Marketplace test access. Create a new six-digit code for every meeting and after an app reload. The code is single-use and expires after ten minutes.
+
+The Pro path sends participant UUID, display name, and meeting role only; it does not request email, so matching is name-based. A first empty snapshot is ignored and a second empty snapshot within 20 seconds confirms everyone left. On the public HTTPS host, ZoomCheck serves only the companion and token-protected bridge; dashboard and roster APIs remain local-only.
+
 ## Use during a meeting
 
 1. Install and launch ZoomCheck; the local dashboard opens in the default browser.
@@ -44,7 +57,7 @@ Credentials are never bundled in source, the installer, or the portable archive.
 4. Enable automatic sync; 10 seconds is the recommended default.
 5. Select a participant row to inspect raw Zoom names, safe canonicalization, connections, and attendance history.
 6. Review ambiguous, duplicate, or unmatched names, then export CSV at the end.
-7. If the meeting has truly reached zero participants, confirm the empty snapshot from the warning bar to record everyone as left.
+7. In Business mode, confirm a true zero-participant response from the warning bar. The Pro Zoom App bridge confirms two consecutive empty snapshots automatically.
 
 Times in the activity log are polling observation times and may lag Zoom by one polling interval. API errors, incomplete pagination, and unconfirmed empty responses leave the previous attendance snapshot unchanged.
 
@@ -52,7 +65,8 @@ Times in the activity log are polling observation times and may lag Zoom by one 
 
 ```mermaid
 flowchart LR
-  A[Zoom Dashboard API] --> B[ASP.NET Core local server]
+  A[Business Dashboard API] --> B[ASP.NET Core local server]
+  H[Pro Zoom App SDK] --> B
   C[Excel roster] --> B
   B --> D[(SQLite)]
   B --> E[Matching and confidence]
