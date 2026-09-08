@@ -26,6 +26,14 @@ public sealed class ZoomApiClient
         };
     }
 
+    /// <summary>
+    /// True when Zoom Server-to-Server OAuth credentials are present and are not the
+    /// shipped `replace-with-your-*` placeholders. Callers should check this before
+    /// starting a recovery pass so unconfigured deployments do not issue doomed
+    /// requests that surface as misleading 401 warnings.
+    /// </summary>
+    public bool IsConfigured => _tokenService.IsConfigured;
+
     public async Task<IReadOnlyList<ZoomMeeting>> GetLiveMeetingsForUserAsync(string userId, CancellationToken cancellationToken = default)
     {
         var pageSize = ClampPageSize(_recoveryOptions.MeetingsPageSize);

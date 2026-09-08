@@ -334,6 +334,61 @@ public sealed class UpdateServiceStatusTests
         Assert.False(install.Started);
     }
 
+    [Theory]
+    [InlineData("0.7.0-rc.1", true, true, false)]
+    [InlineData("0.6.3", false, false, false)]
+    [InlineData("0.6.1", false, true, false)]
+    [InlineData(null, false, true, false)]
+    [InlineData("0.6.2", false, true, true)]
+    public async Task Check_ReadinessBelongsOnlyToTheSelectedNewerRelease(
+        string? nextVersion, bool prerelease, bool automaticDownload, bool expectedReady)
+    {
+        var installerBytes = new byte[] { 1, 2, 3, 4, 5 };
+        var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(installerBytes));
+        var releases = """[{"tag_name":"v0.6.2","prerelease":false,"assets":[]}]""";
+        var assetRequests = 0;
+        using var harness = new UpdateServiceHarness(
+            new UpdateOptions
+            {
+                CurrentVersionOverride = "0.6.1",
+                AllowPrerelease = true,
+                AutomaticDownload = automaticDownload
+            },
+            request =>
+            {
+                if (request.RequestUri!.AbsolutePath.EndsWith("/releases", StringComparison.Ordinal))
+                {
+                    return JsonResponse(releases);
+                }
+
+                assetRequests++;
+                return request.RequestUri.AbsolutePath.EndsWith("SHA256SUMS.txt", StringComparison.Ordinal)
+                    ? TextResponse(digest + "  ZoomCheck-Setup-x64.exe\n")
+                    : BinaryResponse(installerBytes);
+            });
+
+        // Stage inert bytes directly so this regression also runs on non-Windows
+        // hosts. All HTTP responses are mocked; no installer is ever launched.
+        await harness.Service.DownloadAndVerifyAsync(harness.Release("0.6.2"), CancellationToken.None);
+        var initial = await harness.Service.CheckAsync(manual: false, CancellationToken.None);
+        Assert.Equal("0.6.2", initial.LatestVersion);
+        Assert.True(initial.InstallerReady);
+
+        releases = nextVersion is null ? "[]" : System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new { tag_name = "v" + nextVersion, prerelease, assets = Array.Empty<object>() }
+        });
+        var status = await harness.Service.CheckAsync(manual: true, CancellationToken.None);
+
+        Assert.Equal(nextVersion, status.LatestVersion);
+        Assert.Equal(expectedReady, status.InstallerReady);
+        Assert.Equal(expectedReady ? UpdateDownloadState.Verified : UpdateDownloadState.None, status.DownloadState);
+        Assert.Equal(expectedReady ? "ZoomCheck-Setup-x64.exe" : null, status.InstallerFileName);
+        Assert.Equal(expectedReady ? (long?)installerBytes.Length : null, status.InstallerSizeBytes);
+        Assert.Equal(expectedReady, harness.Service.GetStatus().InstallerReady);
+        Assert.Equal(2, assetRequests);
+    }
+
     [Fact]
     public async Task Download_WithoutChecksumAsset_IsRefused()
     {

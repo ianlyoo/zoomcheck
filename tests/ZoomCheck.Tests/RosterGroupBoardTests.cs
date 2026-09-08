@@ -103,7 +103,7 @@ public sealed class RosterGroupBoardTests : IAsyncLifetime
         var lines = SplitLines(csv);
 
         Assert.Equal(
-            "Sequence,Name,Organization,Group,AttendanceState,Confidence,ConfidenceReason,LastJoinedAt,LastLeftAt,JoinCount",
+            "Sequence,Name,Organization,Group,AttendanceState,Confidence,ConfidenceReason,LastJoinedAt,LastLeftAt,JoinCount,IdentityReviewStatus,DuplicateReviewStatus",
             lines[0]);
         Assert.Equal(5, lines.Length);
         Assert.Contains("\"김영인\",\"\",\"2조\"", lines[1]);
@@ -170,7 +170,8 @@ public sealed class RosterGroupBoardTests : IAsyncLifetime
         var response = await _controller.ExportCsv(MeetingId, "1조", CancellationToken.None);
 
         var file = Assert.IsType<FileContentResult>(response);
-        Assert.Equal("text/csv", file.ContentType);
+        Assert.Equal("text/csv; charset=utf-8", file.ContentType);
+        Assert.Equal(new byte[] { 0xEF, 0xBB, 0xBF }, file.FileContents.Take(3).ToArray());
         var lines = SplitLines(System.Text.Encoding.UTF8.GetString(file.FileContents));
         Assert.Equal(2, lines.Length);
         Assert.Contains("이순신", lines[1]);

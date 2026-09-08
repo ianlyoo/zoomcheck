@@ -19,6 +19,7 @@ Zoom 참가자 패널을 화면 인식하거나 UI Automation으로 읽지 않�
 - SQLite 기반 입장·퇴장 액티브 로그와 현재 참석 상태
 - 참가자 행 클릭 상세: 현재 연결, 원래 Zoom 이름, 전화번호, 조, 자동 정리 이름, 입·퇴장 이력
 - 동일 명단 인물의 중복 접속 그룹과 이름 변경 활동 기록
+- 당일 불참자 제외·복원, 회의별 신원/중복 검토와 미매칭 연결 지정 ([v0.6.2 변경 안내](docs/ux-update-0.6.2.md))
 - 명단에서 유일하게 확인되는 영인 유 → 유영인 형태만 안전하게 자동 정리
 - 호스트·공동호스트가 확인 버튼을 눌렀을 때만 안전하게 확정된 이름을 실제 Zoom 회의에 적용
 - CSV 내보내기와 API 장애 시 전체 참가자 목록 수동 붙여넣기
@@ -122,6 +123,7 @@ Business 실시간 조회는 `GET /v2/metrics/meetings/{meetingId}/participants?
 ```bash
 dotnet restore ZoomCheck.sln
 dotnet test ZoomCheck.sln -c Release
+node --test tests/dashboard-regressions.cjs
 dotnet run --project src/ZoomCheck.Backend
 ```
 

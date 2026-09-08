@@ -16,7 +16,7 @@
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.6.2",
     [string]$RelayBaseUrl = "",
     [switch]$SkipInstaller
 )
@@ -42,9 +42,17 @@ function Write-Step([string]$Message) {
 # 1. Clean output directories
 # ---------------------------------------------------------------------------
 Write-Step "Cleaning output directories"
+$allowedOutputRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'dist')) + [IO.Path]::DirectorySeparatorChar
 foreach ($dir in @($distRoot, $portableRoot, $installerRoot)) {
-    if (Test-Path $dir) {
-        Remove-Item $dir -Recurse -Force
+    $resolvedOutputPath = [IO.Path]::GetFullPath($dir)
+    if (-not $resolvedOutputPath.StartsWith($allowedOutputRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Output cleanup escaped the repository dist directory: $resolvedOutputPath"
+    }
+    if (Test-Path -LiteralPath $resolvedOutputPath) {
+        if ((Get-Item -LiteralPath $resolvedOutputPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Refusing output cleanup through a directory link: $resolvedOutputPath"
+        }
+        Remove-Item -LiteralPath $resolvedOutputPath -Recurse -Force
     }
 }
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null

@@ -156,7 +156,8 @@ public sealed class MeetingsController : ControllerBase
         }
 
         var csv = await _attendanceService.BuildBoardCsvAsync(normalizedMeetingId, group, cancellationToken);
-        return File(System.Text.Encoding.UTF8.GetBytes(csv), "text/csv", $"{normalizedMeetingId}-attendance.csv");
+        // Excel on Windows needs the UTF-8 marker to detect Korean names when opening a CSV directly.
+        return File(System.Text.Encoding.UTF8.GetBytes("\uFEFF" + csv), "text/csv; charset=utf-8", $"{normalizedMeetingId}-attendance.csv");
     }
 
     private ObjectResult InvalidMeetingId()

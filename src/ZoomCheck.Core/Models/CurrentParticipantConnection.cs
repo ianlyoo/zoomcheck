@@ -20,4 +20,7 @@ public sealed record CurrentParticipantConnection(
     string? MatchedRosterPersonName,
     MatchConfidence Confidence,
     double MatchScore,
-    string MatchReason);
+    string MatchReason,
+    bool ManualMatch = false,
+    string ReviewStatus = "none",
+    string EvidenceToken = "");

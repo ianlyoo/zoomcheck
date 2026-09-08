@@ -9,28 +9,30 @@ using ZoomCheck.Infrastructure.Roster;
 
 namespace ZoomCheck.Infrastructure.Services;
 
-public sealed class AttendanceApplicationService
+public sealed partial class AttendanceApplicationService
 {
     private readonly ExcelRosterParser _rosterParser;
     private readonly SqliteAttendanceRepository _repository;
     private readonly AttendanceMatcher _matcher;
+    private readonly TimeProvider _timeProvider;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _snapshotLocks = new(StringComparer.Ordinal);
 
     public AttendanceApplicationService(
         ExcelRosterParser rosterParser,
         SqliteAttendanceRepository repository,
-        AttendanceMatcher matcher)
+        AttendanceMatcher matcher,
+        TimeProvider? timeProvider = null)
     {
         _rosterParser = rosterParser;
         _repository = repository;
         _matcher = matcher;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<RosterImportResult> ImportRosterAsync(string filePath, CancellationToken cancellationToken = default)
     {
         var roster = _rosterParser.Parse(filePath);
-        await _repository.ReplaceRosterAsync(roster, cancellationToken);
-        return roster;
+        return await PersistRosterAsync(roster, cancellationToken);
     }
 
     public async Task<RosterImportResult> ImportRosterAsync(
@@ -39,8 +41,16 @@ public sealed class AttendanceApplicationService
         CancellationToken cancellationToken = default)
     {
         var roster = _rosterParser.Parse(stream, $"upload://{displayName}", displayName);
-        await _repository.ReplaceRosterAsync(roster, cancellationToken);
-        return roster;
+        return await PersistRosterAsync(roster, cancellationToken);
+    }
+
+    private async Task<RosterImportResult> PersistRosterAsync(RosterImportResult roster, CancellationToken cancellationToken)
+    {
+        var reconciliation = await _repository.ReplaceRosterWithReconciliationAsync(roster, cancellationToken);
+        return roster with
+        {
+            People = roster.People.Select(person => person with { Id = reconciliation.ResolveId(person) }).ToArray()
+        };
     }
 
     public Task<IReadOnlyList<RosterPerson>> GetRosterAsync(CancellationToken cancellationToken = default)
@@ -49,7 +59,11 @@ public sealed class AttendanceApplicationService
     public Task<IReadOnlyList<ParticipantEvent>> GetParticipantEventsForMeetingAsync(string meetingId, CancellationToken cancellationToken = default)
         => _repository.GetParticipantEventsAsync(MeetingIdNormalizer.Normalize(meetingId), cancellationToken);
 
-    public async Task<ParticipantEvent> RecordParticipantEventAsync(ParticipantEventInput input, CancellationToken cancellationToken = default)
+    public Task<ParticipantEvent> RecordParticipantEventAsync(ParticipantEventInput input, CancellationToken cancellationToken = default)
+        => WithMeetingLockAsync(MeetingIdNormalizer.Normalize(input.MeetingId),
+            () => RecordParticipantEventCoreAsync(input, cancellationToken), cancellationToken);
+
+    private async Task<ParticipantEvent> RecordParticipantEventCoreAsync(ParticipantEventInput input, CancellationToken cancellationToken)
     {
         var meetingId = MeetingIdNormalizer.Normalize(input.MeetingId);
         var roster = await _repository.GetRosterPeopleAsync(cancellationToken);
@@ -182,7 +196,7 @@ public sealed class AttendanceApplicationService
             }
         }
 
-        var snapshotLock = _snapshotLocks.GetOrAdd($"{meetingId}\u0000{source}", _ => new SemaphoreSlim(1, 1));
+        var snapshotLock = _snapshotLocks.GetOrAdd(meetingId, _ => new SemaphoreSlim(1, 1));
         await snapshotLock.WaitAsync(cancellationToken);
         try
         {
@@ -488,41 +502,35 @@ public sealed class AttendanceApplicationService
         var events = await _repository.GetParticipantEventsAsync(meetingId, cancellationToken);
         var aliases = await _repository.GetAliasMapAsync(cancellationToken);
         var snapshots = await _repository.GetParticipantSnapshotSourcesAsync(meetingId, cancellationToken);
+        var attendanceDate = CurrentAttendanceDate();
+        var exclusions = await _repository.GetMeetingExclusionsAsync(meetingId, attendanceDate, cancellationToken);
+        var reviews = await _repository.GetMeetingReviewsAsync(meetingId, cancellationToken);
+        var meetingMatches = await _repository.GetMeetingConnectionMatchesAsync(meetingId, cancellationToken);
+        events = ApplyMeetingMatchesToEvents(events, meetingMatches, roster, out var manualAttendance);
         var zoomSnapshot = snapshots.FirstOrDefault(snapshot =>
             string.Equals(snapshot.Source, "zoom-live-participants", StringComparison.Ordinal));
         var authoritativeSnapshots = zoomSnapshot is null ? snapshots : new[] { zoomSnapshot };
-        var currentPresence = new List<ParticipantSnapshotEntry>();
-        var sourceByPresenceKey = new Dictionary<string, string>(StringComparer.Ordinal);
+        var currentPresence = new List<(string Source, ParticipantSnapshotEntry Entry)>();
         foreach (var snapshot in authoritativeSnapshots)
         {
             var entries = await _repository.GetParticipantPresenceAsync(meetingId, snapshot.Source, cancellationToken);
-            currentPresence.AddRange(entries);
-            foreach (var entry in entries)
-            {
-                sourceByPresenceKey[entry.PresenceKey ?? entry.NormalizedName] = snapshot.Source;
-            }
+            currentPresence.AddRange(entries.Select(entry => (snapshot.Source, entry)));
         }
 
         var currentCandidates = currentPresence
-            .Select(entry => new
+            .Select(item =>
             {
-                Entry = entry,
-                Candidate = MatchParticipant(
-                    roster,
-                    aliases,
-                    entry.EffectiveRawDisplayName,
-                    entry.DisplayName,
-                    entry.ParticipantEmail)
+                var candidate = MatchCurrentConnection(item.Source, item.Entry, roster, aliases, meetingMatches, out var manualMatch);
+                return new { item.Entry, item.Source, Candidate = candidate, ManualMatch = manualMatch };
             })
             .ToArray();
         var currentConnections = currentCandidates
             .Select(item =>
             {
                 var presenceKey = item.Entry.PresenceKey ?? item.Entry.NormalizedName;
-                sourceByPresenceKey.TryGetValue(presenceKey, out var connectionSource);
                 return new CurrentParticipantConnection(
                     PresenceKey: presenceKey,
-                    Source: connectionSource ?? string.Empty,
+                    Source: item.Source,
                     RawName: item.Entry.EffectiveRawDisplayName,
                     DisplayName: item.Entry.DisplayName,
                     CanonicalName: item.Entry.CanonicalName,
@@ -534,8 +542,10 @@ public sealed class AttendanceApplicationService
                     MatchedRosterPersonName: item.Candidate.Person?.Name,
                     Confidence: item.Candidate.Confidence,
                     MatchScore: item.Candidate.Score,
-                    MatchReason: item.Candidate.Reason);
+                    MatchReason: item.Candidate.Reason,
+                    ManualMatch: item.ManualMatch);
             })
+            .Select(connection => ApplyConnectionReview(connection, reviews))
             .OrderBy(connection => connection.FirstSeenAt)
             .ToArray();
 
@@ -547,7 +557,7 @@ public sealed class AttendanceApplicationService
             .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
 
         var duplicateConnectionGroups = connectionsByPerson
-            .Where(pair => pair.Value.Length > 1)
+            .Where(pair => pair.Value.Length > 1 && !exclusions.Contains(pair.Key))
             .Select(pair => new DuplicateConnectionGroup(
                 RosterPersonId: pair.Key,
                 RosterPersonName: pair.Value[0].MatchedRosterPersonName ?? string.Empty,
@@ -570,16 +580,27 @@ public sealed class AttendanceApplicationService
             personEvents ??= new List<ParticipantEvent>();
 
             var joined = personEvents.Where(evt => evt.EventType == ParticipantEventType.Joined).ToList();
+            var observations = manualAttendance.Where(evidence => evidence.PersonId == person.Id).ToArray();
+            var joinTimes = joined.Select(evt => evt.OccurredAt)
+                .Concat(observations.Where(evidence => !evidence.HasRecordedJoin).Select(evidence => evidence.ObservedAt)).ToArray();
             var lastEvent = personEvents.LastOrDefault(evt => evt.EventType != ParticipantEventType.NameChanged);
-            var lastJoin = joined.LastOrDefault()?.OccurredAt;
-            var lastLeft = personEvents.LastOrDefault(evt => evt.EventType == ParticipantEventType.Left)?.OccurredAt;
+            var lastJoin = joinTimes.Select(time => (DateTimeOffset?)time).Max();
+            var lastLeft = personEvents.Where(evt => evt.EventType == ParticipantEventType.Left).Select(evt => (DateTimeOffset?)evt.OccurredAt)
+                .Concat(observations.Select(evidence => evidence.LeftAt)).Max();
             var confidence = personEvents.Any() ? personEvents.MaxBy(evt => evt.Confidence)?.Confidence ?? MatchConfidence.Unmatched : MatchConfidence.Unmatched;
             var reason = personEvents.Any() ? string.Join(", ", personEvents.Select(evt => evt.Confidence).Distinct()) : "No event yet";
+            if (!personEvents.Any() && observations.Length > 0) { confidence = MatchConfidence.Verified; reason = "이번 회의에서 운영자가 출석을 확인했습니다."; }
+            if (connectionsByPerson.TryGetValue(person.Id, out var liveConnections))
+            {
+                confidence = liveConnections.MaxBy(connection => connection.Confidence)!.Confidence;
+                reason = string.Join(" · ", liveConnections.Select(connection => connection.MatchReason).Distinct());
+                lastJoin ??= liveConnections.Min(connection => connection.FirstSeenAt);
+            }
             var attendanceState = snapshots.Count == 0
                 ? ResolveState(lastEvent)
                 : currentlyPresentPersonIds.Contains(person.Id)
                     ? AttendanceState.Present
-                    : personEvents.Any(evt => evt.EventType == ParticipantEventType.Joined)
+                    : joinTimes.Length > 0
                         ? AttendanceState.Left
                         : AttendanceState.NotJoined;
 
@@ -594,10 +615,12 @@ public sealed class AttendanceApplicationService
                 ConfidenceReason: reason,
                 LastJoinedAt: lastJoin,
                 LastLeftAt: lastLeft,
-                JoinCount: joined.Count,
+                JoinCount: joinTimes.Length,
                 ActiveConnectionCount: connectionsByPerson.TryGetValue(person.Id, out var personConnections) ? personConnections.Length : 0,
                 HasDuplicateConnections: connectionsByPerson.TryGetValue(person.Id, out var duplicateCheck) && duplicateCheck.Length > 1);
-        }).OrderBy(item => ParseSequence(item.Sequence)).ToArray();
+        }).Select(person => ApplyPersonReview(person,
+            connectionsByPerson.GetValueOrDefault(person.RosterPersonId) ?? Array.Empty<CurrentParticipantConnection>(), reviews, exclusions))
+            .OrderBy(item => ParseSequence(item.Sequence)).ToArray();
 
         var unmatched = snapshots.Count == 0
             ? events
@@ -629,7 +652,7 @@ public sealed class AttendanceApplicationService
                 .ToArray();
 
         var confidenceCounts = people
-            .Where(person => person.AttendanceState != AttendanceState.NotJoined)
+            .Where(person => !person.IsExcluded && person.AttendanceState != AttendanceState.NotJoined)
             .GroupBy(person => person.Confidence)
             .ToDictionary(group => group.Key, group => group.Count());
 
@@ -650,7 +673,11 @@ public sealed class AttendanceApplicationService
             ConfidenceCounts: confidenceCounts,
             CurrentConnections: currentConnections,
             DuplicateConnectionGroups: duplicateConnectionGroups,
-            Groups: groups);
+            Groups: groups,
+            SnapshotSources: authoritativeSnapshots.ToArray(),
+            LastReceivedAt: authoritativeSnapshots.Select(snapshot => (DateTimeOffset?)snapshot.CapturedAt).Max(),
+            LatestEventAt: events.Select(evt => (DateTimeOffset?)evt.OccurredAt).Max(),
+            AttendanceDate: attendanceDate);
     }
 
     /// <summary>
@@ -665,17 +692,16 @@ public sealed class AttendanceApplicationService
     {
         var board = await BuildBoardAsync(meetingId, cancellationToken);
         var normalizedFilter = NormalizeGroup(groupFilter);
-        var rows = string.IsNullOrEmpty(normalizedFilter)
-            ? board.People
-            : board.People
-                .Where(person => string.Equals(
+        var rows = board.People
+            .Where(person => !person.IsExcluded)
+            .Where(person => string.IsNullOrEmpty(normalizedFilter) || string.Equals(
                     NormalizeGroup(person.Group),
                     normalizedFilter,
                     StringComparison.OrdinalIgnoreCase))
-                .ToArray();
+            .ToArray();
 
         var builder = new StringBuilder();
-        builder.AppendLine("Sequence,Name,Organization,Group,AttendanceState,Confidence,ConfidenceReason,LastJoinedAt,LastLeftAt,JoinCount");
+        builder.AppendLine("Sequence,Name,Organization,Group,AttendanceState,Confidence,ConfidenceReason,LastJoinedAt,LastLeftAt,JoinCount,IdentityReviewStatus,DuplicateReviewStatus");
 
         foreach (var person in rows)
         {
@@ -690,7 +716,9 @@ public sealed class AttendanceApplicationService
                 Escape(person.ConfidenceReason),
                 Escape(person.LastJoinedAt?.ToString("O") ?? string.Empty),
                 Escape(person.LastLeftAt?.ToString("O") ?? string.Empty),
-                Escape(person.JoinCount.ToString())
+                Escape(person.JoinCount.ToString()),
+                Escape(person.IdentityReviewStatus),
+                Escape(person.DuplicateReviewStatus)
             }));
         }
 

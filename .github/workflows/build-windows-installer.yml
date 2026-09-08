@@ -25,12 +25,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v4.3.1
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 8.0.424
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
@@ -40,6 +40,14 @@ jobs:
 
       - name: Test
         run: dotnet test ZoomCheck.sln -c Release --no-restore
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Dashboard regression tests
+        run: node --test tests/dashboard-regressions.cjs
 
       - name: Resolve package version
         id: version
@@ -158,21 +166,21 @@ jobs:
           Write-Host "Portable ZIP audit passed ($($entries.Count) entries)."
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: ZoomCheck-Setup-x64
           path: ${{ env.INSTALLER_PATH }}
           if-no-files-found: error
 
       - name: Upload portable ZIP artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: ZoomCheck-portable-win-x64
           path: ${{ env.PORTABLE_PATH }}
           if-no-files-found: error
 
       - name: Upload checksum artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: ZoomCheck-SHA256SUMS
           path: ${{ env.CHECKSUM_PATH }}
@@ -184,12 +192,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_TARGET: ${{ github.sha }}
+          RELEASE_VERSION: ${{ steps.version.outputs.package_version }}
         shell: pwsh
         run: |
+          $notesPath = "docs/releases/v${env:RELEASE_VERSION}.md"
+          $notesArgs = @('--generate-notes')
+          if (Test-Path -LiteralPath $notesPath) {
+            $notesArgs = @('--notes-file', $notesPath)
+          }
           gh release create $env:RELEASE_TAG `
           "${{ env.INSTALLER_PATH }}" `
           "${{ env.PORTABLE_PATH }}" `
           "${{ env.CHECKSUM_PATH }}" `
           --target $env:RELEASE_TARGET `
           --title "ZoomCheck $env:RELEASE_TAG" `
-          --notes "Windows web dashboard build. Installer and portable ZIP both contain the self-contained ZoomCheck.Backend.exe; launch it and the dashboard opens in your browser. No secrets, databases or attendance data are bundled."
+          @notesArgs `
+          --latest

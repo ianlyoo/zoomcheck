@@ -47,12 +47,23 @@
     groups: [],
     selectedKey: null,
     pending: 0,
+    busyRequests: [],
+    meetingGeneration: 0,
+    boardEpoch: 0,
+    meetingRequests: [],
     timerId: null,
     clockId: null,
     connectionPollId: null,
     nextSyncAt: null,
     lastSyncAt: null,
     lastSyncOk: null,
+    lastAttemptAt: null,
+    awaitingSnapshot: false,
+    requestedAfterReceipt: null,
+    connectionDrafts: Object.create(null),
+    rosterLoaded: false,
+    rosterError: false,
+    readinessAction: null,
     sessionLog: [],
     alertAction: null,
     zoomConfigured: false,
@@ -183,13 +194,55 @@
   }
 
   function beginBusy(message) {
-    state.pending += 1;
-    setText(el.busyText, message || '처리 중…');
+    var token = { message: message || '처리 중…' };
+    state.busyRequests.push(token);
+    state.pending = state.busyRequests.length;
+    setText(el.busyText, token.message);
     el.busy.hidden = false;
+    return token;
   }
-  function endBusy() {
-    state.pending = Math.max(0, state.pending - 1);
-    if (state.pending === 0) { el.busy.hidden = true; }
+  function endBusy(token) {
+    var index = state.busyRequests.indexOf(token);
+    if (index < 0) { return; }
+    state.busyRequests.splice(index, 1);
+    state.pending = state.busyRequests.length;
+    el.busy.hidden = state.pending === 0;
+    if (state.pending) { setText(el.busyText, state.busyRequests[state.pending - 1].message); }
+  }
+
+  function beginMeetingRequest(message) {
+    var context = { meetingId: currentMeetingId(), generation: state.meetingGeneration, boardEpoch: state.boardEpoch, busy: message ? beginBusy(message) : null };
+    state.meetingRequests.push(context);
+    return context;
+  }
+  function isCurrentMeetingRequest(context) {
+    return context.generation === state.meetingGeneration && context.meetingId === currentMeetingId()
+      && (context.boardEpoch === undefined || context.boardEpoch === state.boardEpoch);
+  }
+  function finishMeetingRequest(context) {
+    if (context.busy) { endBusy(context.busy); context.busy = null; }
+    var index = state.meetingRequests.indexOf(context);
+    if (index >= 0) { state.meetingRequests.splice(index, 1); }
+    return isCurrentMeetingRequest(context);
+  }
+  function resetMeetingSelection() {
+    state.meetingGeneration += 1;
+    state.meetingRequests.slice().forEach(finishMeetingRequest);
+    state.selectedKey = null;
+    state.lastSyncAt = null;
+    state.lastSyncOk = null;
+    state.lastAttemptAt = null;
+    state.awaitingSnapshot = false;
+    state.requestedAfterReceipt = null;
+    state.connectionDrafts = Object.create(null);
+    if (el.snapshotResult) { el.snapshotResult.hidden = true; }
+    setText(el.lastSyncTime, '–');
+    el.syncSummary.querySelector('.status-dot').className = 'status-dot';
+    setText(el.syncSummary.lastChild, '동기화 대기');
+    hideAlert();
+    renderBoard({ meetingId: currentMeetingId(), people: [], currentConnections: [], recentEvents: [] });
+    state.board = null;
+    scheduleNextSync();
   }
 
   function logSession(kind, title, message) {
@@ -223,6 +276,7 @@
   }
 
   function showAlert(kind, title, message, actionLabel, action) {
+    if (el.alertDetails) { el.alertDetails.hidden = true; el.alertDetails.open = false; }
     el.alertBar.hidden = false;
     el.alertDot.className = 'status-dot ' + (kind || 'warn');
     setText(el.alertTitle, title);
@@ -341,6 +395,84 @@
     if (state.recommendedMode) { note += ' · 권장: ' + (MODE_LABEL[state.recommendedMode] || state.recommendedMode); }
     if (active === 'manual') { note += ' · 아래 “전체 참가자 목록 직접 붙여넣기”를 사용하세요.'; }
     setText(el.modeNote, note);
+    renderModeControls();
+    renderReadiness();
+  }
+
+  function openSettingsSection(section, focusId) {
+    openSettings();
+    var target = $('settings-' + section);
+    if (target && target.scrollIntoView) { target.scrollIntoView({ block: 'start' }); }
+    var focus = focusId ? $(focusId) : target;
+    if (focus) { focus.focus(); }
+  }
+  function renderModeControls() {
+    var manual = effectiveMode() === 'manual';
+    setText(el.btnSyncZoom, manual ? '참가자 목록 입력' : '지금 동기화');
+    el.chkAutoRefresh.disabled = manual;
+    el.settingsAutoRefresh.disabled = manual;
+    el.intervalInput.disabled = manual;
+    setText(el.autoStatus, manual ? '직접 입력' : (el.chkAutoRefresh.checked ? '활성' : '꺼짐'));
+    setText(el.autoModeNote, manual ? '직접 입력 모드에서는 자동 수집하지 않습니다. 이전 자동 수집 설정은 보존됩니다.' : '연결된 회의의 참가자 전체 목록을 주기적으로 수집합니다.');
+    if (manual) { state.nextSyncAt = null; setText(el.nextSyncTime, '–'); }
+  }
+  function renderReadiness() {
+    if (!el.readiness) { return; }
+    var title = '', note = '', label = '', action = null;
+    if (state.rosterError) {
+      title = '명단을 불러오지 못했습니다'; note = '연결을 확인한 뒤 저장된 명단을 다시 읽어 주세요.'; label = '명단 다시 읽기'; action = function () { loadRoster(true); };
+    } else if (!state.rosterLoaded && !state.roster.length) {
+      title = '저장된 명단 확인 중'; note = '회의 준비 상태를 확인하고 있습니다.';
+    } else if (!state.roster.length) {
+      title = '1. 오늘 사용할 명단을 올려 주세요'; note = 'Excel 명단 → 회의 ID → 연결 방식 순서로 준비합니다.'; label = '명단 올리기'; action = function () { openSettingsSection('roster', 'roster-file'); };
+    } else if (!currentMeetingId()) {
+      title = '2. 회의 ID를 확인해 주세요'; note = '명단 ' + state.roster.length + '명 등록됨 · 출석과 검토는 이 회의에 저장됩니다.'; label = '회의 ID 입력'; action = function () { el.meetingId.focus(); };
+    } else if (effectiveMode() === 'zoomApp' && (!state.zoomApp || !state.zoomApp.sessionActive)) {
+      title = '3. Zoom 앱을 연결해 주세요'; note = '회의 안 ZoomCheck 앱에 페어링 코드를 입력하세요.'; label = '연결 준비'; action = function () { openSettingsSection('pairing', 'btn-create-pairing-code'); };
+    } else if (effectiveMode() === 'business' && !state.zoomConfigured) {
+      title = '3. 수집 방식을 확인해 주세요'; note = 'API 설정을 확인하거나 Zoom 앱·직접 입력을 선택하세요.'; label = '연결 방식 선택'; action = function () { openSettingsSection('mode', 'mode-auto'); };
+    } else if (!state.board || (!state.board.lastReceivedAt && !state.board.latestEventAt)) {
+      title = '참가자 목록을 처음 받아 주세요'; note = '명단은 준비되었습니다. 참가자를 받기 전의 0명은 출석 결과가 아닙니다.';
+      label = effectiveMode() === 'manual' ? '참가자 목록 입력' : '참가자 받기'; action = function () { syncNow({ silent: false }); };
+    }
+    el.readiness.hidden = !title;
+    setText(el.readinessTitle, title); setText(el.readinessNote, note);
+    setText(el.btnNextStep, label); el.btnNextStep.hidden = !action;
+    state.readinessAction = action;
+  }
+  function sourceLabel(source) {
+    if (source === 'web-dashboard' || source === 'manual-snapshot') { return '직접 입력'; }
+    if (source === 'zoom-live-participants') { return 'Zoom 참가자'; }
+    if (source === 'zoom-api') { return 'Zoom API'; }
+    if (source === 'zoom-webhook' || source === 'zoom-webhook-raw') { return 'Zoom 활동 알림'; }
+    if (String(source).indexOf('zoom-app') >= 0 || String(source).indexOf('relay') >= 0) { return 'Zoom 앱'; }
+    return source || '저장된 출석';
+  }
+  function renderFreshness() {
+    var board = state.board || {};
+    var received = board.lastReceivedAt || null;
+    var time = received ? new Date(received).getTime() : NaN;
+    var valid = !isNaN(time);
+    var age = valid ? Math.max(0, Math.floor((Date.now() - time) / 1000)) : 0;
+    var sources = asArray(board.snapshotSources).map(function (item) { return sourceLabel(item.source); });
+    sources = sources.filter(function (item, index) { return sources.indexOf(item) === index; });
+    var source = sources.join(' + ') || (effectiveMode() === 'manual' ? '직접 입력' : MODE_LABEL[effectiveMode()]);
+    if (valid && state.awaitingSnapshot && (!state.requestedAfterReceipt || time > new Date(state.requestedAfterReceipt).getTime())) { state.awaitingSnapshot = false; state.lastSyncOk = true; }
+    state.lastSyncAt = valid ? new Date(received) : null;
+    setText(el.lastSyncTime, valid ? formatTime(received) : '–');
+    setText(el.summaryTime, valid ? source + ' · 마지막 참가자 수신 ' + formatTime(received) + ' · ' + (age < 60 ? age + '초 전' : Math.floor(age / 60) + '분 전')
+      : board.latestEventAt ? '최근 활동 ' + formatDateTime(board.latestEventAt) + ' · 참가자 수신 기록 없음' : '아직 참가자 수신 기록이 없습니다.');
+    var automatic = effectiveMode() !== 'manual' && el.chkAutoRefresh.checked;
+    var late = automatic && valid && age > Math.max(30, intervalSeconds() * 3);
+    var status = state.lastSyncOk === false ? '연결 실패 · 기존 출석 유지'
+      : late ? '수신 지연 · 기존 출석 유지'
+      : state.awaitingSnapshot ? '동기화 요청됨 · 참가자 수신 대기'
+      : valid ? '참가자 수신 기록 있음' : '참가자 수신 대기';
+    setText(el.sourceStatus, status + (state.lastAttemptAt ? ' · 마지막 시도 ' + formatTime(state.lastAttemptAt) : '')
+      + (board.generatedAt ? ' · 화면 조회 ' + formatTime(board.generatedAt) : ''));
+    el.syncSummary.querySelector('.status-dot').className = 'status-dot ' + (state.lastSyncOk === false ? 'bad' : late || state.awaitingSnapshot ? 'warn' : valid ? 'ok' : '');
+    setText(el.syncSummary.lastChild, status);
+    setText(el.activityMode, '저장된 활동');
   }
 
   function describeZoomAppRole(role) {
@@ -417,6 +549,7 @@
           var connectedMeetingId = normalizeMeetingId(state.zoomApp.meetingId);
           el.meetingId.value = connectedMeetingId;
           writeStore(STORAGE.meetingId, connectedMeetingId);
+          resetMeetingSelection();
         }
       } else if (state.zoomApp && state.zoomApp.pairingCodeExpiresAt && !state.pairing) {
         state.pairing = { code: null, expiresAt: state.zoomApp.pairingCodeExpiresAt };
@@ -443,9 +576,9 @@
   }
 
   function createPairingCode() {
-    beginBusy('페어링 코드를 만드는 중…');
+    var busy = beginBusy('페어링 코드를 만드는 중…');
     return request('/api/zoom-app/pairing-code', { method: 'POST', json: {} }).then(function (result) {
-      endBusy();
+      endBusy(busy);
       state.pairing = { code: result && result.code ? result.code : null, expiresAt: result ? result.expiresAt : null };
       if (result && result.homeUrl) {
         state.zoomApp = state.zoomApp || {};
@@ -455,7 +588,7 @@
       toast('ok', '페어링 코드 생성', '회의 안 ZoomCheck 앱에 코드를 입력하세요.');
       return result;
     }, function (error) {
-      endBusy();
+      endBusy(busy);
       toast('bad', '페어링 코드 생성 실패', error.message);
       return null;
     });
@@ -476,22 +609,29 @@
 
   function requestZoomAppSync(options) {
     var opts = options || {};
-    if (!opts.silent) { beginBusy('Zoom 앱에 동기화를 요청하는 중…'); }
+    if (state.zoomApp && state.zoomApp.meetingId && normalizeMeetingId(state.zoomApp.meetingId) !== currentMeetingId()) {
+      showAlert('warn', '연결된 회의가 다릅니다', '선택한 회의 ID와 Zoom 앱의 회의 ID를 확인하세요.', '회의 ID 확인', function () { el.meetingId.focus(); });
+      return Promise.resolve(null);
+    }
+    var context = beginMeetingRequest(opts.silent ? null : 'Zoom 앱에 동기화를 요청하는 중…');
+    var previousReceipt = state.board && state.board.lastReceivedAt;
     return request('/api/zoom-app/sync', { method: 'POST', json: {} }).then(function (result) {
-      if (!opts.silent) { endBusy(); }
+      if (!finishMeetingRequest(context)) { return null; }
       hideAlert();
-      markSync(true, ' Zoom 앱 동기화 요청됨');
+      state.awaitingSnapshot = true; state.requestedAfterReceipt = previousReceipt; markSync(null);
       scheduleNextSync();
       logSession('ok', 'Zoom 앱 동기화 요청', result && result.requestedRevision !== undefined ? 'revision ' + result.requestedRevision : '');
       if (!opts.silent) { toast('ok', 'Zoom 앱 동기화 요청', '회의 안 앱이 참가자 목록을 곧 전송합니다.'); }
       /* 앱이 스냅샷을 올릴 시간을 주고 저장된 보드를 다시 읽는다. */
-      window.setTimeout(function () { refreshBoard({ silent: true }); }, 2500);
+      window.setTimeout(function () {
+        if (isCurrentMeetingRequest(context)) { refreshBoard({ silent: true }); }
+      }, 2500);
       return result;
     }, function (error) {
-      if (!opts.silent) { endBusy(); }
+      if (!finishMeetingRequest(context)) { return null; }
       markSync(false, ' Zoom 앱 동기화 실패');
       scheduleNextSync();
-      showAlert('warn', 'Zoom 앱 동기화 실패', error.message, '페어링 코드 만들기', function () { openSettings(); createPairingCode(); });
+      showSyncError(error, 'zoomApp');
       logSession('bad', 'Zoom 앱 동기화 실패', error.message);
       if (!opts.silent) { toast('bad', 'Zoom 앱 동기화 실패', error.message); }
       return null;
@@ -505,8 +645,7 @@
     if (mode === 'zoomApp') { return requestZoomAppSync(opts); }
     if (mode === 'manual') {
       if (!opts.silent) {
-        openSettings();
-        toast('warn', '직접 입력 모드', '설정에서 현재 참가자 전체 목록을 붙여넣어 적용하세요.');
+        openSettingsSection('manual', 'snapshot-names');
       }
       return Promise.resolve(null);
     }
@@ -515,6 +654,7 @@
 
   function loadRoster(showToast) {
     return request('/api/roster').then(function (people) {
+      state.rosterLoaded = true; state.rosterError = false;
       state.roster = asArray(people);
       setText(el.rosterSummary, '명단 ' + state.roster.length + '명');
       setText(el.rosterNote, state.roster.length
@@ -523,8 +663,10 @@
       if (showToast) { toast('ok', '명단 확인 완료', state.roster.length + '명'); }
       if (state.board) { renderBoard(state.board); }
       else { state.groups = collectGroups(null); renderGroupOptions(); }
+      renderReadiness();
       return state.roster;
     }, function (error) {
+      state.rosterLoaded = true; state.rosterError = true; renderReadiness();
       setText(el.rosterNote, '명단을 읽지 못했습니다 — ' + error.message);
       if (showToast) { toast('bad', '명단 읽기 실패', error.message); }
       return [];
@@ -539,14 +681,14 @@
     if (file.size > MAX_ROSTER_BYTES) { toast('warn', '파일이 너무 큽니다', '20MB 이하 파일을 사용하세요.'); return; }
     var form = new FormData();
     form.append('file', file, file.name);
-    beginBusy('명단을 올리는 중…');
+    var busy = beginBusy('명단을 올리는 중…');
     request('/api/roster/upload', { method: 'POST', headers: { Accept: 'application/json' }, body: form }).then(function (result) {
-      endBusy();
+      endBusy(busy);
       el.rosterFile.value = '';
       toast('ok', '명단 업로드 완료', (result && result.count !== undefined ? result.count : '') + '명');
       return Promise.all([loadRoster(false), refreshBoard({ silent: true })]);
     }, function (error) {
-      endBusy();
+      endBusy(busy);
       toast('bad', '명단 업로드 실패', error.message);
     });
   }
@@ -561,14 +703,29 @@
     return meetingId;
   }
 
-  function markSync(ok, note) {
-    state.lastSyncAt = new Date();
+  function markSync(ok) {
+    state.lastAttemptAt = new Date();
     state.lastSyncOk = ok;
-    setText(el.lastSyncTime, formatTime(state.lastSyncAt));
-    var dot = el.syncSummary.querySelector('.status-dot');
-    dot.className = 'status-dot ' + (ok ? 'ok' : 'bad');
-    setText(el.syncSummary.lastChild, ok ? (note || ' 동기화 정상') : ' 동기화 실패');
-    setText(el.summaryTime, ok ? formatDateTime(state.lastSyncAt) + ' 기준' : '동기화 실패 · 기존 출석 유지');
+    if (ok !== null) { state.awaitingSnapshot = false; }
+    renderFreshness();
+  }
+  function showSyncError(error, mode) {
+    var message = '일시적으로 연결할 수 없습니다. 기존 출석은 유지됩니다.';
+    var label = '다시 시도', action = function () { syncNow({ silent: false }); };
+    if (error.status === 403 || error.status === 401) {
+      message = '연결 권한을 확인해 주세요. 기존 출석은 유지됩니다.'; label = '권한 설정 확인';
+      action = function () { openSettingsSection(mode === 'zoomApp' ? 'pairing' : 'api'); };
+    } else if (error.status === 404) {
+      message = '회의를 찾지 못했습니다. 회의 ID와 진행 상태를 확인하세요.'; label = '회의 ID 확인'; action = function () { el.meetingId.focus(); };
+    } else if (error.status === 429) {
+      message = '요청이 너무 잦습니다. 동기화 간격을 늘린 뒤 다시 시도하세요.'; label = '간격 조정'; action = function () { openSettingsSection('auto', 'autorefresh-interval'); };
+    } else if (error.status === 409 && mode === 'zoomApp') {
+      message = 'Zoom 앱 연결 상태를 확인해 주세요.'; label = '연결 확인'; action = function () { openSettingsSection('pairing'); };
+    } else if (error.status === 503 && mode === 'business' && !state.zoomConfigured) {
+      message = 'API 연결 설정이 필요합니다. 다른 수집 방식도 선택할 수 있습니다.'; label = '연결 방식 선택'; action = function () { openSettingsSection('mode'); };
+    }
+    showAlert('warn', '참가자 수신 실패', message, label, action);
+    if (el.alertDetails) { el.alertDetails.hidden = false; setText(el.alertTechnical, error.message); }
   }
 
   function syncZoomParticipants(options) {
@@ -577,9 +734,9 @@
     if (!meetingId) { return Promise.resolve(null); }
     var path = '/api/zoom/meetings/' + encodeURIComponent(meetingId) + '/sync';
     if (opts.allowEmpty) { path += '?allowEmptySnapshot=true'; }
-    if (!opts.silent) { beginBusy('Zoom 참가자를 동기화하는 중…'); }
+    var context = beginMeetingRequest(opts.silent ? null : 'Zoom 참가자를 동기화하는 중…');
     return request(path, { method: 'POST' }).then(function (result) {
-      if (!opts.silent) { endBusy(); }
+      if (!finishMeetingRequest(context)) { return null; }
       hideAlert();
       state.zoomConfigured = true;
       setDot(el.zoomDot, true);
@@ -591,14 +748,19 @@
       if (!opts.silent) { toast('ok', '실시간 동기화 완료', '현재 참가자 ' + result.activeParticipants + '명'); }
       return result;
     }, function (error) {
-      if (!opts.silent) { endBusy(); }
+      if (!finishMeetingRequest(context)) { return null; }
       markSync(false, ' 동기화 실패');
       scheduleNextSync();
       var emptyRejected = error.status === 409;
-      showAlert(emptyRejected ? 'warn' : 'bad', emptyRejected ? 'Zoom이 0명을 반환했습니다' : 'Zoom 동기화 실패',
-        emptyRejected ? '일시적인 빈 응답일 수 있어 기존 출석을 유지했습니다. 실제로 회의가 비었다면 전원 퇴장을 확정하세요.' : error.message,
-        emptyRejected ? '전원 퇴장 확정' : '다시 시도',
-        emptyRejected ? function () { syncZoomParticipants({ allowEmpty: true, silent: false }); } : function () { syncZoomParticipants({ silent: false }); });
+      if (emptyRejected) {
+        showAlert('warn', 'Zoom이 0명을 반환했습니다', '빈 응답일 수 있어 기존 출석을 유지했습니다. 실제로 회의가 비었다면 확인하세요.', '전원 퇴장 확인', function () {
+          if (isCurrentMeetingRequest(context)) {
+            confirmAction('회의 ' + meetingId + '의 참가자가 모두 퇴장했습니까?', function () {
+              if (isCurrentMeetingRequest(context)) { return syncZoomParticipants({ allowEmpty: true, silent: false }); }
+            });
+          }
+        });
+      } else { showSyncError(error, 'business'); }
       logSession('bad', 'Zoom 동기화 실패', error.message);
       if (!opts.silent) { toast('bad', 'Zoom 동기화 실패', error.message); }
       return null;
@@ -609,14 +771,15 @@
     var opts = options || {};
     var meetingId = opts.silent ? currentMeetingId() : requireMeetingId();
     if (!meetingId) { return Promise.resolve(null); }
-    if (!opts.silent) { beginBusy('출석 현황을 불러오는 중…'); }
+    var context = beginMeetingRequest(opts.silent ? null : '출석 현황을 불러오는 중…');
     return request('/api/meetings/' + encodeURIComponent(meetingId) + '/board').then(function (board) {
-      if (!opts.silent) { endBusy(); }
+      if (!finishMeetingRequest(context)) { return null; }
       renderBoard(board);
       if (opts.notify) { toast('ok', '화면 새로고침 완료', '저장된 최신 상태를 표시합니다.'); }
       return board;
     }, function (error) {
-      if (!opts.silent) { endBusy(); toast('bad', '화면 새로고침 실패', error.message); }
+      if (!finishMeetingRequest(context)) { return null; }
+      if (!opts.silent) { toast('bad', '화면 새로고침 실패', error.message); }
       return null;
     });
   }
@@ -645,7 +808,9 @@
         rosterPersonId: item.matchedRosterPersonId || item.rosterPersonId || null,
         matchedRosterPersonName: item.matchedRosterPersonName || '',
         confidence: item.confidence || item.matchConfidence || 'Unmatched',
-        source: item.source || 'Zoom API'
+        source: item.source || '',
+        manualMatch: !!item.manualMatch, reviewStatus: item.reviewStatus || 'none',
+        evidenceToken: item.evidenceToken, matchReason: item.matchReason || ''
       };
     });
   }
@@ -663,7 +828,9 @@
             displayName: item.displayName || '',
             email: item.participantEmail || item.email || null,
             firstSeenAt: item.firstSeenAt || item.joinedAt || null,
-            lastSeenAt: item.lastSeenAt || item.updatedAt || null
+            lastSeenAt: item.lastSeenAt || item.updatedAt || null,
+            source: item.source || '', manualMatch: !!item.manualMatch,
+            reviewStatus: item.reviewStatus || 'none', evidenceToken: item.evidenceToken, matchReason: item.matchReason || ''
           };
         });
         var personId = group.rosterPersonId || group.matchedRosterPersonId || null;
@@ -722,18 +889,29 @@
         lastJoinedAt: person.lastJoinedAt,
         lastLeftAt: person.lastLeftAt,
         joinCount: person.joinCount,
-        connections: duplicate ? duplicate.connections : personConnections,
+        connections: personConnections.length ? personConnections : (duplicate ? duplicate.connections : []),
         duplicate: !!duplicate,
-        review: REVIEW_CONFIDENCE.indexOf(person.confidence) >= 0 || !!duplicate
+        isExcluded: !!person.isExcluded,
+        identityReviewStatus: person.identityReviewStatus || 'none', duplicateReviewStatus: person.duplicateReviewStatus || 'none',
+        identityEvidenceToken: person.identityEvidenceToken, duplicateEvidenceToken: person.duplicateEvidenceToken,
+        review: !person.isExcluded && (typeof person.reviewRequired === 'boolean' ? person.reviewRequired : REVIEW_CONFIDENCE.indexOf(person.confidence) >= 0 || !!duplicate)
       };
     });
     var unmatchedConnections = connections.filter(function (connection) { return !connection.rosterPersonId; });
+    var unmatchedNames = Object.create(null);
     asArray(board.unmatchedParticipants).forEach(function (item, index) {
+      var nameKey = normalizeSearch(item.participantName);
+      if (unmatchedNames[nameKey]) {
+        var existing = unmatchedNames[nameKey];
+        if (item.lastSeenAt > existing.lastJoinedAt) { existing.lastJoinedAt = item.lastSeenAt; }
+        existing.joinCount = Math.max(existing.joinCount, item.eventCount || 0);
+        return;
+      }
       var matching = unmatchedConnections.filter(function (connection) {
         return normalizeSearch(connection.rawName) === normalizeSearch(item.participantName) || normalizeSearch(connection.canonicalName) === normalizeSearch(item.participantName);
       });
-      rows.push({
-        key: 'unmatched:' + index + ':' + item.participantName,
+      var unmatchedRow = {
+        key: 'unmatched:' + normalizeSearch(item.participantName),
         kind: 'unmatched',
         rosterPersonId: null,
         name: item.participantName,
@@ -750,7 +928,9 @@
         connections: matching,
         duplicate: matching.length > 1,
         review: true
-      });
+      };
+      unmatchedNames[nameKey] = unmatchedRow;
+      rows.push(unmatchedRow);
     });
     return rows;
   }
@@ -817,7 +997,6 @@
     });
   }
   function scopedConnectionCount(rosterScoped) {
-    if (!state.group) { return state.connections.length; }
     var allowed = {};
     rosterScoped.forEach(function (row) { if (row.rosterPersonId) { allowed[row.rosterPersonId] = true; } });
     return state.connections.filter(function (connection) {
@@ -847,6 +1026,7 @@
   function applyGroup(value, options) {
     var opts = options || {};
     state.group = normalizeGroupName(value);
+    el.participantTableWrap.scrollTop = 0;
     writeStore(STORAGE.group, state.group);
     if (el.groupFilter) { el.groupFilter.value = state.group || ''; }
     if (state.board) { renderBoard(state.board); }
@@ -858,6 +1038,7 @@
 
   function renderBoard(board) {
     if (!board || typeof board !== 'object') { return; }
+    if (board.meetingId && normalizeMeetingId(board.meetingId) !== currentMeetingId()) { return; }
     state.board = board;
     var rosterMap = rosterById();
     state.connections = extractConnections(board);
@@ -866,7 +1047,9 @@
     state.groups = collectGroups(board);
     renderGroupOptions();
 
-    var scoped = scopedRows();
+    var allScoped = scopedRows();
+    var excluded = allScoped.filter(function (row) { return row.isExcluded; });
+    var scoped = allScoped.filter(function (row) { return !row.isExcluded; });
     var rosterScoped = scoped.filter(function (row) { return row.kind === 'roster'; });
     var present = rosterScoped.filter(function (row) { return row.attendanceState === 'Present'; });
     var absent = rosterScoped.filter(function (row) { return row.attendanceState !== 'Present'; });
@@ -874,10 +1057,10 @@
     var unmatched = scoped.filter(function (row) { return row.kind === 'unmatched'; });
     var duplicates = scopedDuplicates(rosterScoped);
     var connectionCount = scopedConnectionCount(rosterScoped);
-    var total = rosterScoped.length || (state.group ? 0 : state.roster.length);
+    var total = rosterScoped.length;
     var rate = total ? Math.round((present.length / total) * 100) : 0;
 
-    resetInvalidSelection(scoped);
+    resetInvalidSelection(allScoped);
 
     setText(el.summaryTotal, total);
     setText(el.summaryPresent, present.length);
@@ -885,17 +1068,22 @@
     el.rateRing.style.setProperty('--rate', total ? rate : 0);
     setText(el.metricPresent, present.length + '명');
     setText(el.metricAbsent, absent.length + '명');
-    setText(el.metricReview, review.length + '명');
+    setText(el.metricReview, review.length + '항목');
     setText(el.metricDuplicate, duplicates.length + '명');
-    setText(el.summaryTime, formatDateTime(board.generatedAt) + ' 기준');
-    setText(el.participantsMeta, (state.group ? state.group + ' · 명단 ' : '명단 ') + total + '명 · 현재 Zoom 연결 '
-      + (connectionCount || present.length + unmatched.length) + '건');
+    renderFreshness();
+    renderReadiness();
+    setText(el.participantsMeta, '명단 참석 ' + present.length + ' / ' + total + '명 · 미매칭 이름 ' + unmatched.length + '개 · 기기 연결 ' + connectionCount + '건');
+    setText(el.scopeNote, (state.group ? state.group + ' · ' : '') + '미매칭은 그룹과 관계없이 표시 · 오늘 제외 ' + excluded.length + '명' + (board.attendanceDate ? ' · ' + board.attendanceDate : ''));
+    setText(el.btnExport, (state.group || '전체') + ' 명단 CSV · ' + total + '명');
+    setText(el.exportScope, 'CSV: 제외되지 않은 ' + (state.group || '전체') + ' 명단 · 검색·상태 필터와 미매칭 항목은 미포함');
+    el.btnExport.disabled = !currentMeetingId() || total === 0;
 
     setText(el.countAll, scoped.length);
     setText(el.countPresent, scoped.filter(function (row) { return row.attendanceState === 'Present'; }).length);
     setText(el.countAbsent, scoped.filter(function (row) { return row.attendanceState !== 'Present'; }).length);
     setText(el.countReview, review.length);
     setText(el.countUnmatched, unmatched.length);
+    setText(el.countExcluded, excluded.length);
     setText(el.rosterSummary, state.group ? state.group + ' ' + total + '명' : '명단 ' + total + '명');
 
     renderParticipants();
@@ -904,6 +1092,8 @@
   }
 
   function rowMatchesFilter(row) {
+    if (state.filter === 'excluded') { return !!row.isExcluded; }
+    if (row.isExcluded) { return false; }
     if (state.filter === 'present') { return row.attendanceState === 'Present'; }
     if (state.filter === 'absent') { return row.attendanceState !== 'Present'; }
     if (state.filter === 'review') { return row.review; }
@@ -919,15 +1109,17 @@
   }
 
   function statusInfo(row) {
+    if (row.isExcluded) { return { label: '오늘 제외', className: 'neutral' }; }
     if (row.kind === 'unmatched') { return { label: '미매칭', className: 'unmatched' }; }
     if (row.attendanceState === 'Present') { return { label: '참석 중', className: 'present' }; }
     if (row.attendanceState === 'Left') { return { label: '퇴장', className: 'left' }; }
     return { label: '미참석', className: 'absent' };
   }
   function confidenceInfo(row) {
+    if (row.kind === 'roster' && row.attendanceState === 'NotJoined') { return { label: '입장 전', className: 'neutral' }; }
     if (row.kind === 'unmatched') { return { label: '미매칭', className: 'unmatched' }; }
-    if (row.review) { return { label: row.duplicate ? '중복 검토' : (CONFIDENCE_LABEL[row.confidence] || '검토'), className: 'review' }; }
-    return { label: CONFIDENCE_LABEL[row.confidence] || row.confidence || '–', className: 'verified' };
+    return { label: CONFIDENCE_LABEL[row.confidence] || row.confidence || '–',
+      className: row.confidence === 'Verified' || row.confidence === 'AliasVerified' ? 'verified' : row.confidence === 'Unmatched' ? 'neutral' : 'review' };
   }
 
   function appendTextCell(tr, text, className) {
@@ -948,22 +1140,29 @@
 
   function renderParticipants() {
     var scrollTop = el.participantTableWrap.scrollTop;
+    var focus = captureParticipantFocus();
     var rows = scopedRows().filter(rowMatchesFilter).filter(rowMatchesSearch);
     el.participantRows.textContent = '';
     el.participantsEmpty.hidden = rows.length > 0;
-    setText(el.visibleCount, rows.length + '명 표시');
+    setText(el.visibleCount, rows.length + '항목 표시');
+    setText(el.emptyTitle, state.filter === 'excluded' ? '오늘 제외한 사람이 없습니다.' : state.filter === 'review' ? '현재 필터에 검토할 항목이 없습니다.' : '표시할 참가자가 없습니다.');
+    setText(el.emptyNote, state.filter === 'excluded' ? '오늘 제외한 사람은 여기서 복원할 수 있으며 다음 날 다시 포함됩니다. 원본 명단과 과거 기록은 유지됩니다.' : '검색·그룹·상태 필터를 확인하세요. 모두 제외했다면 제외됨 목록에서 복원할 수 있습니다.');
+    if (el.btnResetFilters) { el.btnResetFilters.hidden = !state.group && !el.participantSearch.value && state.filter === 'all'; }
 
     rows.forEach(function (row) {
       var tr = document.createElement('tr');
       tr.className = 'participant-row' + (row.key === state.selectedKey ? ' is-selected' : '') + (row.kind === 'unmatched' ? ' is-unmatched' : '');
-      tr.tabIndex = 0;
-      tr.setAttribute('aria-expanded', row.key === state.selectedKey ? 'true' : 'false');
       tr.dataset.key = row.key;
       appendPillCell(tr, statusInfo(row));
       var nameCell = document.createElement('td');
-      var name = document.createElement('span');
-      name.className = 'participant-name';
-      name.textContent = row.name;
+      var name = document.createElement('button');
+      name.type = 'button';
+      name.className = 'participant-name row-toggle';
+      name.textContent = (row.key === state.selectedKey ? '− ' : '+ ') + row.name;
+      name.dataset.focusKey = 'row:' + row.key;
+      name.setAttribute('aria-expanded', row.key === state.selectedKey ? 'true' : 'false');
+      name.setAttribute('aria-label', row.name + ' 상세 ' + (row.key === state.selectedKey ? '접기' : '펼치기'));
+      name.addEventListener('click', function (event) { event.stopPropagation(); toggleParticipant(row.key); });
       var secondary = document.createElement('span');
       secondary.className = 'participant-secondary';
       secondary.textContent = row.email || (row.kind === 'unmatched' ? 'Zoom 표시 이름' : '이메일 없음');
@@ -991,13 +1190,14 @@
       connectionPill.textContent = row.connections.length ? row.connections.length + '건' : '–';
       connectionCell.appendChild(connectionPill);
       tr.appendChild(connectionCell);
-      tr.addEventListener('click', function () { toggleParticipant(row.key); });
-      tr.addEventListener('keydown', function (event) {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleParticipant(row.key); }
+      tr.addEventListener('click', function (event) {
+        if (event.target && event.target.closest && event.target.closest('button, input, select, a')) { return; }
+        toggleParticipant(row.key);
       });
       el.participantRows.appendChild(tr);
       if (row.key === state.selectedKey) { el.participantRows.appendChild(buildDetailRow(row)); }
     });
+    restoreParticipantFocus(focus);
     window.requestAnimationFrame(function () { el.participantTableWrap.scrollTop = scrollTop; });
   }
 
@@ -1009,7 +1209,7 @@
   /* Zoom 이름 변경 버튼 노출 조건. 서버가 최종 판단하므로 클라이언트는 안전한 최소 조건만 본다.
      서버는 명단 이름으로 변경하므로 버튼 문구도 명단 이름을 그대로 쓴다. */
   function renameCandidate(row) {
-    if (!row || row.kind !== 'roster') { return null; }
+    if (!row || row.kind !== 'roster' || row.isExcluded) { return null; }
     if (!state.zoomApp || state.zoomApp.transport !== 'relay') { return null; }
     if (row.duplicate || row.confidence === 'Possible' || row.confidence === 'Unmatched') { return null; }
     if (row.connections.length !== 1) { return null; }
@@ -1030,25 +1230,201 @@
   function renameZoomParticipant(candidate) {
     var meetingId = requireMeetingId();
     if (!meetingId || !candidate) { return; }
-    beginBusy('Zoom 이름 변경을 요청하는 중…');
-    request('/api/zoom-app/participants/rename', {
+    var context = beginMeetingRequest('Zoom 이름 변경을 요청하는 중…');
+    return request('/api/zoom-app/participants/rename', {
       method: 'POST',
       json: { meetingId: meetingId, presenceKey: candidate.presenceKey }
     }).then(function () {
-      endBusy();
+      if (!finishMeetingRequest(context)) { return null; }
       toast('ok', 'Zoom 이름 변경 요청됨', candidate.rawName + ' → ' + candidate.target);
       logSession('ok', 'Zoom 이름 변경', candidate.rawName + ' → ' + candidate.target);
       /* 변경 결과가 참가자 목록에 반영되도록 동기화를 한 번 요청한다. */
       return Promise.resolve(syncNow({ silent: true })).then(function () {
-        return refreshBoard({ silent: true });
+        if (isCurrentMeetingRequest(context)) { return refreshBoard({ silent: true }); }
       });
     }, function (error) {
-      endBusy();
+      if (!finishMeetingRequest(context)) { return null; }
       toast('bad', 'Zoom 이름 변경 실패', error.message);
       logSession('bad', 'Zoom 이름 변경 실패', error.message);
     });
   }
 
+  function captureParticipantFocus() {
+    var active = document.activeElement;
+    if (!active || !el.participantRows.contains(active)) { return null; }
+    return { key: active.dataset && active.dataset.focusKey, start: active.selectionStart, end: active.selectionEnd };
+  }
+  function restoreParticipantFocus(saved) {
+    if (!saved) { return; }
+    var controls = Array.prototype.slice.call(el.participantRows.querySelectorAll('[data-focus-key]'));
+    var target = controls.filter(function (node) { return node.dataset.focusKey === saved.key; })[0]
+      || controls.filter(function (node) { return node.classList.contains('row-toggle'); })[0] || el.participantSearch;
+    target.focus({ preventScroll: true });
+    if (saved.start !== null && saved.start !== undefined && target.setSelectionRange && target.type === 'search') { target.setSelectionRange(saved.start, saved.end); }
+  }
+  function meetingScope() { return { meetingId: currentMeetingId(), generation: state.meetingGeneration, attendanceDate: state.board && state.board.attendanceDate }; }
+  function scopeIsCurrent(scope) { return scope.meetingId === currentMeetingId() && scope.generation === state.meetingGeneration; }
+  function personLabel(person) {
+    var roster = rosterById()[person.rosterPersonId] || {};
+    return [person.name, person.group || roster.group, person.email || roster.email].filter(Boolean).join(' · ');
+  }
+  function confirmAction(message, action) {
+    if (el.actionConfirm.open) { return Promise.resolve(null); }
+    return new Promise(function (resolve, reject) {
+      var previousFocus = document.activeElement;
+      state.confirmationCallback = function (accepted) {
+        state.confirmationCallback = null;
+        var focus = previousFocus && previousFocus.isConnected !== false ? previousFocus : el.participantSearch;
+        if (focus && typeof focus.focus === 'function') { focus.focus({ preventScroll: true }); }
+        try { resolve(accepted ? action() : null); }
+        catch (error) { reject(error); }
+      };
+      setText(el.actionConfirmMessage, message);
+      el.actionConfirm.returnValue = '';
+      el.actionConfirm.showModal();
+      if (el.actionConfirm.open) { el.btnConfirmCancel.focus(); }
+    });
+  }
+  function mutateMeeting(scope, path, payload, confirmation, title) {
+    if (!scopeIsCurrent(scope) || !scope.meetingId) { return Promise.resolve(null); }
+    return confirmAction('회의 ' + scope.meetingId + '\n' + confirmation, function () {
+    if (!scopeIsCurrent(scope)) { return Promise.resolve(null); }
+    state.boardEpoch += 1;
+    var context = beginMeetingRequest('이번 회의의 변경을 저장하는 중…');
+    return request('/api/meetings/' + encodeURIComponent(scope.meetingId) + path, { method: 'PUT', json: payload }).then(function (board) {
+      if (!finishMeetingRequest(context)) { return null; }
+      state.boardEpoch += 1;
+      renderBoard(board);
+      toast('ok', title, '회의 ' + scope.meetingId + '에 저장했습니다.');
+      return board;
+    }, function (error) {
+      if (!finishMeetingRequest(context)) { return null; }
+      if (error.status === 409) {
+        showAlert('warn', payload.attendanceDate ? '날짜 또는 참가자 정보가 변경되었습니다' : '참가자 정보가 변경되었습니다', '이전 화면의 판단은 저장하지 않았습니다. 최신 정보를 읽고 다시 검토하세요.', '최신 현황 다시 읽기', function () {
+          if (scopeIsCurrent(scope)) { refreshBoard({ notify: true }); }
+        });
+        toast('warn', '변경되지 않았습니다', '최신 현황을 읽은 뒤 다시 검토하세요.');
+      } else {
+        showAlert('bad', '변경을 저장하지 못했습니다', '기존 판단과 명단을 유지했습니다. 연결을 확인한 뒤 다시 시도하세요.', '현황 다시 읽기', function () { if (scopeIsCurrent(scope)) { refreshBoard({ notify: true }); } });
+        if (el.alertDetails) { el.alertDetails.hidden = false; setText(el.alertTechnical, error.message); }
+      }
+      return null;
+    });
+    });
+  }
+  function setPersonExcluded(row, excluded, scope) {
+    if (!row || !row.rosterPersonId) { return Promise.resolve(null); }
+    scope = scope || meetingScope();
+    return mutateMeeting(scope, '/people/' + encodeURIComponent(row.rosterPersonId) + '/exclusion', { excluded: excluded, attendanceDate: scope.attendanceDate },
+      (scope.attendanceDate || '오늘') + ' · ' + personLabel(row) + '\n' + (excluded ? '오늘 명단에서 제외할까요?\n출석률·검토·CSV에서 빠지며 제외됨 목록에서 복원할 수 있습니다.' : '오늘 명단으로 복원할까요?')
+      + (excluded && row.attendanceState === 'Present' ? '\n현재 연결 중인 참가자입니다. Zoom 연결은 유지되고 오늘 집계에서만 제외됩니다.' : '')
+      + '\n원본 명단과 과거 기록은 유지되고 다음 날 다시 포함됩니다.', excluded ? '오늘 명단에서 제외했습니다' : '오늘 명단에 복원했습니다');
+  }
+  function setPersonReview(row, kind, status, scope) {
+    var token = kind === 'identity' ? row.identityEvidenceToken : row.duplicateEvidenceToken;
+    if (!token) { return Promise.resolve(null); }
+    var label = kind === 'identity' ? '신원' : '중복 기기';
+    return mutateMeeting(scope || meetingScope(), '/people/' + encodeURIComponent(row.rosterPersonId) + '/review',
+      { kind: kind, status: status, expectedEvidenceToken: token }, personLabel(row) + '\n' + label + ' 검토를 '
+      + (status === 'confirmed' ? '이번 회의에서 확인' : status === 'deferred' ? '보류' : '미확인으로 되돌림') + ' 처리할까요?\n실제 매칭 근거와 입퇴장 상태는 바뀌지 않습니다.', label + ' 검토를 저장했습니다');
+  }
+  function matchConnection(connection, personId, scope) {
+    if (!connection.source || !connection.presenceKey || !connection.evidenceToken) { return Promise.resolve(null); }
+    var person = asArray(state.board && state.board.people).filter(function (item) { return item.rosterPersonId === personId; })[0];
+    if (personId !== null && (!person || person.isExcluded)) { return Promise.resolve(null); }
+    return mutateMeeting(scope || meetingScope(), '/connections/match', { source: connection.source, presenceKey: connection.presenceKey,
+      rosterPersonId: personId, expectedEvidenceToken: connection.evidenceToken },
+      connection.rawName + ' · ' + sourceLabel(connection.source) + ' · 연결 ' + connection.presenceKey + '\n'
+      + (personId === null ? '운영자 연결을 취소하고 자동 매칭으로 돌아갈까요?' : personLabel(person) + '\n이 인물과 연결할까요?')
+      + '\n이번 회의의 이 연결에만 적용됩니다. 영구 별명은 저장하지 않습니다.', personId === null ? '명단 연결을 취소했습니다' : '이번 회의의 명단 인물과 연결했습니다');
+  }
+  function reviewConnection(connection, status, scope) {
+    if (!connection.source || !connection.presenceKey || !connection.evidenceToken) { return Promise.resolve(null); }
+    return mutateMeeting(scope || meetingScope(), '/connections/review', { source: connection.source, presenceKey: connection.presenceKey,
+      status: status, expectedEvidenceToken: connection.evidenceToken }, connection.rawName + ' · 연결 ' + connection.presenceKey
+      + '\n이 연결을 ' + (status === 'deferred' ? '보류할까요? 보류 항목은 검토 목록에 남습니다.' : '미확인으로 되돌릴까요?'), '연결 검토를 저장했습니다');
+  }
+  function actionButton(parent, label, key, handler, disabled) {
+    var button = document.createElement('button'); button.type = 'button'; button.className = 'btn secondary compact';
+    button.textContent = label; button.dataset.focusKey = key; button.disabled = !!disabled;
+    button.addEventListener('click', function (event) { event.stopPropagation(); handler(); }); parent.appendChild(button); return button;
+  }
+  function reviewExplanation(row) {
+    if (row.isExcluded) { return '오늘 제외 · 원본 명단과 과거 기록 유지, 다음 날 다시 포함'; }
+    if (row.attendanceState === 'NotJoined') { return '아직 입장 기록이 없습니다. 참가자가 입장하면 명단과 연결합니다.'; }
+    var reason = row.confidence === 'NameOnly' ? '이름만 일치합니다. 이메일로는 확인되지 않았습니다.'
+      : row.confidence === 'Possible' ? '비슷한 이름의 명단 인물을 찾았습니다. 같은 사람인지 확인해 주세요.'
+      : row.confidence === 'AliasVerified' ? '등록된 별명으로 명단 인물과 연결했습니다.'
+      : row.confidence === 'Verified' ? (row.connections.some(function (connection) { return connection.manualMatch; })
+        ? '운영자가 이번 회의에서 명단 인물과 연결했습니다.' : '이메일로 명단 인물을 확인했습니다.')
+      : '명단에서 같은 사람을 확인하지 못했습니다. 연결할 명단 인물을 선택해 주세요.';
+    if (row.duplicate) { reason += ' 같은 명단 인물에 여러 기기가 연결되어 있습니다. 기기 연결도 확인해 주세요.'; }
+    return reason;
+  }
+  function appendPersonActions(parent, row, scope) {
+    var section = document.createElement('section'); section.className = 'review-actions';
+    var heading = document.createElement('h3'); heading.textContent = '이번 회의 검토'; section.appendChild(heading);
+    var reason = document.createElement('p'); reason.textContent = reviewExplanation(row);
+    section.appendChild(reason);
+    if (!row.isExcluded) {
+      ['identity', 'duplicate'].forEach(function (kind) {
+        var status = row[kind + 'ReviewStatus'];
+        if (!status || status === 'none') { return; }
+        var line = document.createElement('div'); line.className = 'review-action-line';
+        var label = document.createElement('strong'); label.textContent = (kind === 'identity' ? '신원' : '중복 기기') + ' · '
+          + (status === 'confirmed' ? '확인됨' : status === 'deferred' ? '보류' : '검토 필요'); line.appendChild(label);
+        var disabled = !row[kind + 'EvidenceToken'];
+        if (status !== 'confirmed') { actionButton(line, '이번 회의에서 확인', row.key + ':' + kind + ':confirm', function () { setPersonReview(row, kind, 'confirmed', scope); }, disabled); }
+        if (status === 'pending') { actionButton(line, '보류', row.key + ':' + kind + ':defer', function () { setPersonReview(row, kind, 'deferred', scope); }, disabled); }
+        if (status !== 'pending') { actionButton(line, '판단 취소', row.key + ':' + kind + ':undo', function () { setPersonReview(row, kind, 'pending', scope); }, disabled); }
+        section.appendChild(line);
+      });
+    }
+    {
+      actionButton(section, row.isExcluded ? '오늘 명단에 복원' : '오늘 명단에서 제외 (불참)', row.key + ':exclusion', function () { setPersonExcluded(row, !row.isExcluded, scope); });
+      var note = document.createElement('p'); note.className = 'muted'; note.textContent = '오늘 이 회의에만 적용 · 원본 명단과 과거 기록 유지 · 다음 날 다시 포함'; section.appendChild(note);
+    }
+    parent.appendChild(section);
+  }
+  function appendConnectionActions(card, connection, row, scope, index) {
+    var key = JSON.stringify([connection.source, connection.presenceKey]);
+    var draft = state.connectionDrafts[key] || (state.connectionDrafts[key] = { query: '', personId: '', open: false });
+    var label = document.createElement('p'); label.className = 'connection-identity';
+    label.textContent = '연결 ' + (index + 1) + ' · ' + sourceLabel(connection.source) + ' · ' + (connection.presenceKey || 'ID 없음')
+      + (connection.manualMatch ? ' · 이번 회의에서 운영자가 연결함' : '') + (connection.reviewStatus === 'deferred' ? ' · 보류' : ''); card.appendChild(label);
+    if (row.isExcluded || !connection.source || !connection.presenceKey || !connection.evidenceToken) { return; }
+    var details = document.createElement('details'); details.className = 'connection-actions'; details.open = draft.open;
+    var summary = document.createElement('summary'); summary.textContent = '명단 연결·검토'; summary.dataset.focusKey = key + ':details'; details.appendChild(summary);
+    details.addEventListener('toggle', function () { draft.open = details.open; });
+    var searchLabel = document.createElement('label'); searchLabel.textContent = '연결할 명단 인물 검색';
+    var search = document.createElement('input'); search.type = 'search'; search.value = draft.query; search.placeholder = '이름·이메일·그룹'; search.dataset.focusKey = key + ':search'; searchLabel.appendChild(search); details.appendChild(searchLabel);
+    var selectLabel = document.createElement('label'); selectLabel.textContent = '이번 회의의 명단 인물';
+    var select = document.createElement('select'); select.dataset.focusKey = key + ':person'; selectLabel.appendChild(select); details.appendChild(selectLabel);
+    function choices() {
+      var rosterPeople = rosterById();
+      select.textContent = '';
+      var empty = document.createElement('option'); empty.value = ''; empty.textContent = '명단 인물을 선택하세요'; select.appendChild(empty);
+      asArray(state.board && state.board.people).filter(function (person) {
+        var roster = rosterPeople[person.rosterPersonId] || {};
+        return !person.isExcluded && normalizeSearch([person.name, person.group, person.organization, roster.email].join(' ')).indexOf(normalizeSearch(draft.query)) >= 0;
+      }).forEach(function (person) {
+        var roster = rosterPeople[person.rosterPersonId] || {};
+        var option = document.createElement('option'); option.value = person.rosterPersonId;
+        option.textContent = person.name + ' · ' + (person.group || '그룹 없음') + ' · ' + (roster.email || '번호 ' + (person.sequence || person.rosterPersonId)); select.appendChild(option);
+      });
+      select.value = draft.personId;
+      if (select.value !== draft.personId) { draft.personId = ''; select.value = ''; }
+    }
+    choices();
+    var apply = actionButton(details, '이 명단 인물과 연결', key + ':match', function () { matchConnection(connection, select.value, scope); }, !draft.personId);
+    search.addEventListener('input', function () { draft.query = search.value; draft.personId = ''; choices(); apply.disabled = true; });
+    select.addEventListener('change', function () { draft.personId = select.value; apply.disabled = !select.value; });
+    if (connection.manualMatch) { actionButton(details, '운영자 연결 취소', key + ':undo-match', function () { matchConnection(connection, null, scope); }); }
+    if (row.kind === 'unmatched') {
+      actionButton(details, connection.reviewStatus === 'deferred' ? '보류 취소' : '이 연결 보류', key + ':defer', function () { reviewConnection(connection, connection.reviewStatus === 'deferred' ? 'pending' : 'deferred', scope); });
+    }
+    var note = document.createElement('p'); note.textContent = '이 회의의 이 연결에만 적용합니다. 다음 회의의 별명으로 저장하지 않습니다.'; details.appendChild(note); card.appendChild(details);
+  }
   function buildDetailRow(row) {
     var tr = document.createElement('tr');
     tr.className = 'detail-row';
@@ -1056,6 +1432,8 @@
     td.colSpan = 7;
     var detail = document.createElement('div');
     detail.className = 'participant-detail';
+    var scope = meetingScope();
+    if (row.kind === 'roster') { appendPersonActions(detail, row, scope); }
 
     var connectionBlock = document.createElement('section');
     connectionBlock.className = 'detail-block';
@@ -1075,7 +1453,7 @@
       empty.appendChild(emptySpan);
       cards.appendChild(empty);
     }
-    row.connections.forEach(function (connection) {
+    row.connections.forEach(function (connection, index) {
       var card = document.createElement('div');
       card.className = 'connection-card';
       var strong = document.createElement('strong');
@@ -1083,13 +1461,14 @@
       var span = document.createElement('span');
       var normalized = connection.canonicalName && connection.rawName && connection.canonicalName !== connection.rawName
         ? '자동 정리: ' + connection.canonicalName
-        : (connection.email || connection.source || 'Zoom API');
+        : (connection.email || sourceLabel(connection.source));
       span.textContent = normalized;
       var time = document.createElement('time');
       time.textContent = formatTime(connection.firstSeenAt) + ' ~ ' + formatTime(connection.lastSeenAt);
       card.appendChild(strong);
       card.appendChild(span);
       card.appendChild(time);
+      appendConnectionActions(card, connection, row, scope, index);
       cards.appendChild(card);
     });
     connectionBlock.appendChild(cards);
@@ -1127,7 +1506,7 @@
       ['이메일', row.email || '없음'],
       ['전화번호', row.phone || '없음'],
       ['매칭 상태', confidenceInfo(row).label],
-      ['첫 입장', formatDateTime(row.lastJoinedAt)],
+      ['최근 입장', formatDateTime(row.lastJoinedAt)],
       ['마지막 퇴장', formatDateTime(row.lastLeftAt)],
       ['입장 기록', row.joinCount + '회']
     ].forEach(function (pair) {
@@ -1150,6 +1529,8 @@
   }
 
   function renderActivity(events, duplicates) {
+    var panel = el.activityFeed.closest('.rail-panel');
+    if (panel) { panel.classList.toggle('is-empty', !asArray(events).length && !duplicates.length); }
     var items = asArray(events).map(function (event) {
       var payload = safePayload(event.rawPayload);
       var oldName = event.previousParticipantName || event.previousName || payload.previousName || payload.oldName || payload.previousDisplayName || '';
@@ -1161,7 +1542,7 @@
         at: event.occurredAt,
         title: type === 'NameChanged' ? (oldName ? oldName + ' → ' + newName : newName) : event.participantName,
         detail: EVENT_LABEL[type] || type,
-        meta: event.source || '',
+        meta: sourceLabel(event.source),
         sortAt: new Date(event.occurredAt || 0).getTime()
       };
     });
@@ -1205,6 +1586,8 @@
   }
 
   function renderDuplicates(groups) {
+    var panel = el.duplicateList.closest('.rail-panel');
+    if (panel) { panel.classList.toggle('is-empty', groups.length === 0); }
     el.duplicateList.textContent = '';
     el.duplicateEmpty.hidden = groups.length > 0;
     el.duplicateList.hidden = groups.length === 0;
@@ -1213,7 +1596,10 @@
       var card = document.createElement('article');
       card.className = 'duplicate-card';
       var header = document.createElement('header');
-      var name = document.createElement('strong');
+      var name = document.createElement('button');
+      name.type = 'button'; name.className = 'duplicate-person';
+      name.disabled = !group.rosterPersonId;
+      name.setAttribute('aria-label', group.personName + ' 참가자 상세 보기');
       name.textContent = group.personName;
       var count = document.createElement('span');
       count.textContent = group.connections.length + '건 연결';
@@ -1232,8 +1618,14 @@
         row.appendChild(label); row.appendChild(time); list.appendChild(row);
       });
       card.appendChild(header); card.appendChild(reason); card.appendChild(list);
-      card.addEventListener('click', function () {
-        if (group.rosterPersonId) { state.selectedKey = 'roster:' + group.rosterPersonId; state.filter = 'all'; syncFilterButtons(); renderParticipants(); }
+      name.addEventListener('click', function () {
+        if (!group.rosterPersonId) { return; }
+        state.selectedKey = 'roster:' + group.rosterPersonId; state.filter = 'all'; el.participantSearch.value = '';
+        syncFilterButtons(); renderParticipants();
+        window.requestAnimationFrame(function () {
+          var target = Array.prototype.slice.call(el.participantRows.querySelectorAll('[data-focus-key]')).filter(function (node) { return node.dataset.focusKey === 'row:' + state.selectedKey; })[0];
+          if (target) { target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' }); }
+        });
       });
       el.duplicateList.appendChild(card);
     });
@@ -1241,35 +1633,36 @@
 
   function syncFilterButtons() {
     el.filterButtons.forEach(function (button) {
-      button.setAttribute('aria-selected', button.dataset.filter === state.filter ? 'true' : 'false');
+      button.setAttribute('aria-pressed', button.dataset.filter === state.filter ? 'true' : 'false');
     });
   }
 
   function exportCsv() {
     var meetingId = requireMeetingId();
     if (!meetingId) { return; }
-    beginBusy('CSV를 준비하는 중…');
+    var busy = beginBusy('CSV를 준비하는 중…');
     var path = '/api/meetings/' + encodeURIComponent(meetingId) + '/export';
-    if (state.group) { path += '?group=' + encodeURIComponent(state.group); }
+    var group = state.group;
+    if (group) { path += '?group=' + encodeURIComponent(group); }
     request(path, { raw: true }).then(function (response) {
       return response.blob();
     }).then(function (blob) {
-      endBusy();
+      endBusy(busy);
       var url = URL.createObjectURL(blob);
       var link = document.createElement('a');
       link.href = url;
-      link.download = state.group
-        ? meetingId + '-' + state.group.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') + '-attendance.csv'
+      link.download = group
+        ? meetingId + '-' + group.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') + '-attendance.csv'
         : meetingId + '-attendance.csv';
       document.body.appendChild(link);
       link.click(); link.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
       toast('ok', 'CSV 내보내기 시작', link.download);
-    }, function (error) { endBusy(); toast('bad', 'CSV 내보내기 실패', error.message); });
+    }, function (error) { endBusy(busy); toast('bad', 'CSV 내보내기 실패', error.message); });
   }
 
   function parseNames(raw) {
-    var seen = {};
+    var seen = Object.create(null);
     var names = [];
     String(raw || '').split(/\r?\n/).forEach(function (line) {
       var name = line.replace(/\s+/g, ' ').trim();
@@ -1281,7 +1674,8 @@
   }
   function updateParsedCount() {
     var names = parseNames(el.snapshotNames.value);
-    setText(el.snapshotParsed, '인식된 이름 ' + names.length + '명' + (names.length > MAX_SNAPSHOT_NAMES ? ' · 최대 인원 초과' : ''));
+    var lines = String(el.snapshotNames.value || '').split(/\r?\n/).filter(function (line) { return line.trim(); }).length;
+    setText(el.snapshotParsed, '입력 ' + lines + '줄 · 서로 다른 이름 ' + names.length + '개 · 중복 ' + (lines - names.length) + '줄' + (names.length > MAX_SNAPSHOT_NAMES ? ' · 최대 인원 초과' : ''));
     return names;
   }
   function submitSnapshot() {
@@ -1290,15 +1684,32 @@
     var names = updateParsedCount();
     if (names.length > MAX_SNAPSHOT_NAMES) { toast('bad', '목록이 너무 깁니다', '최대 ' + MAX_SNAPSHOT_NAMES + '명까지 적용할 수 있습니다.'); return; }
     if (!names.length && !el.chkEmptyOk.checked) { toast('warn', '빈 목록을 적용할 수 없습니다', '전원 퇴장이라면 빈 목록 허용을 체크하세요.'); return; }
-    beginBusy('전체 참가자 목록을 적용하는 중…');
-    request('/api/meetings/' + encodeURIComponent(meetingId) + '/participant-snapshot', {
+    var scope = meetingScope();
+    return confirmAction('회의 ' + meetingId + '\n서로 다른 이름 ' + names.length + '개의 현재 전체 목록을 적용할까요?\n이전 직접 입력 목록에만 있던 참가자는 퇴장으로 기록됩니다. 같은 이름의 여러 사람·기기를 구분할 수 없으므로 전체 목록을 확인하세요.', function () {
+    if (!scopeIsCurrent(scope)) { return Promise.resolve(null); }
+    state.boardEpoch += 1;
+    var context = beginMeetingRequest('전체 참가자 목록을 적용하는 중…');
+    return request('/api/meetings/' + encodeURIComponent(meetingId) + '/participant-snapshot', {
       method: 'POST',
       json: { participantNames: names, source: 'web-dashboard', capturedAt: new Date().toISOString() }
     }).then(function (result) {
-      endBusy();
+      if (!finishMeetingRequest(context)) { return null; }
+      state.boardEpoch += 1;
       if (result && result.board) { renderBoard(result.board); }
-      toast('ok', '전체 목록 적용 완료', '현재 ' + (result ? result.presentCount : names.length) + '명');
-    }, function (error) { endBusy(); toast('bad', '전체 목록 적용 실패', error.message); });
+      markSync(true);
+      var summary = '입장 ' + asArray(result && result.joinedNames).length + ' · 퇴장 ' + asArray(result && result.leftNames).length + ' · 처리 제외 ' + asArray(result && result.ignoredNames).length;
+      setText(el.snapshotResultSummary, '회의 ' + meetingId + ' · ' + summary + ' — 변경 내역');
+      el.snapshotResultDetails.textContent = '';
+      [['입장', 'joinedNames'], ['퇴장', 'leftNames'], ['처리 제외', 'ignoredNames']].forEach(function (pair) {
+        var item = document.createElement('p'); item.textContent = pair[0] + ': ' + (asArray(result && result[pair[1]]).join(', ') || '없음'); el.snapshotResultDetails.appendChild(item);
+      });
+      el.snapshotResult.hidden = false; el.snapshotResult.open = true;
+      toast('ok', '전체 목록 적용 완료', summary);
+    }, function (error) {
+      if (!finishMeetingRequest(context)) { return null; }
+      toast('bad', '전체 목록 적용 실패', error.message);
+    });
+    });
   }
 
   function stopAutoRefresh() {
@@ -1306,7 +1717,7 @@
     state.nextSyncAt = null;
   }
   function scheduleNextSync() {
-    if (!el.chkAutoRefresh.checked) { state.nextSyncAt = null; updateClock(); return; }
+    if (!el.chkAutoRefresh.checked || effectiveMode() === 'manual') { state.nextSyncAt = null; updateClock(); return; }
     state.nextSyncAt = new Date(Date.now() + intervalSeconds() * 1000);
     updateClock();
   }
@@ -1317,6 +1728,7 @@
     writeStore(STORAGE.autoRefresh, checked ? '1' : '0');
     writeStore(STORAGE.interval, intervalSeconds());
     setText(el.autoStatus, checked ? '활성' : '꺼짐');
+    renderModeControls();
     if (checked) {
       state.timerId = window.setInterval(function () {
         if (document.hidden || state.pending !== 0) { return; }
@@ -1330,6 +1742,7 @@
   }
   function updateClock() {
     renderPairingCode();
+    renderFreshness();
     if (!el.chkAutoRefresh.checked || !state.nextSyncAt) { setText(el.nextSyncTime, '–'); return; }
     var seconds = Math.max(0, Math.ceil((state.nextSyncAt.getTime() - Date.now()) / 1000));
     setText(el.nextSyncTime, '00:' + pad(seconds));
@@ -1727,19 +2140,19 @@
       toast('warn', '설치할 업데이트가 없습니다', '먼저 업데이트를 확인하세요.');
       return;
     }
-    var present = state.board && typeof state.board.presentCount === 'number' ? state.board.presentCount : 0;
+    var present = asArray(state.board && state.board.people).filter(function (person) { return person.attendanceState === 'Present'; }).length;
     var warning = present > 0
       ? '현재 ' + present + '명이 참석 중입니다. 설치하면 앱이 종료되고 다시 시작됩니다. 계속할까요?'
       : '설치하면 앱이 종료되고 새 버전으로 다시 시작됩니다. 계속할까요?';
-    if (!window.confirm(warning)) { return; }
-
+    return confirmAction(warning, function () {
+    if (state.update !== info || info.phase !== 'ready') { toast('warn', '업데이트 상태가 바뀌었습니다', '현재 설치 가능한 버전을 다시 확인하세요.'); return; }
     state.update.phase = 'installing';
     state.update.error = '';
     renderUpdate();
     hideAlert();
-    beginBusy('업데이트를 설치하는 중…');
+    var busy = beginBusy('업데이트를 설치하는 중…');
     request('/api/update/install', { method: 'POST', json: {} }).then(function (payload) {
-      endBusy();
+      endBusy(busy);
       if (payload && typeof payload === 'object') { applyUpdateStatus(payload); }
       if (state.update.phase !== 'error') {
         state.update.phase = 'installing';
@@ -1747,14 +2160,19 @@
       }
       toast('ok', '업데이트 설치 시작', '앱이 종료된 뒤 새 버전으로 다시 시작됩니다.');
     }, function (error) {
-      endBusy();
+      endBusy(busy);
       handleUpdateFailure(error, { silent: false, title: '업데이트 설치 실패' });
+    });
     });
   }
 
   function cacheElements() {
     [
       'meeting-id','health-dot','health-text','zoom-dot','zoom-status','chk-autorefresh','auto-status','last-sync-time','next-sync-time',
+      'readiness','readiness-title','readiness-note','btn-next-step','btn-review','source-status','activity-mode','auto-mode-note',
+      'scope-note','export-scope','count-excluded','empty-title','empty-note','btn-reset-filters','alert-details','alert-technical',
+      'snapshot-result','snapshot-result-summary','snapshot-result-details',
+      'action-confirm','action-confirm-message','btn-confirm-cancel','btn-confirm-apply',
       'btn-sync-zoom','btn-toggle-theme','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
       'summary-total','summary-present','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
       'participants-meta','btn-refresh','btn-export','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
@@ -1789,6 +2207,22 @@
   }
 
   function bindEvents() {
+    el.btnConfirmCancel.addEventListener('click', function () { el.actionConfirm.close('cancel'); });
+    el.btnConfirmApply.addEventListener('click', function () { el.actionConfirm.close('apply'); });
+    el.actionConfirm.addEventListener('close', function () {
+      if (state.confirmationCallback) { state.confirmationCallback(el.actionConfirm.returnValue === 'apply'); }
+    });
+    el.btnNextStep.addEventListener('click', function () { if (state.readinessAction) { state.readinessAction(); } });
+    el.btnReview.addEventListener('click', function () {
+      el.participantTableWrap.scrollTop = 0;
+      state.filter = 'review'; el.participantSearch.value = ''; syncFilterButtons(); renderParticipants();
+      el.participantTableWrap.scrollIntoView({ block: 'nearest' });
+      var filter = el.filterButtons.filter(function (button) { return button.dataset.filter === 'review'; })[0];
+      if (filter) { filter.focus(); }
+    });
+    el.btnResetFilters.addEventListener('click', function () {
+      state.filter = 'all'; el.participantSearch.value = ''; applyGroup('', { notify: false }); syncFilterButtons(); el.participantSearch.focus();
+    });
     el.btnSyncZoom.addEventListener('click', function () { syncNow({ silent: false }); });
     el.btnRefresh.addEventListener('click', function () { refreshBoard({ notify: true }); });
     el.btnExport.addEventListener('click', exportCsv);
@@ -1805,8 +2239,8 @@
     });
     el.tutorialDialog.addEventListener('close', function () { writeStore(STORAGE.tutorialSeen, 'seen'); });
     el.btnHealthDetail.addEventListener('click', checkHealth);
-    el.btnApiDetail.addEventListener('click', function () { openSettings(); checkZoomConnection(false); });
-    el.btnZoomAppDetail.addEventListener('click', function () { openSettings(); checkZoomConnection(false); });
+    el.btnApiDetail.addEventListener('click', function () { openSettingsSection('api'); checkZoomConnection(false); });
+    el.btnZoomAppDetail.addEventListener('click', function () { openSettingsSection('pairing'); checkZoomConnection(false); });
     el.btnCheckZoom.addEventListener('click', function () { checkZoomConnection(true); });
     el.btnCreatePairingCode.addEventListener('click', createPairingCode);
     el.btnCopyPairingCode.addEventListener('click', function () {
@@ -1835,18 +2269,24 @@
     el.btnClearSnapshot.addEventListener('click', function () { el.snapshotNames.value = ''; updateParsedCount(); });
     el.btnClearLog.addEventListener('click', function () { state.sessionLog = []; renderSessionLog(); });
     el.snapshotNames.addEventListener('input', updateParsedCount);
-    el.participantSearch.addEventListener('input', renderParticipants);
+    el.participantSearch.addEventListener('input', function () {
+      el.participantTableWrap.scrollTop = 0; renderParticipants();
+    });
     if (el.groupFilter) {
       el.groupFilter.addEventListener('change', function () { applyGroup(el.groupFilter.value, { notify: true }); });
     }
     el.filterButtons.forEach(function (button) {
-      button.addEventListener('click', function () { state.filter = button.dataset.filter; syncFilterButtons(); renderParticipants(); });
+      button.addEventListener('click', function () {
+        el.participantTableWrap.scrollTop = 0;
+        state.filter = button.dataset.filter; syncFilterButtons(); renderParticipants();
+      });
     });
+    el.meetingId.addEventListener('input', resetMeetingSelection);
     el.meetingId.addEventListener('change', function () {
       var normalizedMeetingId = currentMeetingId();
       el.meetingId.value = normalizedMeetingId;
       writeStore(STORAGE.meetingId, normalizedMeetingId);
-      state.selectedKey = null;
+      resetMeetingSelection();
       refreshBoard({ silent: true });
     });
     el.chkAutoRefresh.addEventListener('change', function () { applyAutoRefresh(el.chkAutoRefresh.checked); });
@@ -1855,10 +2295,11 @@
     el.alertAction.addEventListener('click', function () { if (state.alertAction) { state.alertAction(); } });
     el.btnDismissAlert.addEventListener('click', hideAlert);
     document.addEventListener('keydown', function (event) {
+      if (el.actionConfirm.open) { return; }
       if (el.tutorialDialog.open && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
         event.preventDefault(); moveTutorial(event.key === 'ArrowRight' ? 1 : -1); return;
       }
-      if (event.key === '/' && !el.settingsDialog.open && document.activeElement !== el.participantSearch) { event.preventDefault(); el.participantSearch.focus(); }
+      if (event.key === '/' && !el.settingsDialog.open && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) { event.preventDefault(); el.participantSearch.focus(); }
       if ((event.key === 'r' || event.key === 'R') && !event.metaKey && !event.ctrlKey && !event.altKey && !el.settingsDialog.open && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
         event.preventDefault(); syncNow({ silent: false });
       }
@@ -1890,7 +2331,7 @@
     state.clockId = window.setInterval(updateClock, 1000);
     state.connectionPollId = window.setInterval(function () {
       checkZoomConnection(false).then(function () {
-        if (state.zoomApp && (state.zoomApp.sessionActive || state.zoomApp.connected) && currentMeetingId()) { refreshBoard({ silent: true }); }
+        if (state.pending === 0 && !document.hidden && state.zoomApp && (state.zoomApp.sessionActive || state.zoomApp.connected) && currentMeetingId()) { refreshBoard({ silent: true }); }
       });
     }, 5000);
     checkHealth();
@@ -1905,8 +2346,6 @@
       if (document.hidden) { return; }
       var phase = state.update ? state.update.phase : '';
       if (phase === 'unavailable' || phase === 'unsupported') { return; }
-      var active = UPDATE_BUSY_PHASES.indexOf(phase) >= 0 || phase === 'available' || phase === 'unknown' || phase === '';
-      if (!active) { return; }
       loadUpdateStatus({ silent: true });
     }, 15000);
     if (currentMeetingId()) { refreshBoard({ silent: true }); }

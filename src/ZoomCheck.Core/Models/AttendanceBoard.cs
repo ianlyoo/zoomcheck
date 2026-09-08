@@ -15,4 +15,8 @@ public sealed record AttendanceBoard(
     /// Distinct non-empty roster groups in roster order, so filters can be offered without
     /// re-deriving them. Empty when the roster carries no group column.
     /// </summary>
-    IReadOnlyList<string>? Groups = null);
+    IReadOnlyList<string>? Groups = null,
+    IReadOnlyList<ParticipantSnapshotSourceState>? SnapshotSources = null,
+    DateTimeOffset? LastReceivedAt = null,
+    DateTimeOffset? LatestEventAt = null,
+    string AttendanceDate = "");

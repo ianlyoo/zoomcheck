@@ -19,6 +19,7 @@ ZoomCheck does not scrape the participant panel or automate Zoom UI. Business ac
 - Persistent join/leave activity log and current attendance state
 - Expandable participant rows with phone, group, raw/canonical Zoom names, and connection history
 - Safe Korean name canonicalization, rename activity, and duplicate connection groups
+- Reversible daily attendance exclusions, meeting-scoped identity/duplicate review, and manual matching of unknown connections
 - Explicit host/co-host action to apply a uniquely confirmed canonical name in the live Zoom meeting
 - CSV export, manual full-list fallback, responsive local dashboard
 - Self-contained Windows installer and portable ZIP; no separate .NET install
@@ -98,6 +99,7 @@ The live endpoint is `GET /v2/metrics/meetings/{meetingId}/participants?type=liv
 ```bash
 dotnet restore ZoomCheck.sln
 dotnet test ZoomCheck.sln -c Release
+node --test tests/dashboard-regressions.cjs
 dotnet run --project src/ZoomCheck.Backend
 ```
 

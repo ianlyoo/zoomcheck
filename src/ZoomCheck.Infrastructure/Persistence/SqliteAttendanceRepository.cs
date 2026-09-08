@@ -6,7 +6,7 @@ using ZoomCheck.Core.Services;
 
 namespace ZoomCheck.Infrastructure.Persistence;
 
-public sealed class SqliteAttendanceRepository
+public sealed partial class SqliteAttendanceRepository
 {
     private readonly string _connectionString;
 
@@ -167,18 +167,34 @@ public sealed class SqliteAttendanceRepository
         }
 
         await NormalizeLegacyMeetingIdsAsync(connection, cancellationToken);
+        await InitializeMeetingDecisionsAsync(connection, cancellationToken);
     }
 
     public async Task ReplaceRosterAsync(RosterImportResult roster, CancellationToken cancellationToken = default)
     {
+        await ReplaceRosterWithReconciliationAsync(roster, cancellationToken);
+    }
+
+    /// <summary>
+    /// Replaces the stored roster while preserving the persisted identity of people who are still
+    /// present in the incoming roster, so that previously recorded participant events and manual
+    /// aliases keep pointing at the same roster person.
+    /// </summary>
+    /// <remarks>
+    /// Identity is reconciled conservatively: a retained person is recognised
+    /// by a unique non-empty email (case-insensitive), otherwise by a unique normalized name. A key
+    /// must be unique on both the stored side and the incoming side to be usable, so ambiguous
+    /// identities are never guessed and are treated as new people instead.
+    /// </remarks>
+    public async Task<RosterReconciliationResult> ReplaceRosterWithReconciliationAsync(RosterImportResult roster, CancellationToken cancellationToken = default)
+    {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
 
-        foreach (var text in new[]
-        {
-            "DELETE FROM roster_people;",
-            "DELETE FROM roster_imports;"
-        })
+        var existingPeople = await ReadRosterIdentitiesAsync(connection, transaction, cancellationToken);
+        var reconciliation = ReconcileRosterIdentities(existingPeople, roster.People);
+
+        foreach (var text in new[] { "DELETE FROM roster_people;", "DELETE FROM roster_imports;" })
         {
             await using var clear = connection.CreateCommand();
             clear.Transaction = transaction;
@@ -199,11 +215,12 @@ public sealed class SqliteAttendanceRepository
 
         foreach (var person in roster.People)
         {
+            var persistedId = reconciliation.ResolveId(person);
             await using var insertPerson = connection.CreateCommand();
             insertPerson.Transaction = transaction;
             insertPerson.CommandText =
                 "INSERT INTO roster_people (id, import_id, sequence, name, normalized_name, email, phone, organization, aliases_json, group_name) VALUES ($id, $importId, $sequence, $name, $normalizedName, $email, $phone, $organization, $aliases, $group);";
-            insertPerson.Parameters.AddWithValue("$id", person.Id);
+            insertPerson.Parameters.AddWithValue("$id", persistedId);
             insertPerson.Parameters.AddWithValue("$importId", roster.ImportId);
             insertPerson.Parameters.AddWithValue("$sequence", person.Sequence);
             insertPerson.Parameters.AddWithValue("$name", person.Name);
@@ -217,6 +234,7 @@ public sealed class SqliteAttendanceRepository
         }
 
         await transaction.CommitAsync(cancellationToken);
+        return reconciliation;
     }
 
     public async Task<IReadOnlyList<RosterPerson>> GetRosterPeopleAsync(CancellationToken cancellationToken = default)
@@ -691,4 +709,206 @@ public sealed class SqliteAttendanceRepository
         command.Parameters.AddWithValue("$previousParticipantName", (object?)participantEvent.PreviousParticipantName ?? DBNull.Value);
         command.Parameters.AddWithValue("$previousRawParticipantName", (object?)participantEvent.PreviousRawParticipantName ?? DBNull.Value);
     }
+
+    private static async Task<List<StoredRosterIdentity>> ReadRosterIdentitiesAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var identities = new List<StoredRosterIdentity>();
+
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT id, normalized_name, email FROM roster_people;";
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            identities.Add(new StoredRosterIdentity(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                reader.IsDBNull(2) ? string.Empty : reader.GetString(2)));
+        }
+
+        return identities;
+    }
+
+    /// <summary>
+    /// Builds the mapping from incoming roster people to already persisted roster person ids.
+    /// Email matches are reserved first so row order cannot change identity ownership.
+    /// </summary>
+    public static RosterReconciliationResult ReconcileRosterIdentities(
+        IReadOnlyList<StoredRosterIdentity> existingPeople,
+        IReadOnlyList<RosterPerson> incomingPeople)
+    {
+        var existingByEmail = BuildUniqueIndex(
+            existingPeople,
+            identity => NormalizeEmailKey(identity.Email),
+            identity => identity.Id);
+        var existingByName = BuildUniqueIndex(
+            existingPeople,
+            identity => NormalizeNameKey(identity.NormalizedName),
+            identity => identity.Id);
+
+        var incomingEmailCounts = CountKeys(incomingPeople, person => NormalizeEmailKey(person.Email));
+        var incomingNameCounts = CountKeys(incomingPeople, person => NormalizeNameKey(person.NormalizedName));
+
+        var resolvedIds = new Dictionary<string, string>(StringComparer.Ordinal);
+        var claimedExistingIds = new HashSet<string>(StringComparer.Ordinal);
+        var preservedIds = new List<string>();
+        var newIds = new List<string>();
+        var existingIds = existingPeople.Select(person => person.Id).ToHashSet(StringComparer.Ordinal);
+        var unavailableIds = new HashSet<string>(existingIds, StringComparer.Ordinal);
+        var incomingIds = incomingPeople.Select(person => person.Id).ToHashSet(StringComparer.Ordinal);
+        if (incomingIds.Count != incomingPeople.Count)
+        {
+            throw new ArgumentException("Incoming roster person ids must be unique.", nameof(incomingPeople));
+        }
+        unavailableIds.UnionWith(incomingIds);
+
+        // A name-only match must never consume the identity of a later email match.
+        foreach (var person in incomingPeople)
+        {
+            var emailKey = NormalizeEmailKey(person.Email);
+            if (emailKey is not null
+                && incomingEmailCounts[emailKey] == 1
+                && existingByEmail.TryGetValue(emailKey, out var existingId))
+            {
+                resolvedIds[person.Id] = existingId;
+                claimedExistingIds.Add(existingId);
+            }
+        }
+
+        foreach (var person in incomingPeople)
+        {
+            if (resolvedIds.TryGetValue(person.Id, out var emailMatchId))
+            {
+                preservedIds.Add(emailMatchId);
+                continue;
+            }
+
+            var nameKey = NormalizeNameKey(person.NormalizedName);
+            if (nameKey is not null
+                && incomingNameCounts[nameKey] == 1
+                && existingByName.TryGetValue(nameKey, out var nameMatchId)
+                && claimedExistingIds.Add(nameMatchId))
+            {
+                resolvedIds[person.Id] = nameMatchId;
+                preservedIds.Add(nameMatchId);
+                continue;
+            }
+
+            var newId = person.Id;
+            if (existingIds.Contains(newId))
+            {
+                // Excel ids depend on sequence/name, which can be reused by a different person.
+                do { newId = Guid.NewGuid().ToString("N"); }
+                while (!unavailableIds.Add(newId));
+            }
+            resolvedIds[person.Id] = newId;
+            newIds.Add(newId);
+        }
+
+        return new RosterReconciliationResult(resolvedIds, preservedIds, newIds);
+    }
+
+    /// <summary>
+    /// Indexes source items by key, dropping any key that occurs more than once so ambiguous
+    /// identities can never be resolved to a single stored person.
+    /// </summary>
+    private static Dictionary<string, string> BuildUniqueIndex<T>(
+        IReadOnlyList<T> source,
+        Func<T, string?> keySelector,
+        Func<T, string> valueSelector)
+    {
+        var index = new Dictionary<string, string>(StringComparer.Ordinal);
+        var ambiguousKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var item in source)
+        {
+            var key = keySelector(item);
+            if (key is null)
+            {
+                continue;
+            }
+
+            if (index.ContainsKey(key))
+            {
+                ambiguousKeys.Add(key);
+                continue;
+            }
+
+            index[key] = valueSelector(item);
+        }
+
+        foreach (var ambiguousKey in ambiguousKeys)
+        {
+            index.Remove(ambiguousKey);
+        }
+
+        return index;
+    }
+
+    private static Dictionary<string, int> CountKeys<T>(IReadOnlyList<T> source, Func<T, string?> keySelector)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        foreach (var item in source)
+        {
+            var key = keySelector(item);
+            if (key is null)
+            {
+                continue;
+            }
+
+            counts[key] = counts.TryGetValue(key, out var current) ? current + 1 : 1;
+        }
+
+        return counts;
+    }
+
+    private static string? NormalizeEmailKey(string? email)
+    {
+        var trimmed = email?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed.ToLowerInvariant();
+    }
+
+    private static string? NormalizeNameKey(string? normalizedName)
+    {
+        var trimmed = normalizedName?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
+}
+
+/// <summary>
+/// Minimal projection of a persisted roster person used for identity reconciliation.
+/// </summary>
+public sealed record StoredRosterIdentity(string Id, string NormalizedName, string Email);
+
+/// <summary>
+/// Outcome of reconciling an incoming roster against the stored roster.
+/// </summary>
+public sealed class RosterReconciliationResult
+{
+    private readonly IReadOnlyDictionary<string, string> _resolvedIdsByIncomingId;
+
+    internal RosterReconciliationResult(
+        IReadOnlyDictionary<string, string> resolvedIdsByIncomingId,
+        IReadOnlyList<string> preservedRosterPersonIds,
+        IReadOnlyList<string> newRosterPersonIds)
+    {
+        _resolvedIdsByIncomingId = resolvedIdsByIncomingId;
+        PreservedRosterPersonIds = preservedRosterPersonIds;
+        NewRosterPersonIds = newRosterPersonIds;
+    }
+
+    /// <summary>Ids of stored people whose identity was carried over to the new import.</summary>
+    public IReadOnlyList<string> PreservedRosterPersonIds { get; }
+
+    /// <summary>Ids of people persisted as new, including deliberately unresolved ambiguous ones.</summary>
+    public IReadOnlyList<string> NewRosterPersonIds { get; }
+
+    /// <summary>Resolves the id to persist for an incoming roster person.</summary>
+    public string ResolveId(RosterPerson person)
+        => _resolvedIdsByIncomingId.TryGetValue(person.Id, out var resolved) ? resolved : person.Id;
 }

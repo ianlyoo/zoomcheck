@@ -139,7 +139,7 @@ public sealed class UpdateService
 
             if (release is null)
             {
-                return Mutate(state => state with
+                return Mutate(state => ClearStagedInstaller(state) with
                 {
                     LastCheckedAt = now,
                     LatestVersion = null,
@@ -150,7 +150,13 @@ public sealed class UpdateService
 
             var current = CurrentVersion;
             var isNewer = release.Version.CompareTo(current) > 0;
-            var status = Mutate(existing => existing with
+            // Readiness belongs to the verified version, not whichever release a
+            // later check selects. Clear it before any no-download early return.
+            var status = Mutate(existing => (!isNewer
+                || (existing.VerifiedVersion is not null
+                    && existing.VerifiedVersion.CompareTo(release.Version) != 0)
+                    ? ClearStagedInstaller(existing)
+                    : existing) with
             {
                 LastCheckedAt = now,
                 LatestVersion = release.Version,
@@ -698,6 +704,16 @@ public sealed class UpdateService
         SemanticVersion.TryParse("0.0.0", out var fallback);
         return fallback!;
     }
+
+    private static UpdateState ClearStagedInstaller(UpdateState state)
+        => state with
+        {
+            DownloadState = UpdateDownloadState.None,
+            InstallerPath = null,
+            InstallerSizeBytes = null,
+            VerifiedVersion = null,
+            VerifiedSha256 = null
+        };
 
     private UpdateStatusResponse BuildStatus(UpdateState state)
     {
