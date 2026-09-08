@@ -26,6 +26,14 @@ public sealed class ZoomApiClient
         };
     }
 
+    /// <summary>
+    /// True when Zoom Server-to-Server OAuth credentials are present and are not the
+    /// shipped `replace-with-your-*` placeholders. Callers should check this before
+    /// starting a recovery pass so unconfigured deployments do not issue doomed
+    /// requests that surface as misleading 401 warnings.
+    /// </summary>
+    public bool IsConfigured => _tokenService.IsConfigured;
+
     public async Task<IReadOnlyList<ZoomMeeting>> GetLiveMeetingsForUserAsync(string userId, CancellationToken cancellationToken = default)
     {
         var pageSize = ClampPageSize(_recoveryOptions.MeetingsPageSize);
@@ -56,9 +64,10 @@ public sealed class ZoomApiClient
     {
         var pageSize = ClampPageSize(_recoveryOptions.ParticipantsPageSize);
         var nextToken = string.Empty;
+        var seenTokens = new HashSet<string>(StringComparer.Ordinal);
         var result = new List<ZoomMeetingParticipant>();
 
-        while (true)
+        for (var page = 1; page <= Math.Clamp(_recoveryOptions.MaxParticipantPages, 1, 100); page++)
         {
             var query = $"/metrics/meetings/{Uri.EscapeDataString(meetingId)}/participants?type=live&page_size={pageSize}";
             if (!string.IsNullOrWhiteSpace(nextToken))
@@ -77,11 +86,22 @@ public sealed class ZoomApiClient
             nextToken = payload?.NextPageToken ?? string.Empty;
             if (string.IsNullOrWhiteSpace(nextToken))
             {
-                break;
+                return result;
+            }
+
+            if (!seenTokens.Add(nextToken))
+            {
+                throw new ZoomApiException(
+                    HttpStatusCode.BadGateway,
+                    "Zoom returned a repeated next_page_token.",
+                    query);
             }
         }
 
-        return result;
+        throw new ZoomApiException(
+            HttpStatusCode.BadGateway,
+            $"Zoom participant pagination exceeded the configured limit of {_recoveryOptions.MaxParticipantPages} pages.",
+            $"/metrics/meetings/{Uri.EscapeDataString(meetingId)}/participants");
     }
 
     public async Task<IReadOnlyList<ZoomUser>> GetActiveUsersAsync(CancellationToken cancellationToken = default)
@@ -122,10 +142,24 @@ public sealed class ZoomApiClient
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
 
         var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.TooManyRequests
+            && response.Headers.RetryAfter?.Delta is { } retryAfter
+            && retryAfter > TimeSpan.Zero
+            && retryAfter <= TimeSpan.FromSeconds(10))
+        {
+            response.Dispose();
+            await Task.Delay(retryAfter, cancellationToken);
+            using var retryRequest = new HttpRequestMessage(HttpMethod.Get, BaseUrl + pathAndQuery);
+            retryRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            response = await _httpClient.SendAsync(retryRequest, cancellationToken);
+        }
+
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new ZoomApiException(response.StatusCode, body, pathAndQuery);
+            var error = new ZoomApiException(response.StatusCode, body, pathAndQuery);
+            response.Dispose();
+            throw error;
         }
 
         return response;
@@ -223,8 +257,23 @@ public sealed class ZoomMeetingParticipant
     [JsonPropertyName("user_email")]
     public string? UserEmail { get; set; }
 
+    [JsonPropertyName("email")]
+    public string? Email { get; set; }
+
     [JsonPropertyName("join_time")]
     public string? JoinTime { get; set; }
+
+    [JsonPropertyName("leave_time")]
+    public string? LeaveTime { get; set; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonIgnore]
+    public string? EffectiveName => string.IsNullOrWhiteSpace(UserName) ? Name : UserName;
+
+    [JsonIgnore]
+    public string? EffectiveEmail => string.IsNullOrWhiteSpace(UserEmail) ? Email : UserEmail;
 }
 
 public sealed class ZoomUsersResponse

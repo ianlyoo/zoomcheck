@@ -1,116 +1,130 @@
-# zoomcheck
+# ZoomCheck
 
-Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.
+Windows web dashboard that compares an Excel roster with a live Zoom meeting through either the Business Dashboard API or an in-meeting Zoom App bridge suitable for Pro accounts.
 
-[한국어](README.ko.md)
+[한국어](README.ko.md) · [Operator guide](docs/windows-operator-guide.md) · [MIT License](LICENSE)
 
 [![CI](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release: v0.1.0](https://img.shields.io/github/v/release/ianlyoo/zoomcheck?label=v0.1.0)](https://github.com/ianlyoo/zoomcheck/releases/tag/v0.1.0)
-[![Pages](https://img.shields.io/badge/Pages-GitHub_Pages-2ea44f)](https://ianlyoo.github.io/zoomcheck/)
+[![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)
+[![Latest release](https://img.shields.io/github/v/release/ianlyoo/zoomcheck)](https://github.com/ianlyoo/zoomcheck/releases/latest)
 
-Zoom attendance for large classes where names, nicknames, and device names are mixed. Load a roster from Excel, capture Zoom join/leave events via webhook, and match participants against the roster. Confident matches are handled without manual steps and only ambiguous ones go to a review queue.
+ZoomCheck does not scrape the participant panel or automate Zoom UI. Business accounts can use the Dashboard API; Pro deployments can use the official Zoom Apps SDK from a host/co-host's in-meeting app. Both feed the same local matching and attendance engine.
 
-- .NET 8 + Avalonia desktop, ASP.NET Core backend, SQLite
-- Installer: `ZoomCheck-Setup-x64.exe` under `deploy/windows/`
-- Backend at `http://127.0.0.1:5078` with CSV export from the dashboard
+## Features
 
-## Quick start — roster-matching dashboard with dotnet and webhook
+- Excel `.xlsx`/`.xls` upload from the browser
+- Roster group columns (`조`, `분반`, `그룹`, `팀`, `반`) with scoped totals, search, and CSV export
+- Live Zoom participant sync, manual refresh, and 5–600 second auto-sync
+- Email-first matching plus name, alias, and review confidence levels
+- Persistent join/leave activity log and current attendance state
+- Expandable participant rows with phone, group, raw/canonical Zoom names, and connection history
+- Safe Korean name canonicalization, rename activity, and duplicate connection groups
+- Reversible daily attendance exclusions, meeting-scoped identity/duplicate review, and manual matching of unknown connections
+- Explicit host/co-host action to apply a uniquely confirmed canonical name in the live Zoom meeting
+- CSV export, manual full-list fallback, responsive local dashboard
+- Self-contained Windows installer and portable ZIP; no separate .NET install
+- Startup update checks and verified downloads with one-click install/restart in the dashboard
+- Six-step first-run guide with skip and reopen controls
+- Light and dark themes with Windows preference sync and saved overrides
+- Local-only listener at `http://127.0.0.1:5078`; data under `%LOCALAPPDATA%\ZoomCheck`
+- Auto, Business API, Pro Zoom App, and manual connection modes
 
-This quick start uses the dotnet pipeline for roster-matching and the dashboard with webhook automation.
+## Business Dashboard API
 
-### Install from GitHub Release tarball (no registry publish)
+A co-host role by itself does **not** grant API access. A Zoom account owner or admin must create and activate a Server-to-Server OAuth app for the account that owns the meeting. Add the granular scope `dashboard:read:list_meeting_participants:admin`; classic apps use `dashboard_meetings:read:admin`. The account must also have access to the Zoom Dashboard API.
 
-```bash
-gh release download v0.1.0 --repo ianlyoo/zoomcheck --pattern "zoomcheck-*.tar.gz"
-tar -xzf zoomcheck-0.1.0.tar.gz
+Set these as Windows user environment variables, then restart ZoomCheck:
+
+```powershell
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_Zoom__AccountId", "YOUR_ACCOUNT_ID", "User")
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_Zoom__ClientId", "YOUR_CLIENT_ID", "User")
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_Zoom__ClientSecret", "YOUR_CLIENT_SECRET", "User")
 ```
 
-When `gh` is unavailable — clone and build from source:
+Credentials are never bundled in source, the installer, or the portable archive.
 
-```bash
-git clone https://github.com/ianlyoo/zoomcheck.git
-cd zoomcheck
-dotnet build ZoomCheck.sln
-dotnet run --project src/ZoomCheck.Backend
-dotnet run --project src/ZoomCheck.App
+## Pro Zoom App bridge
+
+Fork this repository and deploy `render.yaml` to **your own Render account**, or deploy `src/ZoomCheck.Relay` to an HTTPS server you control. Public source and GitHub Releases intentionally contain no maintainer-specific relay URL. Configure the Zoom General App Home/Redirect/Allow List as `https://YOUR-RELAY/zoom-app/`, then set that base URL on each Windows PC. The relay holds only ciphertext, public keys, and short-lived in-memory sessions; P-256 ECDH + HKDF-SHA256 derives directional AES-256-GCM keys that the relay never receives.
+
+```powershell
+[Environment]::SetEnvironmentVariable("ZOOMCHECK_ZoomRelay__BaseUrl", "https://YOUR-RELAY/", "User")
 ```
 
-### Windows installer
+Restart ZoomCheck after setting the variable. Public installers keep `ZoomRelay.BaseUrl` blank. An internal custom build may use `build-installer.ps1 -RelayBaseUrl https://YOUR-RELAY/`, but do not publish that artifact if the URL must remain private. Enable `getSupportedJsApis`, `getMeetingContext`, `getMeetingUUID`, `getUserContext`, `getMeetingParticipants`, `onParticipantChange`, and `setParticipantScreenName` in the Zoom App SDK capabilities. The last capability is optional for attendance but required for changing a participant's live display name.
 
-Run `ZoomCheck-Setup-x64.exe`, launch the shortcut (local service starts), join the Zoom meeting, enter meeting ID, load roster, refresh during class, review flagged people, export at the end.
+ZoomCheck checks the runtime role and available APIs instead of assuming the co-host's subscription. The in-meeting user must actually be host/co-host before opening the app and the client must expose `getMeetingParticipants`. The account running the companion must install/approve the app; cross-account or cross-organization testing may require internal distribution or Marketplace test access. Create a new six-digit code for every meeting and after an app reload. The code is single-use and expires after ten minutes.
 
-## Use cases for attendance and education-tools with workflow-automation
+End users install/approve ZoomCheck once. Per meeting they upload Excel, become host/co-host, create a six-digit code, and enter it in Apps → ZoomCheck. The code is single-use, expires after ten minutes, and is rendezvous-only—not an encryption key. Participant UUID, display name, and meeting role stay end-to-end encrypted and are stored only by the local Windows app. The existing direct HTTPS bridge (`ZOOMCHECK_ZoomApp__HomeUrl`) and Business Dashboard API remain available as fallback modes.
 
-Attendance workflows where manual checking per participant does not scale — large lectures, corporate trainings, or recurring meetings needing roster-matching and meeting-automation.
+The Zoom Apps SDK does not expose other participants' camera on/off state to this app, so ZoomCheck deliberately does not display an inferred per-participant video status.
 
-- Import Excel roster, capture Zoom webhook events, compute attendance via roster-matching
-- Auto-classify Verified / AliasVerified / NameOnly / Possible / Unmatched with review queue
-- Export CSV for downstream education-tools and workflow-automation pipelines
+## Use during a meeting
 
-## Architecture: csharp Avalonia and dotnet backend — zoom webhook pipeline
+1. Install and launch ZoomCheck; the local dashboard opens in the default browser.
+2. Enter the live meeting ID and upload an Excel roster containing number/name columns.
+3. Select **Sync Zoom participants now** and verify the current count.
+4. Enable automatic sync; 10 seconds is the recommended default.
+5. Select a participant row to inspect raw Zoom names, safe canonicalization, connections, and attendance history.
+6. Review ambiguous, duplicate, or unmatched names, then export CSV at the end.
+7. In Business mode, confirm a true zero-participant response from the warning bar. The Pro Zoom App bridge confirms two consecutive empty snapshots automatically.
+
+Times in the activity log are polling observation times and may lag Zoom by one polling interval. API errors, incomplete pagination, and unconfirmed empty responses leave the previous attendance snapshot unchanged.
+
+## Architecture
 
 ```mermaid
 flowchart LR
-  A[Zoom webhook] --> B[Backend ASP.NET Core]
-  C[Roster Excel] --> B
+  A[Business Dashboard API] --> B[ASP.NET Core local server]
+  H[Pro Zoom App SDK] <-->|E2E ciphertext| R[Central relay]
+  R <-->|outbound HTTPS| B
+  C[Excel roster] --> B
   B --> D[(SQLite)]
-  B --> E[Matching + confidence]
-  E --> F[Avalonia desktop review]
+  B --> E[Matching and confidence]
+  E --> F[Browser dashboard]
   F --> G[CSV export]
 ```
 
 | Project | Responsibility |
 |---|---|
-| `src/ZoomCheck.Core` | Domain models and matching logic (csharp) |
-| `src/ZoomCheck.Infrastructure` | Excel parsing, SQLite persistence |
-| `src/ZoomCheck.Backend` | Roster import, Zoom webhook, board operations, export API |
-| `src/ZoomCheck.App` | Avalonia desktop review dashboard |
+| `src/ZoomCheck.Core` | Domain models and participant matching |
+| `src/ZoomCheck.Infrastructure` | Excel parsing, SQLite persistence, attendance projection |
+| `src/ZoomCheck.Backend` | Zoom OAuth/API client, controllers, and local web dashboard |
+| `src/ZoomCheck.Relay` | Stateless ciphertext relay and Zoom companion |
 
-## Benchmark: roster-matching in measured runs
+The live endpoint is `GET /v2/metrics/meetings/{meetingId}/participants?type=live`. ZoomCheck follows pagination, retries one short `429 Retry-After`, and accepts only participants whose status is `in_meeting`.
 
-> Qualified evidence only. No attendance guarantee claim is made.
-
-**Setup (adjacent limitations):** Synthetic class of 120 participants, one run per condition, roster of 100 names, Zoom join/leave replay from fixture, backend `http://127.0.0.1:5078`, local SQLite, no live Zoom API during measurement. Matching thresholds are heuristic; alias data is fixture-provided.
-
-| Condition | Auto-matched | Review queue | Unmatched |
-|---|---|---|---|
-| Exact name 60 | 60 | 0 | 0 |
-| Nickname/device 40 | 28 | 10 | 2 |
-| No roster entry 20 | 0 | 3 | 17 |
-
-- Figures reproducible via local replay of fixtures; not a claim of production accuracy.
-- Verify locally:
+## Development
 
 ```bash
-dotnet build ZoomCheck.sln
-dotnet run --project src/ZoomCheck.Backend &
-// load fixture roster and replay webhook events, then inspect dashboard
+dotnet restore ZoomCheck.sln
+dotnet test ZoomCheck.sln -c Release
+node --test tests/dashboard-regressions.cjs
+dotnet run --project src/ZoomCheck.Backend
 ```
 
-Limitations restated: synthetic fixture, one run, heuristic thresholds, no live Zoom connection during measurement, local-only data, no attendance warranty.
+Build Windows artifacts from PowerShell with .NET 8 SDK and Inno Setup 6:
 
-## Validation methodology
+```powershell
+.\deploy\windows\build-installer.ps1 -Configuration Release -Runtime win-x64
+```
 
-- Roster Excel parsing validated against fixture files
-- Webhook payload handling tested via local replay
-- Matching logic unit-tested for Verified/AliasVerified/NameOnly/Possible/Unmatched tiers
+Outputs:
+
+- `dist\installer\ZoomCheck-Setup-x64.exe`
+- `dist\installer\SHA256SUMS.txt`
+- `dist\portable\ZoomCheck-portable-win-x64.zip`
+
+## App updates
+
+The installed Windows app checks GitHub Releases at startup and periodically afterwards. When a newer version exists, it downloads only `ZoomCheck-Setup-x64.exe` and `SHA256SUMS.txt` and prepares the installer only after its SHA-256 matches. It never closes an active meeting without an explicit action: use the footer version indicator or **Windows app update** in Settings, then select **Install and restart**.
+
+Update assets contain no operator-specific Render URL, Zoom app ID, OAuth URL, or credentials. The existing per-user `ZOOMCHECK_ZoomRelay__BaseUrl` environment variable remains in place across updates. The portable ZIP is not self-installing, so the installer build is recommended for automatic updates.
 
 ## Responsible use
 
-Attendance data is sensitive; verify exports before official use. Thresholds may change; measure on your own roster and meeting size.
-
-## Project links
-
-- Repository: https://github.com/ianlyoo/zoomcheck
-- Issues: https://github.com/ianlyoo/zoomcheck/issues
-- Pages: https://ianlyoo.github.io/zoomcheck/
-- License: MIT
+Attendance data is sensitive. Verify ambiguous matches and the exported CSV before using it as an official record. ZoomCheck stores its database locally and does not guarantee attendance accuracy.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-## Social preview
-
-Social preview image (1280×640, solid background, high contrast): `docs/assets/social-preview.png` — Pages canonical `https://ianlyoo.github.io/zoomcheck/assets/social-preview.png` — rebuild with `node scripts/build-social-preview.mjs`.

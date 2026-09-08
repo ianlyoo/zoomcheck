@@ -13,4 +13,15 @@ public sealed record ParticipantEvent(
     MatchConfidence Confidence,
     string? MatchedRosterPersonId,
     string Source,
-    string RawPayload);
+    string RawPayload,
+    string? PresenceKey = null,
+    string? RawParticipantName = null,
+    string? CanonicalParticipantName = null,
+    string? PreviousParticipantName = null,
+    string? PreviousRawParticipantName = null)
+{
+    /// <summary>Raw Zoom-reported name when available, otherwise the effective participant name.</summary>
+    public string EffectiveRawParticipantName => string.IsNullOrWhiteSpace(RawParticipantName)
+        ? ParticipantName
+        : RawParticipantName;
+}

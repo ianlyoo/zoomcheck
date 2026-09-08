@@ -22,49 +22,6 @@ public sealed class ZoomWebhooksController : ControllerBase
         _webhookValidator = webhookValidator;
     }
 
-    [HttpPost("participant-event")]
-    public async Task<IActionResult> RecordParticipantEvent([FromBody] ZoomWebhookRequest request, CancellationToken cancellationToken)
-    {
-        var eventType = request.EventType.Equals("left", StringComparison.OrdinalIgnoreCase)
-            ? ParticipantEventType.Left
-            : ParticipantEventType.Joined;
-
-        var recorded = await _attendanceService.RecordZoomEventAsync(
-            new ZoomParticipantEventInput(
-                request.MeetingId,
-                request.OccurredAt ?? DateTimeOffset.UtcNow,
-                eventType,
-                request.ParticipantName,
-                request.ParticipantEmail,
-                string.IsNullOrWhiteSpace(request.Source) ? "manual-api" : request.Source,
-                JsonSerializer.Serialize(request)),
-            cancellationToken);
-
-        return Ok(recorded);
-    }
-
-    [HttpPost("raw" )]
-    public async Task<IActionResult> RecordRawZoomPayload([FromBody] JsonElement payload, CancellationToken cancellationToken)
-    {
-        if (!TryMapRawPayload(payload, out var mappedRequest))
-        {
-            return BadRequest(new { message = "Payload did not contain recognizable meeting/participant fields." });
-        }
-
-        var recorded = await _attendanceService.RecordZoomEventAsync(
-            new ZoomParticipantEventInput(
-                mappedRequest.MeetingId,
-                mappedRequest.OccurredAt ?? DateTimeOffset.UtcNow,
-                mappedRequest.EventType.Equals("left", StringComparison.OrdinalIgnoreCase) ? ParticipantEventType.Left : ParticipantEventType.Joined,
-                mappedRequest.ParticipantName,
-                mappedRequest.ParticipantEmail,
-                mappedRequest.Source,
-                payload.GetRawText()),
-            cancellationToken);
-
-        return Ok(recorded);
-    }
-
     [HttpPost("events")]
     public async Task<IActionResult> ReceiveZoomEvent(CancellationToken cancellationToken)
     {

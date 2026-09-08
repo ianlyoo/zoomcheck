@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -9,6 +10,13 @@ namespace ZoomCheck.Backend.Services;
 
 public sealed class ZoomWebhookValidator
 {
+    private const string EndpointValidationEventName = "endpoint.url_validation";
+
+    // DateTimeOffset.FromUnixTimeSeconds throws outside this range, so malformed
+    // headers are range-checked before conversion instead of being allowed to throw.
+    private static readonly long MinUnixSeconds = DateTimeOffset.MinValue.ToUnixTimeSeconds();
+    private static readonly long MaxUnixSeconds = DateTimeOffset.MaxValue.ToUnixTimeSeconds();
+
     private readonly ZoomOptions _options;
 
     public ZoomWebhookValidator(IOptions<ZoomOptions> options)
@@ -34,50 +42,83 @@ public sealed class ZoomWebhookValidator
             return false;
         }
 
-        if (!long.TryParse(timestampHeader, out var unixSeconds))
+        if (!long.TryParse(timestampHeader, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unixSeconds)
+            || unixSeconds < MinUnixSeconds
+            || unixSeconds > MaxUnixSeconds)
         {
             failureReason = "Invalid Zoom webhook timestamp header.";
             return false;
         }
 
-        var timestamp = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
-        var drift = Math.Abs((DateTimeOffset.UtcNow - timestamp).TotalSeconds);
-        if (drift > _options.RequestTimestampToleranceSeconds)
+        try
         {
-            failureReason = "Zoom webhook timestamp is outside the allowed tolerance window.";
+            var timestamp = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
+            var drift = Math.Abs((DateTimeOffset.UtcNow - timestamp).TotalSeconds);
+            if (double.IsNaN(drift) || drift > _options.RequestTimestampToleranceSeconds)
+            {
+                failureReason = "Zoom webhook timestamp is outside the allowed tolerance window.";
+                return false;
+            }
+
+            var expected = BuildSignature(timestampHeader, rawBody ?? string.Empty);
+            if (!FixedTimeEquals(expected, signatureHeader))
+            {
+                failureReason = "Zoom webhook signature did not match the request body.";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException or OverflowException or EncoderFallbackException)
+        {
+            // A malformed header must surface as a validation failure, never as an
+            // unhandled exception that would escape the webhook endpoint as a 500.
+            failureReason = "Zoom webhook signature could not be validated.";
             return false;
         }
-
-        var expected = BuildSignature(timestampHeader, rawBody);
-        if (!FixedTimeEquals(expected, signatureHeader))
-        {
-            failureReason = "Zoom webhook signature did not match the request body.";
-            return false;
-        }
-
-        return true;
     }
 
     public bool IsEndpointValidation(JsonElement payload, out ZoomEndpointValidationResponse response)
     {
         response = null!;
-        if (!payload.TryGetProperty("event", out var eventNode) || !string.Equals(eventNode.GetString(), "endpoint.url_validation", StringComparison.Ordinal))
+
+        if (payload.ValueKind != JsonValueKind.Object)
         {
             return false;
         }
 
-        if (!payload.TryGetProperty("payload", out var payloadNode) || !payloadNode.TryGetProperty("plainToken", out var tokenNode))
+        if (!TryGetString(payload, "event", out var eventName)
+            || !string.Equals(eventName, EndpointValidationEventName, StringComparison.Ordinal))
         {
             return false;
         }
 
-        var plainToken = tokenNode.GetString() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(plainToken) || !IsConfigured)
+        if (!payload.TryGetProperty("payload", out var payloadNode) || payloadNode.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!TryGetString(payloadNode, "plainToken", out var plainToken)
+            || string.IsNullOrWhiteSpace(plainToken)
+            || !IsConfigured)
         {
             return false;
         }
 
         response = new ZoomEndpointValidationResponse(plainToken, ComputeHexHmac(plainToken));
+        return true;
+    }
+
+    private static bool TryGetString(JsonElement parent, string propertyName, out string value)
+    {
+        value = string.Empty;
+
+        if (!parent.TryGetProperty(propertyName, out var node) || node.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = node.GetString() ?? string.Empty;
         return true;
     }
 
@@ -94,10 +135,17 @@ public sealed class ZoomWebhookValidator
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
+    // Digesting both sides to a fixed 32-byte hash keeps the comparison constant time
+    // even when the supplied signature has a different length than the expected one.
+    // CryptographicOperations.FixedTimeEquals is only fixed time for equal-length spans.
     private static bool FixedTimeEquals(string left, string right)
     {
-        var leftBytes = Encoding.UTF8.GetBytes(left);
-        var rightBytes = Encoding.UTF8.GetBytes(right);
-        return CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
+        Span<byte> leftHash = stackalloc byte[SHA256.HashSizeInBytes];
+        Span<byte> rightHash = stackalloc byte[SHA256.HashSizeInBytes];
+
+        SHA256.HashData(Encoding.UTF8.GetBytes(left), leftHash);
+        SHA256.HashData(Encoding.UTF8.GetBytes(right), rightHash);
+
+        return CryptographicOperations.FixedTimeEquals(leftHash, rightHash);
     }
 }

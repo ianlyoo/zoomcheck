@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" id="theme-color" content="#f5f7fb" />
+  <title>ZoomCheck 회의 출석 대시보드</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231264d8'/%3E%3Cpath d='M16 18h32L27 46h21' fill='none' stroke='white' stroke-width='8' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <script>
+    (function () {
+      try {
+        var preference = localStorage.getItem('zoomcheck.theme');
+        var systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = preference === 'dark' || preference === 'light' ? preference : (systemDark ? 'dark' : 'light');
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.getElementById('theme-color').content = theme === 'dark' ? '#0b1220' : '#f5f7fb';
+      } catch (_) { /* 저장소를 사용할 수 없으면 기본 밝은 테마를 유지한다. */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="styles.css?v=0.6.2-dark-20260907-5" />
+</head>
+<body>
+  <a class="skip-link" href="#participant-search">참가자 검색으로 이동</a>
+
+  <header class="topbar">
+    <div class="brand" aria-label="ZoomCheck">
+      <span class="brand-primary">Zoom</span><span>Check</span>
+    </div>
+
+    <label class="meeting-field" for="meeting-id">
+      <span>회의 ID</span>
+      <input type="text" id="meeting-id" inputmode="numeric" autocomplete="off"
+             placeholder="123 456 7890" aria-describedby="meeting-help" />
+      <span class="vh" id="meeting-help">Zoom 회의 ID를 입력하세요.</span>
+    </label>
+
+    <div class="connection-strip" aria-label="연결 상태">
+      <button type="button" class="connection-item" id="btn-health-detail">
+        <span class="status-dot" id="health-dot" aria-hidden="true"></span>
+        <span>백엔드</span><strong id="health-text">확인 중</strong>
+      </button>
+      <button type="button" class="connection-item" id="btn-api-detail">
+        <span class="status-dot" id="zoom-dot" aria-hidden="true"></span>
+        <span>Zoom API</span><strong id="zoom-status">확인 중</strong>
+      </button>
+      <button type="button" class="connection-item" id="btn-zoom-app-detail">
+        <span class="status-dot" id="zoom-app-dot" aria-hidden="true"></span>
+        <span>Zoom 앱</span><strong id="zoom-app-status">확인 중</strong>
+      </button>
+      <label class="connection-item auto-item">
+        <input type="checkbox" id="chk-autorefresh" />
+        <span class="switch" aria-hidden="true"></span>
+        <span>자동 동기화</span><strong id="auto-status">꺼짐</strong>
+      </label>
+    </div>
+
+    <div class="sync-clock" aria-live="polite">
+      <span><small>참가자 수신</small><strong id="last-sync-time">–</strong></span>
+      <span><small>다음 동기화</small><strong id="next-sync-time">–</strong></span>
+    </div>
+
+    <button type="button" class="btn primary sync-button" id="btn-sync-zoom">지금 동기화</button>
+    <button type="button" class="btn icon-button theme-button" id="btn-toggle-theme" aria-pressed="false">다크 모드</button>
+    <button type="button" class="btn icon-button help-button" id="btn-open-tutorial" aria-haspopup="dialog">사용법</button>
+    <button type="button" class="btn icon-button settings-button" id="btn-open-settings" aria-haspopup="dialog">설정</button>
+  </header>
+
+  <div class="alert-bar" id="alert-bar" role="alert" hidden>
+    <span class="status-dot" id="alert-dot" aria-hidden="true"></span>
+    <strong id="alert-title"></strong>
+    <span id="alert-message"></span><details id="alert-details" hidden><summary>기술 상세</summary><p id="alert-technical"></p></details>
+    <div class="alert-actions">
+      <button type="button" class="btn compact" id="btn-alert-action" hidden></button>
+      <button type="button" class="btn compact ghost" id="btn-dismiss-alert">닫기</button>
+    </div>
+  </div>
+
+  <main class="dashboard" id="main">
+    <section class="summary-band" aria-labelledby="summary-title">
+      <div class="attendance-headline">
+        <p id="summary-title">이번 회의 명단 출석</p>
+        <strong><span id="summary-total">0</span>명 중 <span id="summary-present">0</span>명 출석</strong>
+        <span id="summary-time">회의 ID와 명단을 설정해 주세요.</span><span id="source-status" class="source-status"></span>
+      </div>
+      <div class="rate-gauge" aria-label="현재 출석률">
+        <div class="rate-ring" id="rate-ring"><strong id="summary-rate">–</strong><span>출석률</span></div>
+      </div>
+      <dl class="metric-list">
+        <div class="metric present"><dt>명단 참석</dt><dd id="metric-present">0명</dd></div>
+        <div class="metric absent"><dt>미참석</dt><dd id="metric-absent">0명</dd></div>
+        <div class="metric review"><dt>검토 필요</dt><dd><button type="button" id="btn-review" class="metric-action"><span id="metric-review">0항목</span><span class="vh"> 검토 목록 열기</span></button></dd></div>
+        <div class="metric duplicate"><dt>중복 연결</dt><dd id="metric-duplicate">0명</dd></div>
+      </dl>
+    </section>
+
+    <div class="workspace">
+      <section class="participants-panel" aria-labelledby="participants-title">
+        <div class="panel-header">
+          <div>
+            <h1 id="participants-title">참가자</h1>
+            <p id="participants-meta">명단과 현재 Zoom 참가자를 함께 표시합니다.</p>
+          </div>
+          <div class="panel-actions">
+            <button type="button" class="btn secondary compact" id="btn-refresh">저장된 현황 다시 읽기</button>
+            <button type="button" class="btn secondary compact" id="btn-export">CSV 내보내기</button>
+          </div>
+        </div>
+
+        <div class="readiness" id="readiness" hidden>
+          <div><strong id="readiness-title"></strong><p id="readiness-note"></p></div>
+          <button type="button" class="btn primary" id="btn-next-step">명단 올리기</button>
+        </div>
+        <div class="scope-note"><span id="scope-note">미매칭은 그룹과 관계없이 표시됩니다.</span><span id="export-scope">CSV는 명단 전체 기준이며 검색·상태 필터를 적용하지 않습니다.</span></div>
+        <div class="participant-toolbar">
+          <div class="filter-tabs" role="group" aria-label="참가자 상태 필터">
+            <button type="button" aria-pressed="true" data-filter="all">전체 <span id="count-all">0</span></button>
+            <button type="button" aria-pressed="false" data-filter="present">참석 항목 <span id="count-present">0</span></button>
+            <button type="button" aria-pressed="false" data-filter="absent">미참석 <span id="count-absent">0</span></button>
+            <button type="button" aria-pressed="false" data-filter="review">검토 <span id="count-review">0</span></button>
+            <button type="button" aria-pressed="false" data-filter="unmatched">미매칭 <span id="count-unmatched">0</span></button>
+            <button type="button" aria-pressed="false" data-filter="excluded">제외됨 <span id="count-excluded">0</span></button>
+          </div>
+          <div class="toolbar-filters">
+            <label class="group-box" for="group-filter">
+              <span class="vh">소속 그룹 필터</span>
+              <select id="group-filter">
+                <option value="">전체 그룹</option>
+              </select>
+            </label>
+            <label class="search-box" for="participant-search">
+              <span class="vh">참가자 검색</span>
+              <input type="search" id="participant-search" autocomplete="off" placeholder="이름, 이메일, 소속, 그룹, 연락처 검색" />
+            </label>
+          </div>
+        </div>
+
+        <div class="participant-table-wrap" id="participant-table-wrap" tabindex="0" aria-label="참가자 표">
+          <table class="participant-table">
+            <caption class="vh">명단 및 Zoom 참가자 목록. 행을 선택하면 상세 연결 정보가 표시됩니다.</caption>
+            <thead>
+              <tr>
+                <th scope="col">상태</th>
+                <th scope="col">이름</th>
+                <th scope="col">소속</th>
+                <th scope="col">매칭</th>
+                <th scope="col">입장</th>
+                <th scope="col">최근 활동</th>
+                <th scope="col">연결</th>
+              </tr>
+            </thead>
+            <tbody id="participant-rows"></tbody>
+          </table>
+          <div class="panel-empty" id="participants-empty" hidden>
+            <strong id="empty-title">표시할 참가자가 없습니다.</strong><span id="empty-note">명단을 올리거나 필터를 바꿔 보세요.</span><button type="button" class="btn secondary" id="btn-reset-filters">필터 초기화</button>
+          </div>
+        </div>
+        <div class="table-footer">
+          <span id="visible-count">0명 표시</span>
+          <span>행을 클릭하면 연결 기기와 입퇴장 이력을 볼 수 있습니다.</span>
+        </div>
+      </section>
+
+      <aside class="right-rail" aria-label="회의 실시간 정보">
+        <section class="rail-panel activity-panel" aria-labelledby="activity-title">
+          <div class="rail-header">
+            <div><h2 id="activity-title">최근 활동</h2><span class="live-label" id="activity-mode">저장된 활동</span></div>
+            <span id="activity-count">최근 0건</span>
+          </div>
+          <ol class="activity-feed" id="activity-feed"></ol>
+          <div class="rail-empty" id="activity-empty"><strong>아직 활동이 없습니다.</strong><span>동기화를 시작하면 입장·퇴장·이름 변경을 표시합니다.</span></div>
+        </section>
+
+        <section class="rail-panel duplicate-panel" aria-labelledby="duplicate-title">
+          <div class="rail-header">
+            <div><h2 id="duplicate-title">중복 연결</h2><span class="count-badge" id="duplicate-count">0</span></div>
+            <span>같은 명단 인물의 다중 접속</span>
+          </div>
+          <div class="duplicate-list" id="duplicate-list"></div>
+          <div class="rail-empty compact-empty" id="duplicate-empty"><strong>중복 연결 없음</strong><span>한 사람이 여러 기기로 접속하면 여기에 표시됩니다.</span></div>
+        </section>
+      </aside>
+    </div>
+
+    <footer class="statusbar">
+      <span id="sync-summary"><span class="status-dot"></span>동기화 대기</span>
+      <span id="roster-summary">명단 0명</span>
+      <span>데이터는 이 PC에만 저장됩니다.</span>
+      <button type="button" class="version-chip" id="btn-version-chip" aria-haspopup="dialog">
+        <span class="status-dot" id="version-dot" aria-hidden="true"></span>
+        <span id="version-text">버전 확인 중</span>
+      </button>
+      <span class="copyright">© 2026 Youngin. All rights reserved.</span>
+    </footer>
+  </main>
+
+  <dialog class="settings-dialog" id="settings-dialog" aria-labelledby="settings-title">
+    <form method="dialog" class="settings-shell">
+      <header class="settings-header">
+        <div><p>ZoomCheck 운영 설정</p><h2 id="settings-title">설정</h2></div>
+        <button type="submit" class="btn icon-button" aria-label="설정 닫기">닫기</button>
+      </header>
+      <div class="settings-content">
+        <h2 class="settings-group-title">명단·회의 준비</h2>
+        <section id="settings-roster" tabindex="-1" class="settings-section">
+          <div class="settings-copy"><h3>Excel 명단</h3><p>번호·성명 열이 있는 .xlsx 또는 .xls 파일을 올립니다. 같은 명단을 다시 올려도 기존 활동 기록은 유지됩니다.</p></div>
+          <div class="settings-control">
+            <input type="file" id="roster-file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+            <div class="button-row"><button type="button" class="btn primary" id="btn-upload-roster">명단 올리기</button><button type="button" class="btn secondary" id="btn-reload-roster">다시 읽기</button></div>
+            <p class="setting-status" id="roster-note">명단 상태 확인 중…</p>
+          </div>
+        </section>
+        <section id="settings-manual" tabindex="-1" class="settings-section manual-section">
+          <div class="settings-copy"><h3>전체 참가자 목록 직접 붙여넣기</h3><p>API를 쓸 수 없을 때만 사용합니다. 목록에 없는 기존 참석자는 퇴장으로 기록되므로 반드시 현재 참가자 전체를 붙여넣으세요.</p></div>
+          <div class="settings-control">
+            <label for="snapshot-names">한 줄에 한 명</label>
+            <textarea id="snapshot-names" rows="7" spellcheck="false" placeholder="김민수&#10;이서연&#10;Park, Jiwon"></textarea>
+            <div class="manual-meta"><span id="snapshot-parsed">입력 0줄 · 서로 다른 이름 0개 · 중복 0줄</span><label><input type="checkbox" id="chk-empty-ok" /> 빈 목록 허용</label></div>
+            <div class="button-row"><button type="button" class="btn primary" id="btn-submit-snapshot">전체 목록 확인 후 적용</button><button type="button" class="btn secondary" id="btn-clear-snapshot">입력 지우기</button></div>
+            <details id="snapshot-result" hidden><summary id="snapshot-result-summary"></summary><div id="snapshot-result-details"></div></details>
+          </div>
+        </section>
+        <h2 class="settings-group-title">연결</h2>
+        <section id="settings-mode" tabindex="-1" class="settings-section">
+          <div class="settings-copy"><h3>연결 방식</h3><p>자동을 권장합니다. 일반 사용자는 Zoom 앱(Pro) 릴레이를 쓰고, 기존 Business API와 직접 HTTPS 방식도 그대로 사용할 수 있습니다.</p></div>
+          <div class="settings-control">
+            <div class="mode-options" role="radiogroup" aria-label="연결 방식 선택">
+              <label class="mode-option"><input type="radio" name="connection-mode" value="auto" id="mode-auto" /><span><strong>자동</strong><small>연결 상태에 따라 선택 · Zoom 앱 우선</small></span></label>
+              <label class="mode-option"><input type="radio" name="connection-mode" value="business" id="mode-business" /><span><strong>Business API</strong><small>Server-to-Server OAuth 대시보드 API</small></span></label>
+              <label class="mode-option"><input type="radio" name="connection-mode" value="zoomApp" id="mode-zoom-app" /><span><strong>Zoom 앱 (Pro)</strong><small>회의 안에서 실행되는 컴패니언 앱</small></span></label>
+              <label class="mode-option"><input type="radio" name="connection-mode" value="manual" id="mode-manual" /><span><strong>직접 입력</strong><small>참가자 목록을 붙여넣어 반영</small></span></label>
+            </div>
+            <p class="setting-status" id="mode-note">권장 방식을 확인하는 중…</p>
+          </div>
+        </section>
+        <section id="settings-pairing" tabindex="-1" class="settings-section">
+          <div class="settings-copy"><h3>Zoom 앱 (Pro) 페어링</h3><p>별도 터널이나 API 키 없이 사용합니다. 6자리 코드는 최초 연결 전 10분 동안만 유효하며, 연결 후에는 코드가 폐기되고 세션이 별도로 유지됩니다.</p></div>
+          <div class="settings-control">
+            <p class="setting-status" id="zoom-app-settings-status">Zoom 앱 연결 상태 확인 중…</p>
+            <div class="pairing-box">
+              <div class="pairing-code" id="pairing-code" aria-live="polite">– – – – – –</div>
+              <div class="pairing-meta">
+                <span id="pairing-expiry">코드를 생성하면 유효 시간이 표시됩니다.</span>
+                <span id="pairing-session">아직 연결된 Zoom 앱이 없습니다.</span>
+              </div>
+            </div>
+            <div class="button-row">
+              <button type="button" class="btn primary" id="btn-create-pairing-code">페어링 코드 생성</button>
+              <button type="button" class="btn secondary" id="btn-copy-pairing-code">코드 복사</button>
+              <button type="button" class="btn secondary" id="btn-zoom-app-sync">Zoom 앱 동기화 요청</button>
+            </div>
+            <label class="pairing-home" for="zoom-app-home-url">ZoomCheck 앱 주소</label>
+            <div class="pairing-home-row">
+              <code id="zoom-app-home-url">릴레이 배포 주소를 확인하는 중…</code>
+              <button type="button" class="btn secondary compact" id="btn-copy-home-url">복사</button>
+            </div>
+            <ol class="pairing-steps">
+              <li>처음 한 번만 ZoomCheck 앱 설치를 승인합니다.</li>
+              <li>회의를 호스트 또는 공동호스트로 참여한 뒤 Zoom Apps에서 ZoomCheck를 엽니다.</li>
+              <li>여기서 만든 6자리 코드를 입력합니다. 이름과 참가자 ID는 릴레이가 읽을 수 없습니다.</li>
+            </ol>
+          </div>
+        </section>
+        <section id="settings-api" tabindex="-1" class="settings-section">
+          <div class="settings-copy"><h3>Zoom API 연결</h3><p>공동호스트 권한과 별개로 Zoom 계정 관리자의 Server-to-Server OAuth 앱이 필요합니다.</p></div>
+          <div class="settings-control">
+            <p class="setting-status" id="api-settings-status">연결 상태 확인 중…</p>
+            <code>dashboard:read:list_meeting_participants:admin</code>
+            <button type="button" class="btn secondary" id="btn-check-zoom">연결 설정 확인</button>
+          </div>
+        </section>
+        <section id="settings-auto" tabindex="-1" class="settings-section">
+          <div class="settings-copy"><h3>자동 동기화</h3><p>회의 중 10초 간격을 권장합니다. 5초 미만은 설정할 수 없습니다.</p></div>
+          <div class="settings-control inline-settings">
+            <label><input type="checkbox" id="settings-autorefresh" /> 자동 동기화 사용</label>
+            <p class="setting-status" id="auto-mode-note"></p><label>간격 <input type="number" id="autorefresh-interval" min="5" max="600" step="5" value="10" />초</label>
+          </div>
+        </section>
+        <h2 class="settings-group-title">화면·관리</h2>
+        <section id="settings-theme" tabindex="-1" class="settings-section">
+          <div class="settings-copy"><h3>화면 테마</h3><p>Windows 화면 설정을 따르거나 밝은 모드와 다크 모드를 직접 고를 수 있습니다. 선택은 이 PC에 저장됩니다.</p></div>
+          <div class="settings-control">
+            <div class="mode-options theme-options" role="radiogroup" aria-label="화면 테마 선택">
+              <label class="mode-option"><input type="radio" name="theme" value="system" /><span><strong>시스템 설정</strong><small>Windows 밝게·어둡게 설정을 자동으로 따름</small></span></label>
+              <label class="mode-option"><input type="radio" name="theme" value="light" /><span><strong>밝게</strong><small>항상 밝은 대시보드 사용</small></span></label>
+              <label class="mode-option"><input type="radio" name="theme" value="dark" /><span><strong>어둡게</strong><small>눈부심을 줄인 다크 대시보드 사용</small></span></label>
+            </div>
+          </div>
+        </section>
+        <section id="settings-tutorial" tabindex="-1" class="settings-section">
+          <div class="settings-copy"><h3>처음 사용 안내</h3><p>회의 준비부터 Excel 명단, Zoom 앱 페어링, 실시간 출석 확인까지 6단계로 다시 볼 수 있습니다.</p></div>
+          <div class="settings-control"><button type="button" class="btn secondary" id="btn-settings-tutorial">사용법 다시 보기</button></div>
+        </section>
+        <section id="settings-log" tabindex="-1" class="settings-section">
+          <div class="settings-copy"><h3>앱 동작 로그</h3><p>이 브라우저에서 수행한 동기화·업로드·오류 기록입니다. 서버에는 저장되지 않습니다.</p></div>
+          <div class="settings-control"><ol class="session-log" id="session-log"></ol><p class="setting-status" id="session-log-empty">아직 기록이 없습니다.</p><button type="button" class="btn secondary" id="btn-clear-log">로그 지우기</button></div>
+        </section>
+        <section id="settings-update" tabindex="-1" class="settings-section">
+          <div class="settings-copy"><h3>Windows 앱 업데이트</h3><p>앱을 시작할 때 자동으로 확인하고 내려받습니다. 설치는 회의가 끊기지 않도록 직접 누를 때만 진행합니다.</p></div>
+          <div class="settings-control">
+            <div class="update-box">
+              <div class="update-copy">
+                <p class="update-version">현재 버전 <strong id="update-current-version">확인 중…</strong></p>
+                <p class="setting-status" id="update-status-text">업데이트 상태를 확인하는 중…</p>
+                <div class="update-progress" id="update-progress" hidden>
+                  <div class="update-progress-bar" id="update-progress-bar"></div>
+                </div>
+              </div>
+              <span class="update-badge" id="update-badge" hidden></span>
+            </div>
+            <div class="button-row">
+              <button type="button" class="btn secondary" id="btn-check-update">업데이트 확인</button>
+              <button type="button" class="btn primary" id="btn-install-update" hidden>설치하고 다시 시작</button>
+            </div>
+            <p class="setting-status update-error" id="update-error-text" hidden></p>
+            <p class="setting-status">설치를 누르면 앱이 종료되고 새 버전으로 다시 시작합니다. 진행 중인 회의가 있으면 먼저 동기화를 마치세요.</p>
+          </div>
+        </section>
+      </div>
+      <footer class="settings-footer"><span>Windows DB: %LOCALAPPDATA%\ZoomCheck\data\zoomcheck.db</span><button type="submit" class="btn primary">설정 완료</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="tutorial-dialog" id="tutorial-dialog" aria-labelledby="tutorial-title" aria-describedby="tutorial-description">
+    <div class="tutorial-shell">
+      <header class="tutorial-header">
+        <div>
+          <h2 class="tutorial-brand" id="tutorial-title">ZoomCheck 시작 안내</h2>
+          <strong id="tutorial-progress-text">1 / 6</strong>
+        </div>
+        <button type="button" class="btn icon-button" id="btn-close-tutorial" aria-label="사용법 닫기">닫기</button>
+      </header>
+
+      <div class="tutorial-progress" id="tutorial-progress" role="tablist" aria-label="사용법 단계">
+        <button type="button" role="tab" aria-label="1단계 회의 준비" aria-selected="true"></button>
+        <button type="button" role="tab" aria-label="2단계 명단 올리기" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="3단계 Zoom 앱 연결" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="4단계 동기화 시작" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="5단계 결과 확인" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="6단계 조별 확인과 마무리" aria-selected="false"></button>
+      </div>
+
+      <main class="tutorial-content" id="tutorial-description">
+        <section class="tutorial-step" data-tutorial-step="0">
+          <div class="tutorial-illustration is-blue" aria-hidden="true"><span>01</span><strong>회의 준비</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">시작 전에</span>
+            <h2>회의 ID와 권한을 확인하세요</h2>
+            <p>Zoom 회의에는 <strong>호스트 또는 공동호스트</strong>로 들어가고, ZoomCheck 상단에 회의 ID를 입력합니다. 숫자 사이 공백은 자동으로 정리됩니다.</p>
+            <ul><li>회의를 진행하는 PC와 ZoomCheck PC가 달라도 됩니다.</li><li>Pro 계정은 회의 안의 ZoomCheck 앱으로 참가자를 가져옵니다.</li></ul>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="1" hidden>
+          <div class="tutorial-illustration is-green" aria-hidden="true"><span>02</span><strong>Excel 명단</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">설정 → Excel 명단</span>
+            <h2>출석 명단을 올리세요</h2>
+            <p><strong>번호·성명</strong> 열이 있는 Excel 파일을 선택하고 <strong>명단 올리기</strong>를 누릅니다. 기존 입퇴장 기록은 같은 명단을 다시 올려도 유지됩니다.</p>
+            <ul><li>전화번호·이메일·소속기관 열도 참가자 상세와 검색에 사용됩니다.</li><li>조별 실습은 <strong>조·분반·그룹·팀·반</strong> 열 중 하나를 추가하세요.</li></ul>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="2" hidden>
+          <div class="tutorial-illustration is-violet" aria-hidden="true"><span>03</span><strong>Zoom 연결</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">설정 → Zoom 앱 (Pro) 페어링</span>
+            <h2>6자리 코드로 회의와 연결하세요</h2>
+            <p><strong>페어링 코드 생성</strong>을 누른 뒤, Zoom 회의의 <strong>Apps → ZoomCheck</strong>에서 코드를 입력합니다.</p>
+            <ol><li>연결 방식은 <strong>자동</strong>을 권장합니다.</li><li>코드는 10분·1회용이며 연결 후에는 코드 만료와 무관하게 세션이 유지됩니다.</li><li>Zoom 앱 상태가 <strong>호스트 연결</strong> 또는 <strong>공동호스트 연결</strong>인지 확인합니다.</li></ol>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="3" hidden>
+          <div class="tutorial-illustration is-amber" aria-hidden="true"><span>04</span><strong>실시간 동기화</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">대시보드 상단</span>
+            <h2>지금 동기화를 눌러 출석을 시작하세요</h2>
+            <p>처음에는 <strong>지금 동기화</strong>를 눌러 명단과 현재 참가자가 맞는지 확인합니다. 이후 <strong>자동 동기화</strong>를 켜면 기본 10초마다 갱신됩니다.</p>
+            <ul><li>회의 ID가 비어 있으면 연결된 Zoom 회의 ID를 자동으로 가져옵니다.</li><li>Zoom 앱에서 “암호화 전송”이 보이면 참가자 정보가 PC로 안전하게 전달되는 중입니다.</li></ul>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="4" hidden>
+          <div class="tutorial-illustration is-red" aria-hidden="true"><span>05</span><strong>결과 확인</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">참가자 · 최근 활동 · 중복 연결</span>
+            <h2>검토가 필요한 사람을 확인하세요</h2>
+            <p>참가자 행을 누르면 원래 Zoom 이름, 전화번호, 조, 입퇴장 이력을 볼 수 있습니다. 검토 이유를 읽고 이번 회의의 신원·중복 기기를 각각 확인하거나 보류할 수 있습니다.</p>
+            <ul><li><strong>검토</strong>에서 판단을 기록하세요. 미매칭 연결은 이번 회의에서만 명단 인물과 연결하며 취소할 수 있습니다.</li><li>최근 활동에는 입장·퇴장·이름 변경, 중복 연결에는 다중 기기 접속이 표시됩니다.</li></ul>
+          </div>
+        </section>
+
+        <section class="tutorial-step" data-tutorial-step="5" hidden>
+          <div class="tutorial-illustration is-blue" aria-hidden="true"><span>06</span><strong>마무리</strong></div>
+          <div class="tutorial-copy">
+            <span class="tutorial-kicker">조별 확인 · CSV · 업데이트</span>
+            <h2>필요한 범위만 확인하고 저장하세요</h2>
+            <p>그룹 선택 시 미매칭은 함께 표시됩니다. CSV에는 제외되지 않은 해당 그룹 명단만 포함되며 검색·상태 필터는 적용되지 않습니다. 회의가 끝나면 <strong>CSV 내보내기</strong>로 결과를 저장하세요.</p>
+            <ul><li>출석 DB는 이 PC의 로컬 폴더에 저장됩니다.</li><li>새 버전은 자동으로 확인·검증하며, 설치는 직접 누를 때만 진행됩니다.</li><li>이 안내는 상단 <strong>사용법</strong> 또는 설정에서 언제든 다시 열 수 있습니다.</li></ul>
+          </div>
+        </section>
+      </main>
+
+      <footer class="tutorial-footer">
+        <span>처음 한 번만 자동으로 표시됩니다.</span>
+        <div class="button-row">
+          <button type="button" class="btn ghost" id="btn-skip-tutorial">건너뛰기</button>
+          <button type="button" class="btn secondary" id="btn-tutorial-back" disabled>이전</button>
+          <button type="button" class="btn primary" id="btn-tutorial-next">다음</button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog class="action-confirm" id="action-confirm" aria-labelledby="action-confirm-title" aria-describedby="action-confirm-message">
+    <h2 id="action-confirm-title">변경 내용 확인</h2>
+    <p id="action-confirm-message"></p>
+    <div class="button-row">
+      <button type="button" class="btn secondary" id="btn-confirm-cancel">취소</button>
+      <button type="button" class="btn primary" id="btn-confirm-apply">확인하고 적용</button>
+    </div>
+  </dialog>
+  <div class="toast-region" id="toast-region" aria-live="polite"></div>
+  <div class="busy" id="busy" hidden role="status" aria-live="polite"><span class="spinner"></span><span id="busy-text">처리 중…</span></div>
+  <script src="app.js?v=0.6.2"></script>
+</body>
+</html>

@@ -16,6 +16,8 @@ public sealed class ZoomRecoveryOptions
 
     public int ParticipantsPageSize { get; set; } = 300;
 
+    public int MaxParticipantPages { get; set; } = 20;
+
     public bool EnableAccountWideUserDiscovery { get; set; } = false;
 
     public string[]? HostUserIds { get; set; }

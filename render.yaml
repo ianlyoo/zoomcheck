@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: zoomcheck-relay
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./src/ZoomCheck.Relay/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    buildFilter:
+      paths:
+        - render.yaml
+        - src/ZoomCheck.Relay/**
+        - src/ZoomCheck.Relay.Contracts/**
+    envVars:
+      - key: ASPNETCORE_HTTP_PORTS
+        value: "10000"
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
