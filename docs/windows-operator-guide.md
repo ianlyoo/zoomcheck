@@ -44,6 +44,7 @@ The operator does not need to open a terminal or launch a second program.
 - Verify that the meeting is live and belongs to the OAuth app account
 - For 403 responses, verify Dashboard API access and the required scope
 - For Pro mode, confirm the companion was opened by a host/co-host, the one-time pairing code has not expired, and the central relay is reachable
+- Save the same relay root URL used by the companion in **Settings → Zoom App (Pro) pairing → My HTTPS relay URL**. Completely exit ZoomCheck, restart it, then create a new code. Saved PC settings survive upgrades and take precedence over the earlier environment-variable workaround.
 - Assign co-host before opening the Zoom App. If the app is closed or reloaded, create a new pairing code
 - The Pro path does not request participant email, so review name-only matches carefully
 

@@ -40,7 +40,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 ; Secrets, databases and user data are excluded here as a second line of
 ; defence; build-installer.ps1 already fails the build if any are present.
-Source: "{#MyAppPackageDir}\*"; DestDir: "{app}"; Excludes: "*.db,*.db-shm,*.db-wal,*.sqlite,*.sqlite3,*.env,.env,.env.*,*.pfx,*.p12,*.pem,*.key,*.keystore,*.jks,secrets.json,*.secrets.json,appsettings.Development.json,appsettings.Local.json,*.log,*.xlsx,*.xls,*.csv,data\*,logs\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MyAppPackageDir}\*"; DestDir: "{app}"; Excludes: "*.db,*.db-shm,*.db-wal,*.sqlite,*.sqlite3,*.env,.env,.env.*,*.pfx,*.p12,*.pem,*.key,*.keystore,*.jks,secrets.json,*.secrets.json,appsettings.Development.json,appsettings.Local.json,appsettings.User.json,*.log,*.xlsx,*.xls,*.csv,data\*,logs\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\ZoomCheck"; Filename: "{app}\{#MyAppExeName}"

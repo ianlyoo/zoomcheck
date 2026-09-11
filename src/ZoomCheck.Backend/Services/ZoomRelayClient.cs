@@ -89,15 +89,10 @@ public sealed class ZoomRelayClient
 
     private Uri? BaseUri()
     {
-        if (!Uri.TryCreate(_options.BaseUrl?.Trim(), UriKind.Absolute, out var uri)
-            || uri.Scheme != Uri.UriSchemeHttps)
+        if (!ZoomRelayOptions.TryNormalizeBaseUrl(_options.BaseUrl, out var value))
         {
             return null;
         }
-
-        var value = uri.AbsoluteUri.EndsWith("/", StringComparison.Ordinal)
-            ? uri.AbsoluteUri
-            : uri.AbsoluteUri + "/";
         return new Uri(value);
     }
 }

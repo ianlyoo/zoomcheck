@@ -56,14 +56,20 @@ jobs:
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
           $releaseTag = $env:RELEASE_TAG_INPUT.Trim()
+          [xml]$project = Get-Content 'src/ZoomCheck.Backend/ZoomCheck.Backend.csproj'
+          $sourceVersion = [string]$project.Project.PropertyGroup.Version
           if ([string]::IsNullOrWhiteSpace($releaseTag)) {
-            $packageVersion = "0.6.${{ github.run_number }}"
+            $packageVersion = $sourceVersion
           }
           elseif ($releaseTag -match '^v?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)$') {
             $packageVersion = $Matches.version
           }
           else {
             throw "release_tag must be a semantic version such as v0.6.0 or v0.6.0-rc.1."
+          }
+
+          if ($packageVersion -ne $sourceVersion) {
+            throw "Release version $packageVersion does not match source version $sourceVersion."
           }
 
           "package_version=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -130,7 +136,7 @@ jobs:
             '(^|/)\.env($|\.)', '\.env$',
             '\.pfx$', '\.p12$', '\.pem$', '\.key$', '\.keystore$', '\.jks$',
             '(^|/)secrets\.json$', '\.secrets\.json$',
-            '(^|/)appsettings\.(Development|Local)\.json$',
+            '(^|/)appsettings\.(Development|Local|User)\.json$',
             '\.log$', '\.xlsx?$', '\.csv$',
             '(^|/)data/', '(^|/)logs/',
             '(^|/)ZoomCheck\.App'

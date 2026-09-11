@@ -14,15 +14,18 @@ public sealed class ZoomAppBridgeController : ControllerBase
     private readonly ZoomAppBridgeService _bridge;
     private readonly ZoomRelayService _relay;
     private readonly AttendanceApplicationService _attendance;
+    private readonly ZoomRelaySettingsStore _settings;
 
     public ZoomAppBridgeController(
         ZoomAppBridgeService bridge,
         ZoomRelayService relay,
-        AttendanceApplicationService attendance)
+        AttendanceApplicationService attendance,
+        ZoomRelaySettingsStore settings)
     {
         _bridge = bridge;
         _relay = relay;
         _attendance = attendance;
+        _settings = settings;
     }
 
     [HttpPost("participants/rename")]
@@ -145,6 +148,23 @@ public sealed class ZoomAppBridgeController : ControllerBase
     public async Task<ActionResult<ZoomAppPairingCodeResponse>> CreatePairingCode(
         CancellationToken cancellationToken)
     {
+        if (_settings.Get().RestartRequired)
+        {
+            return Problem(
+                title: "Restart ZoomCheck to apply the saved relay URL.",
+                detail: "Completely close ZoomCheck, restart it, and then create a new pairing code.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        var directHomeUrl = _bridge.GetStatus().HomeUrl;
+        if (!_relay.IsConfigured && string.IsNullOrWhiteSpace(directHomeUrl))
+        {
+            return Problem(
+                title: "ZoomCheck relay URL is not configured.",
+                detail: "Set your HTTPS relay URL in ZoomCheck settings, restart the app, and create a new pairing code.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
         try
         {
             return Ok(_relay.IsConfigured

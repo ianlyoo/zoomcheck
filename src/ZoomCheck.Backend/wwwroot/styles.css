@@ -479,6 +479,8 @@ body:has(.alert-bar:not([hidden])) .dashboard { height: calc(100vh - 110px); }
 .pairing-meta { display: grid; gap: 2px; min-width: 0; color: var(--muted); font-size: 10px; text-align: right; margin-left: auto; }
 .pairing-home { color: var(--muted); font-size: 11px; font-weight: 700; }
 .pairing-home-row { display: flex; align-items: center; gap: 8px; }
+.pairing-home-row input[type="url"] { flex: 1 1 auto; min-width: 0; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-subtle); color: var(--text); }
+.pairing-home-row input[type="url"]:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--focus-ring); background: var(--field-hover); }
 .pairing-home-row code { flex: 1 1 auto; min-width: 0; display: block; padding: 8px 10px; border-radius: 6px; background: var(--code-bg); color: var(--code-text); overflow-wrap: anywhere; font-size: 11px; }
 .pairing-steps { margin: 0; padding-left: 18px; display: grid; gap: 4px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .manual-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; }

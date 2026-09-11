@@ -6,7 +6,7 @@
 
 1. GitHub Release에서 `ZoomCheck-Setup-x64.exe`를 받아 설치하거나 portable ZIP을 풉니다.
 2. Business 모드는 PowerShell에서 `ZOOMCHECK_Zoom__AccountId`, `ZOOMCHECK_Zoom__ClientId`, `ZOOMCHECK_Zoom__ClientSecret`을 설정하고 OAuth 앱에 `dashboard:read:list_meeting_participants:admin` scope를 추가합니다.
-3. Pro 모드는 배포된 설치 파일을 사용하고 컴패니언을 열 계정에서 ZoomCheck 앱을 최초 1회 설치·승인합니다. 개인 터널, API 키, Marketplace 설정은 필요 없습니다. 릴레이를 직접 운영하는 관리자만 `ZOOMCHECK_ZoomRelay__BaseUrl`을 배포 전에 설정합니다.
+3. Pro 모드는 컴패니언을 열 계정에서 ZoomCheck 앱을 최초 1회 설치·승인합니다. 운영자에게 받은 릴레이 루트 주소를 **설정 → Zoom 앱 (Pro) 페어링 → 내 HTTPS 릴레이 주소**에 저장하고 앱을 완전히 종료·재실행합니다. 새 6자리 코드를 사용하며, 브라우저 새로고침은 앱 재시작을 대신하지 않습니다. 기존 환경 변수도 지원하지만 설정 화면에서 저장한 주소가 우선합니다.
 4. `ZoomCheck.Backend.exe`를 실행합니다. 브라우저에서 `http://127.0.0.1:5078` 대시보드가 열립니다.
 5. 옆 Windows 기기에서 대상 Zoom 회의가 실제로 진행 중인지 확인합니다. ZoomCheck와 Zoom Workplace가 같은 PC에서 실행될 필요는 없습니다.
 

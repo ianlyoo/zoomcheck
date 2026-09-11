@@ -19,7 +19,7 @@
       } catch (_) { /* 저장소를 사용할 수 없으면 기본 밝은 테마를 유지한다. */ }
     })();
   </script>
-  <link rel="stylesheet" href="styles.css?v=0.6.2-dark-20260907-5" />
+  <link rel="stylesheet" href="styles.css?v=0.6.3" />
 </head>
 <body>
   <a class="skip-link" href="#participant-search">참가자 검색으로 이동</a>
@@ -238,6 +238,12 @@
           <div class="settings-copy"><h3>Zoom 앱 (Pro) 페어링</h3><p>별도 터널이나 API 키 없이 사용합니다. 6자리 코드는 최초 연결 전 10분 동안만 유효하며, 연결 후에는 코드가 폐기되고 세션이 별도로 유지됩니다.</p></div>
           <div class="settings-control">
             <p class="setting-status" id="zoom-app-settings-status">Zoom 앱 연결 상태 확인 중…</p>
+            <label class="pairing-home" for="relay-base-url">내 HTTPS 릴레이 주소 · 이 PC에 저장되며 업데이트 후에도 유지됩니다</label>
+            <div class="pairing-home-row">
+              <input type="url" id="relay-base-url" inputmode="url" autocomplete="url" placeholder="https://your-relay.example/" />
+              <button type="button" class="btn secondary compact" id="btn-save-relay-url">저장</button>
+            </div>
+            <p class="setting-status" id="relay-settings-note">주소 설정 상태를 확인하는 중…</p>
             <div class="pairing-box">
               <div class="pairing-code" id="pairing-code" aria-live="polite">– – – – – –</div>
               <div class="pairing-meta">
@@ -424,6 +430,6 @@
   </dialog>
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
   <div class="busy" id="busy" hidden role="status" aria-live="polite"><span class="spinner"></span><span id="busy-text">처리 중…</span></div>
-  <script src="app.js?v=0.6.2"></script>
+  <script src="app.js?v=0.6.3"></script>
 </body>
 </html>

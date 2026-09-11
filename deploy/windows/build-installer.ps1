@@ -16,7 +16,7 @@
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
-    [string]$Version = "0.6.2",
+    [string]$Version = "0.6.3",
     [string]$RelayBaseUrl = "",
     [switch]$SkipInstaller
 )
@@ -134,7 +134,7 @@ $forbiddenFilePatterns = @(
     "*.db", "*.db-shm", "*.db-wal", "*.sqlite", "*.sqlite3",
     "*.env", ".env", ".env.*",
     "*.pfx", "*.p12", "*.pem", "*.key", "*.keystore", "*.jks",
-    "secrets.json", "*.secrets.json", "appsettings.Local.json",
+    "secrets.json", "*.secrets.json", "appsettings.Local.json", "appsettings.User.json",
     "*.xlsx", "*.xls", "*.csv", "*.log"
 )
 foreach ($pattern in $forbiddenFilePatterns) {

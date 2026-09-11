@@ -58,7 +58,9 @@ Windows PowerShell에서 자격증명을 현재 사용자 환경 변수로 한 �
 2. Zoom Marketplace에서 User-managed General App을 만들고 Meetings 제품과 Zoom App SDK를 켭니다.
 3. SDK API·이벤트는 `getSupportedJsApis`, `getMeetingContext`, `getMeetingUUID`, `getUserContext`, `getMeetingParticipants`, `onParticipantChange`, `setParticipantScreenName`을 추가합니다. Guest Mode는 참가자 목록 API를 지원하지 않으므로 켜지 않습니다. `setParticipantScreenName`을 허용하지 않으면 출석 동기화는 작동하지만 실제 회의 이름 변경 버튼은 사용할 수 없습니다.
 4. Home URL과 OAuth Redirect/Allow List에는 `https://YOUR-RELAY/zoom-app/`, Domain Allow List에는 `YOUR-RELAY`를 등록합니다.
-5. 릴레이를 사용하는 각 Windows PC에 본인이 배포한 주소를 사용자 환경 변수로 설정하고 ZoomCheck를 다시 시작합니다. 공개 설치파일의 `ZoomRelay.BaseUrl`은 의도적으로 비어 있습니다.
+5. 각 Windows PC에서 **설정 → Zoom 앱 (Pro) 페어링 → 내 HTTPS 릴레이 주소**에 본인이 배포한 루트 주소를 저장합니다. ZoomCheck를 완전히 종료하고 다시 실행한 뒤 **새 페어링 코드**를 만드세요. 브라우저 새로고침만으로는 적용되지 않습니다. 공개 설치파일의 `ZoomRelay.BaseUrl`은 의도적으로 비어 있습니다.
+
+주소는 `%LOCALAPPDATA%\ZoomCheck\config\appsettings.User.json`에 저장되어 앱 업데이트 후에도 유지됩니다. 설정 화면에서 저장한 주소와 활성화 설정이 기존 임시 환경 변수보다 우선합니다. 아직 설정 화면에서 저장하지 않은 PC는 아래의 기존 환경 변수 방식도 계속 사용할 수 있습니다.
 
 ```powershell
 [Environment]::SetEnvironmentVariable("ZOOMCHECK_ZoomRelay__BaseUrl", "https://YOUR-RELAY/", "User")
@@ -138,6 +140,8 @@ Windows 패키지 출력:
 설치형 Windows 앱은 시작할 때와 이후 주기적으로 GitHub Release를 확인합니다. 새 버전이 있으면 정확히 `ZoomCheck-Setup-x64.exe`와 `SHA256SUMS.txt`만 내려받고 SHA-256이 일치한 설치파일만 준비합니다. 회의 중 앱이 갑자기 종료되지 않도록 다운로드 후에도 자동 설치하지 않으며, 하단 버전 표시 또는 설정의 **Windows 앱 업데이트**에서 **설치하고 다시 시작**을 눌렀을 때만 앱을 종료하고 설치합니다.
 
 업데이트에도 특정 개인의 Render 주소, Zoom 앱 ID, OAuth 주소나 자격증명이 포함되지 않습니다. 기존 PC의 `ZOOMCHECK_ZoomRelay__BaseUrl` 사용자 환경 변수는 설치 후에도 유지됩니다. Portable ZIP은 자동 설치 대상이 아니므로 설치형 앱 사용을 권장합니다.
+
+`v0.6.3`부터는 설정 화면에서 저장한 릴레이 주소도 설치 폴더 밖에 보존됩니다. 릴레이와 직접 HTTPS 주소가 모두 없으면 연결할 수 없는 코드를 생성하지 않고 주소 설정을 안내합니다. 주소를 변경한 뒤에는 앱 재시작 전까지 코드 생성을 막아 이전 서버의 코드를 잘못 사용하는 일을 방지합니다.
 
 ## 주의
 

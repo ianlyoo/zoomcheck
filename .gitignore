@@ -4,6 +4,8 @@ obj/
 .vscode/
 *.user
 *.suo
+appsettings.User.json
+appsettings.User.json.tmp
 *.db
 *.db-shm
 *.db-wal

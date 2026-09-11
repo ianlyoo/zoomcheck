@@ -9,6 +9,9 @@ using ZoomCheck.Infrastructure.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddEnvironmentVariables(prefix: "ZOOMCHECK_");
+ZoomRelaySettingsStore.AddUserConfiguration(
+    builder.Configuration,
+    ZoomRelaySettingsStore.UserSettingsPath(builder.Environment));
 
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection(StorageOptions.SectionName));
 builder.Services.Configure<ZoomOptions>(builder.Configuration.GetSection(ZoomOptions.SectionName));
@@ -40,6 +43,7 @@ builder.Services.AddSingleton<ZoomLiveSyncService>();
 builder.Services.AddSingleton<ZoomAppBridgeService>();
 builder.Services.AddHttpClient<ZoomRelayClient>();
 builder.Services.AddSingleton<ZoomRelayService>();
+builder.Services.AddSingleton<ZoomRelaySettingsStore>();
 builder.Services.AddHostedService<ZoomRelayBackgroundService>();
 builder.Services.AddSingleton<ZoomRecoveryService>();
 builder.Services.AddHostedService<ZoomRecoveryBackgroundService>();

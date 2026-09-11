@@ -107,7 +107,8 @@ function harness({ autoConfirm = true } = {}) {
       renameZoomParticipant, renderBoard, beginBusy, endBusy, renderParticipants,
       setPersonExcluded, setPersonReview, matchConnection, reviewConnection, meetingScope,
       renderFreshness, renderReadiness, renderModeControls, applyAutoRefresh, applyConnectionMode,
-      updateParsedCount, confidenceInfo, exportCsv, renderGroupOptions, applyGroup, installUpdate };
+      updateParsedCount, confidenceInfo, exportCsv, renderGroupOptions, applyGroup, installUpdate,
+      loadRelaySettings, saveRelaySettings, createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy };
   })();`);
   vm.runInContext(instrumented, context, { filename: 'app.js' });
   const dashboard = context.dashboard;
@@ -733,4 +734,126 @@ test('duplicate person is an accessible button that clears filters, expands, foc
   assert.equal(h.document.activeElement.dataset.focusKey, 'row:roster:a');
   assert.equal(h.document.activeElement.getAttribute('aria-expanded'), 'true');
   assert.equal(h.document.activeElement.scrolledIntoView, true);
+});
+
+const activeRelay = { configured: true, baseUrl: 'https://old.example/', restartRequired: false };
+const pendingRelay = { configured: true, baseUrl: 'https://new.example/', restartRequired: true };
+async function loadRelay(h, settings = activeRelay) {
+  const operation = h.loadRelaySettings();
+  await respond(h.requests.at(-1), settings); await operation;
+}
+
+test('initial settings read prevents pairing through an old active URL before pending state is known', async () => {
+  const h = harness(); h.state.zoomApp = { homeUrl: 'https://old.example/' };
+  h.renderZoomAppStrip();
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  await h.createPairingCode();
+  assert.equal(h.requests.length, 0);
+  await loadRelay(h, pendingRelay);
+  assert.equal(h.el.relayBaseUrl.value, pendingRelay.baseUrl);
+  assert.match(h.el.relaySettingsNote.textContent, /완전히 종료.*새 페어링 코드/);
+  await h.createPairingCode();
+  assert.equal(h.requests.length, 1);
+});
+
+test('saved endpoint clears stale code and status polling cannot restore pairing until restart', async () => {
+  const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl };
+  await loadRelay(h);
+  h.state.pairing = { code: '123456' };
+  h.el.relayBaseUrl.value = pendingRelay.baseUrl;
+  const save = h.saveRelaySettings();
+  await respond(h.requests.at(-1), pendingRelay); await save;
+  assert.equal(h.state.pairing, null);
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.doesNotMatch(h.el.pairingCode.textContent, /1 2 3 4 5 6/);
+  const poll = h.checkZoomConnection(false);
+  await respond(h.requests.at(-1), { zoomApp: { homeUrl: activeRelay.baseUrl, pairingCodeExpiresAt: '2099-01-01T00:00:00Z' } }); await poll;
+  assert.equal(h.state.pairing, null);
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  const before = h.requests.length;
+  await h.createPairingCode(); assert.equal(h.requests.length, before);
+  // A new page/process receives the applied endpoint without a pending restart.
+  const restarted = harness(); restarted.state.zoomApp = { homeUrl: pendingRelay.baseUrl };
+  await loadRelay(restarted, { ...pendingRelay, restartRequired: false });
+  assert.equal(restarted.el.btnCreatePairingCode.disabled, false);
+});
+
+test('unconfigured relay preserves direct HTTPS pairing, while disabled relay with pending enable blocks it', async () => {
+  const h = harness(); h.state.zoomApp = { homeUrl: 'https://direct.example/' };
+  await loadRelay(h, { configured: false, baseUrl: '', restartRequired: false });
+  assert.equal(h.el.btnCreatePairingCode.disabled, false);
+  const code = h.createPairingCode();
+  assert.equal(h.requests.at(-1).url, '/api/zoom-app/pairing-code');
+  await respond(h.requests.at(-1), { code: '654321', homeUrl: 'https://direct.example/' }); await code;
+  assert.equal(h.state.pairing.code, '654321');
+  assert.equal(h.state.pending, 0);
+  await loadRelay(h, { ...pendingRelay, configured: false });
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.equal(h.state.pairing, null);
+});
+
+test('overlapping loads and saves cannot erase newly saved relay settings or submit concurrent writes', async () => {
+  const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl };
+  await loadRelay(h);
+  const staleLoad = h.loadRelaySettings(); const staleRequest = h.requests.at(-1);
+  h.el.relayBaseUrl.value = pendingRelay.baseUrl;
+  const save = h.saveRelaySettings(); const saveRequest = h.requests.at(-1);
+  assert.equal(h.el.btnSaveRelayUrl.disabled, true);
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  const count = h.requests.length;
+  await h.saveRelaySettings(); await h.loadRelaySettings();
+  assert.equal(h.requests.length, count);
+  await respond(saveRequest, pendingRelay); await save;
+  await respond(staleRequest, activeRelay); await staleLoad;
+  assert.equal(h.state.relaySettings.baseUrl, pendingRelay.baseUrl);
+  assert.equal(h.el.relayBaseUrl.value, pendingRelay.baseUrl);
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.equal(h.el.btnSaveRelayUrl.disabled, false);
+  const first = h.loadRelaySettings(); const firstRequest = h.requests.at(-1);
+  const second = h.loadRelaySettings(); const secondRequest = h.requests.at(-1);
+  await respond(secondRequest, pendingRelay); await second;
+  await respond(firstRequest, activeRelay); await first;
+  assert.equal(h.state.relaySettings.restartRequired, true);
+});
+
+for (const success of [true, false]) {
+  test(`relay save ${success ? 'success' : 'failure'} releases only its busy token and failure retains prior state`, async () => {
+    const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl }; await loadRelay(h);
+    h.state.pairing = { code: '123456' };
+    const other = h.beginBusy('Other operation');
+    h.el.relayBaseUrl.value = pendingRelay.baseUrl;
+    const save = h.saveRelaySettings();
+    assert.equal(h.state.pending, 2);
+    await respond(h.requests.at(-1), success ? pendingRelay : { title: 'Invalid relay URL' }, success ? 200 : 400); await save;
+    assert.equal(h.state.pending, 1); assert.equal(h.el.busy.hidden, false);
+    assert.equal(h.el.busyText.textContent, 'Other operation');
+    assert.equal(h.el.btnSaveRelayUrl.disabled, false);
+    assert.equal(h.state.relaySettings.baseUrl, success ? pendingRelay.baseUrl : activeRelay.baseUrl);
+    if (!success) {
+      assert.equal(h.state.pairing.code, '123456');
+      assert.equal(h.el.btnCreatePairingCode.disabled, false);
+    }
+    h.endBusy(other); assert.equal(h.state.pending, 0);
+  });
+}
+
+test('client-invalid save leaves previous relay and code state intact without a request', async () => {
+  const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl }; await loadRelay(h);
+  h.state.pairing = { code: '123456' }; h.el.relayBaseUrl.value = 'http://invalid.example/';
+  const count = h.requests.length; await h.saveRelaySettings();
+  assert.equal(h.requests.length, count); assert.equal(h.state.pending, 0);
+  assert.equal(h.state.relaySettings.baseUrl, activeRelay.baseUrl);
+  assert.equal(h.state.pairing.code, '123456');
+});
+
+test('pairing response started before endpoint save cannot redisplay an obsolete code', async () => {
+  const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl }; await loadRelay(h);
+  const code = h.createPairingCode(); const codeRequest = h.requests.at(-1);
+  h.el.relayBaseUrl.value = pendingRelay.baseUrl;
+  const save = h.saveRelaySettings();
+  await respond(h.requests.at(-1), pendingRelay); await save;
+  assert.equal(h.state.pending, 1);
+  await respond(codeRequest, { code: '123456', homeUrl: activeRelay.baseUrl }); await code;
+  assert.equal(h.state.pairing, null); assert.equal(h.state.pending, 0);
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
 });
