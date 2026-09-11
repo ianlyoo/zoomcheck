@@ -216,7 +216,7 @@
 
             <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*" RowSpacing="20">
                 <Border Classes="card">
-                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="18">
+                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="18">
                         <StackPanel Spacing="4">
                             <TextBlock Classes="sectionTitle" Text="Operator controls"/>
                             <TextBlock Classes="sectionHint"
@@ -328,6 +328,45 @@
                                 <TextBlock Grid.Column="3" Classes="helperCopy" Text="sec" VerticalAlignment="Center"/>
                             </Grid>
                         </Border>
+
+                        <Expander Grid.Row="5"
+                                  HorizontalAlignment="Stretch"
+                                  IsExpanded="False"
+                                  Header="Fallback · paste participant list manually">
+                            <StackPanel Spacing="10">
+                                <TextBlock Classes="helperCopy"
+                                           Text="Use this only when Zoom's participant panel cannot be read (UIA failure, unexpected Zoom version, or long lists that scroll out of view). Select the names in Zoom's participant panel, copy them, and paste one participant per line. Blank lines and duplicates are ignored."
+                                           TextWrapping="Wrap"/>
+
+                                <TextBox Text="{Binding ManualSnapshotText}"
+                                         AcceptsReturn="True"
+                                         TextWrapping="NoWrap"
+                                         MinHeight="120"
+                                         MaxHeight="220"
+                                         VerticalContentAlignment="Top"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                         Watermark="One participant name per line"/>
+
+                                <TextBlock Classes="helperCopy"
+                                           Text="{Binding ManualSnapshotPreview}"
+                                           TextWrapping="Wrap"/>
+
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                                    <Button Classes="actionSecondary"
+                                            Content="Submit pasted snapshot"
+                                            Command="{Binding SubmitManualSnapshotCommand}"/>
+                                    <Button Grid.Column="1"
+                                            Classes="actionGhost"
+                                            Content="Clear"
+                                            Command="{Binding ClearManualSnapshotCommand}"/>
+                                </Grid>
+
+                                <TextBlock Classes="helperCopy"
+                                           Text="{Binding ManualSnapshotStatus}"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Expander>
                     </Grid>
                 </Border>
 

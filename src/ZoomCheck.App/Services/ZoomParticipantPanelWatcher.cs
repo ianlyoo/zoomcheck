@@ -2,20 +2,25 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
 using FlaUI.UIA3;
 using ZoomCheck.App.Models;
-using ZoomCheck.Core.Enums;
 using ZoomCheck.Core.Services;
 
 namespace ZoomCheck.App.Services;
 
 public sealed class ZoomParticipantPanelWatcher : IParticipantPanelWatcher
 {
+    private static readonly HashSet<string> ZoomProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Zoom",
+        "CptHost"
+    };
+
     private static readonly HashSet<string> IgnoredNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Participants",
@@ -29,12 +34,18 @@ public sealed class ZoomParticipantPanelWatcher : IParticipantPanelWatcher
         "Co-Host"
     };
 
+    private static readonly Regex ParticipantCountRegex = new(
+        @"(?:participants?|참가자)\D{0,10}(?<count>\d{1,5})|(?<count>\d{1,5})\D{0,10}(?:participants?|참가자)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RoleSuffixRegex = new(
+        @"\s*\((?=[^)]*(?:co-?host|host|me|공동\s*호스트|호스트|나))[^)]*\)\s*$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     private readonly BackendApiClient _apiClient;
-    private readonly object _sync = new();
-    private readonly Dictionary<string, string> _activeParticipants = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, int> _missingCounts = new(StringComparer.Ordinal);
     private readonly TimeSpan _scanInterval = TimeSpan.FromSeconds(2);
     private CancellationTokenSource? _monitoringCts;
+    private Task? _monitoringTask;
 
     public ZoomParticipantPanelWatcher(BackendApiClient apiClient)
     {
@@ -53,60 +64,79 @@ public sealed class ZoomParticipantPanelWatcher : IParticipantPanelWatcher
             return Task.FromResult(UpdateStatus(false, false, 0, "Zoom participant capture is only available on Windows."));
         }
 
-        var participants = ExtractVisibleParticipants();
-        if (participants.Count == 0)
+        var capture = CaptureParticipantSnapshot();
+        if (!capture.Success)
         {
-            return Task.FromResult(UpdateStatus(false, false, 0, "Could not read the Zoom participant panel. Open Participants in Zoom and keep the Zoom window visible, then try again."));
+            return Task.FromResult(UpdateStatus(false, false, capture.Names.Count, capture.Message, actionSucceeded: false));
         }
 
-        lock (_sync)
-        {
-            _activeParticipants.Clear();
-            _missingCounts.Clear();
-        }
-
-        return Task.FromResult(UpdateStatus(true, false, participants.Count, $"Attached to Zoom. {participants.Count} visible participant row(s) detected."));
+        return Task.FromResult(UpdateStatus(
+            true,
+            false,
+            capture.Names.Count,
+            $"Attached to Zoom. All {capture.ExpectedCount} participant row(s) were read and verified.",
+            actionSucceeded: true));
     }
 
     public async Task<ParticipantPanelActionResult> ScanOnceAsync(string meetingId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(meetingId))
         {
-            return UpdateStatus(CurrentStatus.IsAttached, CurrentStatus.IsMonitoring, CurrentStatus.VisibleParticipantCount, "Enter a meeting ID before scanning the participant panel.");
+            return UpdateStatus(
+                CurrentStatus.IsAttached,
+                CurrentStatus.IsMonitoring,
+                CurrentStatus.VisibleParticipantCount,
+                "Enter a meeting ID before scanning the participant panel.",
+                actionSucceeded: false);
         }
 
-        var participants = ExtractVisibleParticipants();
-        if (participants.Count == 0)
+        var capture = CaptureParticipantSnapshot();
+        if (!capture.Success)
         {
-            return UpdateStatus(false, CurrentStatus.IsMonitoring, 0, "No participant names could be read. Keep the Zoom participants panel open and visible.");
+            return UpdateStatus(
+                CurrentStatus.IsAttached,
+                CurrentStatus.IsMonitoring,
+                capture.Names.Count,
+                capture.Message,
+                actionSucceeded: false);
         }
 
-        var events = BuildParticipantEvents(participants);
-        if (events.Count > 0)
-        {
-            await _apiClient.PostParticipantEventsAsync(meetingId, events, cancellationToken);
-        }
+        var result = await _apiClient.PostParticipantSnapshotAsync(
+            meetingId,
+            capture.Names,
+            source: BackendApiClient.OperatorParticipantSnapshotSource,
+            cancellationToken);
+        var changeCount = result.JoinedNames.Count + result.LeftNames.Count;
+        var message = changeCount == 0
+            ? $"Participant panel scanned. All {result.PresentCount} participant row(s) were verified; no changes detected."
+            : $"Participant panel scanned. {result.PresentCount} present, {result.JoinedNames.Count} joined, and {result.LeftNames.Count} left.";
 
-        var message = events.Count == 0
-            ? $"Participant panel scanned. {participants.Count} visible row(s) read; no join/leave changes detected."
-            : $"Participant panel scanned. {participants.Count} visible row(s) read and {events.Count} attendance change(s) recorded.";
-
-        return UpdateStatus(true, CurrentStatus.IsMonitoring, participants.Count, message);
+        return UpdateStatus(true, CurrentStatus.IsMonitoring, result.PresentCount, message, actionSucceeded: true);
     }
 
     public async Task<ParticipantPanelActionResult> StartMonitoringAsync(string meetingId, CancellationToken cancellationToken = default)
     {
+        await StopMonitoringAsync();
+        if (string.IsNullOrWhiteSpace(meetingId))
+        {
+            return UpdateStatus(
+                CurrentStatus.IsAttached,
+                false,
+                CurrentStatus.VisibleParticipantCount,
+                "Enter a meeting ID before starting participant monitoring.",
+                actionSucceeded: false);
+        }
+
         var attachResult = await AttachAsync(cancellationToken);
         if (!attachResult.Success)
         {
             return attachResult;
         }
 
-        await StopMonitoringAsync();
         _monitoringCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var loopToken = _monitoringCts.Token;
 
-        _ = Task.Run(async () =>
+        _monitoringTask = Task.Run(async () =>
         {
             while (!loopToken.IsCancellationRequested)
             {
@@ -114,8 +144,18 @@ public sealed class ZoomParticipantPanelWatcher : IParticipantPanelWatcher
                 {
                     await ScanOnceAsync(meetingId, loopToken);
                 }
-                catch
+                catch (OperationCanceledException) when (loopToken.IsCancellationRequested)
                 {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    UpdateStatus(
+                        CurrentStatus.IsAttached,
+                        true,
+                        CurrentStatus.VisibleParticipantCount,
+                        $"Participant monitoring error: {ex.Message}",
+                        actionSucceeded: false);
                 }
 
                 try
@@ -127,22 +167,37 @@ public sealed class ZoomParticipantPanelWatcher : IParticipantPanelWatcher
                     break;
                 }
             }
-        }, loopToken);
+        });
 
-        return UpdateStatus(true, true, CurrentStatus.VisibleParticipantCount, "Monitoring started. ZoomCheck will keep reading the participant panel and recording join/leave changes.");
+        return UpdateStatus(true, true, CurrentStatus.VisibleParticipantCount, "Monitoring started. ZoomCheck will submit only complete, count-verified participant snapshots.", actionSucceeded: true);
     }
 
-    public Task StopMonitoringAsync()
+    public async Task StopMonitoringAsync()
     {
-        if (_monitoringCts is not null)
+        var monitoringCts = _monitoringCts;
+        var monitoringTask = _monitoringTask;
+        _monitoringCts = null;
+        _monitoringTask = null;
+
+        if (monitoringCts is null)
         {
-            _monitoringCts.Cancel();
-            _monitoringCts.Dispose();
-            _monitoringCts = null;
+            return;
         }
 
-        UpdateStatus(CurrentStatus.IsAttached, false, CurrentStatus.VisibleParticipantCount, "Monitoring stopped. You can scan manually or start monitoring again.");
-        return Task.CompletedTask;
+        monitoringCts.Cancel();
+        if (monitoringTask is not null)
+        {
+            try
+            {
+                await monitoringTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        monitoringCts.Dispose();
+        UpdateStatus(CurrentStatus.IsAttached, false, CurrentStatus.VisibleParticipantCount, "Monitoring stopped. You can scan manually or start monitoring again.", actionSucceeded: true);
     }
 
     public async ValueTask DisposeAsync()
@@ -150,81 +205,19 @@ public sealed class ZoomParticipantPanelWatcher : IParticipantPanelWatcher
         await StopMonitoringAsync();
     }
 
-    private List<ObservedParticipantEventRequest> BuildParticipantEvents(IReadOnlyList<string> participants)
-    {
-        var now = DateTimeOffset.UtcNow;
-        var snapshot = participants
-            .Select(name => new { Raw = name, Normalized = NameNormalizer.Normalize(name) })
-            .Where(item => !string.IsNullOrWhiteSpace(item.Normalized))
-            .GroupBy(item => item.Normalized)
-            .Select(group => group.First())
-            .ToList();
-
-        var currentKeys = snapshot.Select(item => item.Normalized).ToHashSet(StringComparer.Ordinal);
-        var events = new List<ObservedParticipantEventRequest>();
-
-        lock (_sync)
-        {
-            foreach (var item in snapshot)
-            {
-                if (_activeParticipants.TryAdd(item.Normalized, item.Raw))
-                {
-                    events.Add(new ObservedParticipantEventRequest(
-                        ParticipantEventType.Joined,
-                        item.Raw,
-                        null,
-                        "panel-uia",
-                        JsonSerializer.Serialize(new { source = "panel-uia", mode = "join", visibleParticipants = participants.Count }),
-                        now));
-                }
-
-                _activeParticipants[item.Normalized] = item.Raw;
-                _missingCounts.Remove(item.Normalized);
-            }
-
-            foreach (var existing in _activeParticipants.Keys.ToList())
-            {
-                if (currentKeys.Contains(existing))
-                {
-                    continue;
-                }
-
-                var missingCount = _missingCounts.TryGetValue(existing, out var current) ? current + 1 : 1;
-                _missingCounts[existing] = missingCount;
-
-                if (missingCount < 2)
-                {
-                    continue;
-                }
-
-                var displayName = _activeParticipants[existing];
-                events.Add(new ObservedParticipantEventRequest(
-                    ParticipantEventType.Left,
-                    displayName,
-                    null,
-                    "panel-uia",
-                    JsonSerializer.Serialize(new { source = "panel-uia", mode = "left", visibleParticipants = participants.Count }),
-                    now));
-
-                _activeParticipants.Remove(existing);
-                _missingCounts.Remove(existing);
-            }
-        }
-
-        return events;
-    }
-
-    private List<string> ExtractVisibleParticipants()
+    private ParticipantPanelCapture CaptureParticipantSnapshot()
     {
         if (!OperatingSystem.IsWindows())
         {
-            return new List<string>();
+            return ParticipantPanelCapture.Failed("Zoom participant capture is only available on Windows.");
         }
 
+        var currentProcessId = Environment.ProcessId;
+        string? bestFailure = null;
         using var automation = new UIA3Automation();
         foreach (var process in Process.GetProcesses().Where(process => process.MainWindowHandle != IntPtr.Zero))
         {
-            if (!process.ProcessName.Contains("zoom", StringComparison.OrdinalIgnoreCase))
+            if (process.Id == currentProcessId || !ZoomProcessNames.Contains(process.ProcessName))
             {
                 continue;
             }
@@ -232,32 +225,77 @@ public sealed class ZoomParticipantPanelWatcher : IParticipantPanelWatcher
             try
             {
                 var window = automation.FromHandle(process.MainWindowHandle).AsWindow();
-                var candidates = window.FindAllDescendants()
-                    .Where(element => element.ControlType is ControlType.ListItem or ControlType.Text)
-                    .Select(element => element.Name?.Trim())
+                var descendants = window.FindAllDescendants();
+                var candidates = descendants
+                    .Where(element => element.ControlType == ControlType.ListItem)
+                    .Select(element => CleanParticipantName(element.Name))
                     .Where(ShouldKeepName)
                     .Cast<string>()
-                    .Distinct(StringComparer.Ordinal)
+                    .GroupBy(NameNormalizer.Normalize, StringComparer.Ordinal)
+                    .Select(group => group.First())
                     .ToList();
+                var expectedCount = ParseExpectedParticipantCount(
+                    descendants.Select(element => element.Name).Append(window.Name));
 
-                if (candidates.Count > 0)
+                if (expectedCount is null)
                 {
-                    return candidates;
+                    bestFailure = "Zoom was found, but its total participant count could not be verified. Keep the Participants panel docked and visible, or use the manual paste fallback.";
+                    continue;
                 }
+
+                if (candidates.Count != expectedCount.Value)
+                {
+                    bestFailure = $"Zoom reports {expectedCount.Value} participants, but ZoomCheck safely read {candidates.Count}. Expand the docked Participants panel until every row is visible, or use the manual paste fallback. No attendance changes were recorded.";
+                    continue;
+                }
+
+                return ParticipantPanelCapture.Verified(candidates, expectedCount.Value);
             }
-            catch
+            catch (Exception ex)
             {
+                bestFailure = $"Zoom was found, but its Participants panel could not be read: {ex.Message}";
             }
         }
 
-        return new List<string>();
+        return ParticipantPanelCapture.Failed(
+            bestFailure ?? "Could not find a readable Zoom Workplace window. Open and dock the Participants panel, keep the Zoom window visible, then try again.");
     }
 
-    private ParticipantPanelActionResult UpdateStatus(bool isAttached, bool isMonitoring, int visibleParticipantCount, string message)
+    private ParticipantPanelActionResult UpdateStatus(
+        bool isAttached,
+        bool isMonitoring,
+        int visibleParticipantCount,
+        string message,
+        bool? actionSucceeded = null)
     {
         CurrentStatus = new ParticipantPanelStatus(isAttached, isMonitoring, visibleParticipantCount, message, DateTimeOffset.Now);
         StatusChanged?.Invoke(this, CurrentStatus);
-        return new ParticipantPanelActionResult(isAttached || CurrentStatus.IsAttached, visibleParticipantCount, message);
+        return new ParticipantPanelActionResult(actionSucceeded ?? isAttached, visibleParticipantCount, message);
+    }
+
+    private static int? ParseExpectedParticipantCount(IEnumerable<string?> labels)
+    {
+        foreach (var label in labels.Where(label => !string.IsNullOrWhiteSpace(label)))
+        {
+            var match = ParticipantCountRegex.Match(label!);
+            if (match.Success && int.TryParse(match.Groups["count"].Value, out var count))
+            {
+                return count;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? CleanParticipantName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        var singleLine = name.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return RoleSuffixRegex.Replace(singleLine, string.Empty).Trim();
     }
 
     private static bool ShouldKeepName(string? name)
@@ -278,15 +316,19 @@ public sealed class ZoomParticipantPanelWatcher : IParticipantPanelWatcher
             return false;
         }
 
-        if (trimmed.Contains("participant", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Contains("invite", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Contains("mute", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Contains("chat", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Contains("reaction", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
         return true;
+    }
+
+    private sealed record ParticipantPanelCapture(
+        bool Success,
+        IReadOnlyList<string> Names,
+        int? ExpectedCount,
+        string Message)
+    {
+        public static ParticipantPanelCapture Verified(IReadOnlyList<string> names, int expectedCount)
+            => new(true, names, expectedCount, string.Empty);
+
+        public static ParticipantPanelCapture Failed(string message)
+            => new(false, Array.Empty<string>(), null, message);
     }
 }

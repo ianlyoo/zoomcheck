@@ -1,0 +1,13 @@
+.git
+.github
+.playwright-cli
+**/bin
+**/obj
+dist
+output
+data
+*.db
+*.log
+*.xlsx
+*.xls
+*.csv

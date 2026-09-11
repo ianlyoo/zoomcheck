@@ -13,6 +13,8 @@ namespace ZoomCheck.App.Services;
 
 public sealed class BackendApiClient
 {
+    public const string OperatorParticipantSnapshotSource = "operator-participant-snapshot";
+
     private readonly HttpClient _httpClient;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -78,6 +80,37 @@ public sealed class BackendApiClient
         response.EnsureSuccessStatusCode();
     }
 
+    public async Task<ParticipantSnapshotResult> PostParticipantSnapshotAsync(
+        string meetingId,
+        IReadOnlyList<string> participantNames,
+        string source = OperatorParticipantSnapshotSource,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new ParticipantSnapshotRequest(participantNames, source, DateTimeOffset.UtcNow);
+        using var content = JsonContent.Create(request, options: _jsonOptions);
+        var response = await _httpClient.PostAsync(
+            $"api/meetings/{Uri.EscapeDataString(meetingId)}/participant-snapshot",
+            content,
+            cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(body)
+                    ? $"Snapshot submit failed with status {(int)response.StatusCode}."
+                    : $"Snapshot submit failed with status {(int)response.StatusCode}: {body}");
+        }
+
+        var result = await response.Content.ReadFromJsonAsync<ParticipantSnapshotResult>(_jsonOptions, cancellationToken);
+        if (result?.Board is null)
+        {
+            throw new InvalidOperationException("Snapshot response did not include an attendance board.");
+        }
+
+        return result;
+    }
+
     public async Task<bool> IsHealthyAsync(CancellationToken cancellationToken = default)
     {
         var response = await _httpClient.GetAsync("health", cancellationToken);
@@ -131,3 +164,8 @@ public sealed record ObservedParticipantEventRequest(
     string Source,
     string RawPayload,
     DateTimeOffset? OccurredAt);
+
+public sealed record ParticipantSnapshotRequest(
+    IReadOnlyList<string> ParticipantNames,
+    string Source,
+    DateTimeOffset? CapturedAt);

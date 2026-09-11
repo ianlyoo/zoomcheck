@@ -27,6 +27,11 @@ public sealed class ZoomOAuthTokenService
 
     public DateTimeOffset? ExpiresAt => _expiresAt;
 
+    public bool HasUsableCachedToken =>
+        !string.IsNullOrWhiteSpace(_accessToken)
+        && _expiresAt is not null
+        && _expiresAt > DateTimeOffset.UtcNow.AddMinutes(1);
+
     public async Task<string?> TryGetAccessTokenAsync(CancellationToken cancellationToken = default)
     {
         if (!IsConfigured)
@@ -60,7 +65,11 @@ public sealed class ZoomOAuthTokenService
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw new ZoomOAuthException(response.StatusCode, responseBody);
+            }
 
             var payload = await response.Content.ReadFromJsonAsync<ZoomOAuthTokenResponse>(cancellationToken: cancellationToken)
                 ?? throw new InvalidOperationException("Zoom OAuth token response was empty.");
@@ -86,4 +95,21 @@ public sealed class ZoomOAuthTokenService
 
     private static bool HasConfiguredValue(string? value)
         => !string.IsNullOrWhiteSpace(value) && !value.StartsWith("replace-with-your-", StringComparison.OrdinalIgnoreCase);
+}
+
+public sealed class ZoomOAuthException : Exception
+{
+    public ZoomOAuthException(System.Net.HttpStatusCode statusCode, string responseBody)
+        : base($"Zoom OAuth token request returned HTTP {(int)statusCode}.")
+    {
+        StatusCode = statusCode;
+        ResponseBody = responseBody;
+    }
+
+    public System.Net.HttpStatusCode StatusCode { get; }
+
+    public string ResponseBody { get; }
+
+    public string UserMessage =>
+        $"Zoom returned HTTP {(int)StatusCode}. Verify Account ID, Client ID, Client Secret, and that the Server-to-Server OAuth app is activated.";
 }

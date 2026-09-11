@@ -65,7 +65,9 @@ public sealed class AttendanceMatcher
 
         if (left.Contains(right, StringComparison.Ordinal) || right.Contains(left, StringComparison.Ordinal))
         {
-            return 0.8;
+            // Very short Korean names are especially collision-prone (for example 김민 -> 김민수/김민지).
+            // Do not auto-attach a participant to a two-character substring.
+            return Math.Min(left.Length, right.Length) < 3 ? 0 : 0.8;
         }
 
         var distance = LevenshteinDistance(left, right);

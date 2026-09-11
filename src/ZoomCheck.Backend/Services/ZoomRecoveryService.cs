@@ -10,6 +10,9 @@ namespace ZoomCheck.Backend.Services;
 
 public sealed class ZoomRecoveryService
 {
+    internal const string NotConfiguredWarning =
+        "Zoom Server-to-Server OAuth is not configured. Set Zoom:ClientId, Zoom:ClientSecret, and Zoom:AccountId to enable late-start recovery.";
+
     private readonly ZoomApiClient _zoomApiClient;
     private readonly AttendanceApplicationService _attendanceService;
     private readonly ZoomRecoveryOptions _recoveryOptions;
@@ -42,6 +45,22 @@ public sealed class ZoomRecoveryService
 
         try
         {
+            // Guard before any outbound call. Without this, an unconfigured deployment
+            // still resolved the fallback "me" user and issued /users/me/meetings, which
+            // failed with 401 and was reported as a Zoom error rather than as missing
+            // configuration. This is a configuration state, not a failure, so Error stays null.
+            if (!_zoomApiClient.IsConfigured)
+            {
+                return RecordResult(new ZoomRecoveryResult(
+                    Executed: false,
+                    UsersDiscovered: 0,
+                    MeetingsDiscovered: 0,
+                    AddedParticipants: 0,
+                    Meetings: Array.Empty<RecoveredMeetingResult>(),
+                    Warnings: new[] { NotConfiguredWarning },
+                    Error: null));
+            }
+
             var userIds = await ResolveUserIdsAsync(cancellationToken);
             if (userIds.Count == 0)
             {

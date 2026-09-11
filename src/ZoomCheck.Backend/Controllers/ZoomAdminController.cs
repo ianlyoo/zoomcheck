@@ -25,17 +25,8 @@ public sealed class ZoomAdminController : ControllerBase
     }
 
     [HttpGet("settings-status")]
-    public async Task<ActionResult<ZoomSettingsStatusResponse>> GetSettingsStatus(CancellationToken cancellationToken)
+    public ActionResult<ZoomSettingsStatusResponse> GetSettingsStatus()
     {
-        string? token = null;
-        try
-        {
-            token = await _tokenService.TryGetAccessTokenAsync(cancellationToken);
-        }
-        catch
-        {
-            token = null;
-        }
         var missingFields = new List<string>();
 
         if (!HasConfiguredValue(_options.WebhookSecretToken))
@@ -61,7 +52,7 @@ public sealed class ZoomAdminController : ControllerBase
         return Ok(new ZoomSettingsStatusResponse(
             WebhookSecretConfigured: HasConfiguredValue(_options.WebhookSecretToken),
             OAuthConfigured: _tokenService.IsConfigured,
-            TokenAvailable: !string.IsNullOrWhiteSpace(token),
+            TokenAvailable: _tokenService.HasUsableCachedToken,
             TokenExpiresAt: _tokenService.ExpiresAt,
             MissingFields: missingFields.ToArray()));
     }

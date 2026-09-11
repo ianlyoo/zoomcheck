@@ -8,6 +8,8 @@
     <PackageReference Include="ExcelDataReader" Version="3.8.0" />
     <PackageReference Include="ExcelDataReader.DataSet" Version="3.8.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.5" />
+    <!-- Override the vulnerable native SQLite 2.1.11 dependency without changing the provider API. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
   </ItemGroup>
 
   <PropertyGroup>

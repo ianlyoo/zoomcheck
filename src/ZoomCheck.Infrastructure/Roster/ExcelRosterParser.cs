@@ -1,4 +1,5 @@
 using System.Data;
+using System.Security.Cryptography;
 using System.Text;
 using ExcelDataReader;
 using ZoomCheck.Core.Models;
@@ -8,11 +9,29 @@ namespace ZoomCheck.Infrastructure.Roster;
 
 public sealed class ExcelRosterParser
 {
+    /// <summary>
+    /// Group header names in priority order. The first header present in the sheet wins, so a
+    /// roster carrying both "조" and "반" is read as 조. Matching is exact on the trimmed header
+    /// text, which keeps "분반" from being mistaken for "반".
+    /// </summary>
+    private static readonly string[] GroupColumnNames = { "조", "분반", "그룹", "팀", "반" };
+
     public RosterImportResult Parse(string filePath)
     {
+        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        return Parse(stream, Path.GetFullPath(filePath), Path.GetFileName(filePath));
+    }
+
+    public RosterImportResult Parse(Stream stream, string sourcePath, string displayName)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (!stream.CanRead)
+        {
+            throw new ArgumentException("Roster stream must be readable.", nameof(stream));
+        }
+
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         using var reader = ExcelReaderFactory.CreateReader(stream);
         var dataSet = reader.AsDataSet();
         var table = dataSet.Tables.Cast<DataTable>().FirstOrDefault(IsRosterTable)
@@ -35,23 +54,33 @@ public sealed class ExcelRosterParser
             var phone = NormalizePhone(GetValue(row, columns, "연락처"));
             var organization = GetValue(row, columns, "소속기관");
             var sequence = GetValue(row, columns, "번호");
+            var group = NormalizeWhitespace(GetGroupValue(row, columns));
             var aliases = BuildAliases(name, email, phone, organization);
 
+            // The group is deliberately excluded from the id key: regrouping people between
+            // imports must not orphan their attendance history.
+            var personId = BuildStablePersonId(sequence, NameNormalizer.Normalize(name));
+            if (people.Any(person => string.Equals(person.Id, personId, StringComparison.Ordinal)))
+            {
+                personId = BuildStablePersonId(sequence, $"{NameNormalizer.Normalize(name)}|{rowIndex}");
+            }
+
             people.Add(new RosterPerson(
-                Id: Guid.NewGuid().ToString("N"),
+                Id: personId,
                 Sequence: sequence,
                 Name: name.Trim(),
                 NormalizedName: NameNormalizer.Normalize(name),
                 Email: email,
                 Phone: phone,
                 Organization: organization.Trim(),
-                Aliases: aliases));
+                Aliases: aliases,
+                Group: group));
         }
 
         return new RosterImportResult(
             ImportId: Guid.NewGuid().ToString("N"),
-            SourcePath: Path.GetFullPath(filePath),
-            DisplayName: Path.GetFileName(filePath),
+            SourcePath: sourcePath,
+            DisplayName: displayName,
             ImportedAt: DateTimeOffset.UtcNow,
             People: people);
     }
@@ -106,9 +135,67 @@ public sealed class ExcelRosterParser
             : string.Empty;
     }
 
+    private static string GetGroupValue(DataRow row, IReadOnlyDictionary<string, int> columns)
+    {
+        foreach (var columnName in GroupColumnNames)
+        {
+            if (!columns.TryGetValue(columnName, out var index))
+            {
+                continue;
+            }
+
+            var value = row[index]?.ToString()?.Trim() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Trims and collapses internal whitespace runs to a single space so "1 조" and "1\u00a0\u00a0조"
+    /// group together instead of splitting the board into look-alike groups.
+    /// </summary>
+    private static string NormalizeWhitespace(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        var pendingSpace = false;
+        foreach (var character in value.Trim())
+        {
+            if (char.IsWhiteSpace(character))
+            {
+                pendingSpace = builder.Length > 0;
+                continue;
+            }
+
+            if (pendingSpace)
+            {
+                builder.Append(' ');
+                pendingSpace = false;
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString();
+    }
+
     private static string NormalizePhone(string value)
     {
         return new string(value.Where(char.IsDigit).ToArray());
+    }
+
+    private static string BuildStablePersonId(string sequence, string normalizedName)
+    {
+        var key = $"sequence-name:{sequence.Trim()}|{normalizedName}";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant()[..32];
     }
 
     private static IReadOnlyList<string> BuildAliases(string name, string email, string phone, string organization)
