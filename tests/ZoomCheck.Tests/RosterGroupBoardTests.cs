@@ -211,6 +211,34 @@ public sealed class RosterGroupBoardTests : IAsyncLifetime
             result.Board.People.Single(person => person.RosterPersonId == "p3").AttendanceState);
     }
 
+    [Fact]
+    public async Task Csv_QuotedMultilineFieldsRoundTrip_AndExcludedPeopleStayOmitted()
+    {
+        var person = Person("p1", "1", "Example, \"Guest\"", "Group A") with
+        {
+            Organization = "First line\nSecond line"
+        };
+        await _repository.ReplaceRosterAsync(new RosterImportResult(
+            "csv-fixture", "fixture.xlsx", "fixture.xlsx", DateTimeOffset.UtcNow,
+            new[] { person, Person("p2", "2", "Excluded Guest", "Group A") }));
+        var excluded = (await _service.GetRosterAsync()).Single(item => item.Name == "Excluded Guest");
+        await _service.SetMeetingExclusionAsync(MeetingId, excluded.Id, true);
+
+        var csv = await _service.BuildBoardCsvAsync(MeetingId, " group   a ");
+
+        using var parser = new Microsoft.VisualBasic.FileIO.TextFieldParser(new StringReader(csv));
+        parser.SetDelimiters(",");
+        parser.HasFieldsEnclosedInQuotes = true;
+        var header = parser.ReadFields()!;
+        var row = parser.ReadFields()!;
+        Assert.Equal(12, header.Length);
+        Assert.Equal(header.Length, row.Length);
+        Assert.Equal(person.Name, row[1]);
+        Assert.Equal(person.Organization, row[2]);
+        Assert.Equal("Group A", row[3]);
+        Assert.True(parser.EndOfData);
+    }
+
     private static string[] SplitLines(string csv)
         => csv.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(line => line.TrimEnd('\r'))
