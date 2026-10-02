@@ -295,6 +295,69 @@ public sealed class ParticipantConnectionDetailTests : IAsyncLifetime
         Assert.Equal(2, switched.LeftNames.Count);
     }
 
+    [Fact]
+    public async Task Snapshot_SameConnectorNewKey_IsANewConnection()
+    {
+        await Apply("meeting-1", Connection("zoom-id:old", "이순신"));
+
+        var replaced = await Apply("meeting-1", Connection("zoom-id:new", "이순신"));
+
+        Assert.Equal(new[] { "이순신" }, replaced.JoinedNames);
+        Assert.Equal(new[] { "이순신" }, replaced.LeftNames);
+        Assert.Equal("zoom-id:new", Assert.Single(replaced.Board.CurrentConnections!).PresenceKey);
+    }
+
+    [Fact]
+    public async Task Snapshot_ConnectorSwitch_UsesEmailToDistinguishDuplicateNames()
+    {
+        await Apply("meeting-1",
+            Connection("zoom-id:1", "Guest", "first@example.test"),
+            Connection("zoom-id:2", "Guest", "second@example.test"));
+
+        var switched = await Apply("meeting-1",
+            Connection("zoom-app:2", "Guest", " SECOND@example.test "),
+            Connection("zoom-app:1", "Guest", "FIRST@example.test"));
+
+        Assert.Empty(switched.JoinedNames);
+        Assert.Empty(switched.LeftNames);
+        Assert.Equal(new[] { "zoom-id:1", "zoom-id:2" }, switched.Board.CurrentConnections!
+            .Select(connection => connection.PresenceKey).OrderBy(key => key).ToArray());
+    }
+
+    [Fact]
+    public async Task Snapshot_StructuredParticipantsTakePrecedence_AndFirstIdentityWins()
+    {
+        var snapshot = await _service.ApplyParticipantSnapshotAsync(new ParticipantSnapshotInput(
+            "meeting-1", new[] { "Ignored manual name" }, ZoomSource, DateTimeOffset.UtcNow,
+            Participants: new[]
+            {
+                Connection("zoom-id:1", "이순신"),
+                Connection("zoom-id:1", "Duplicate identity"),
+                Connection(" ", "Missing identity"),
+                Connection("zoom-id:2", " ")
+            }));
+
+        var connection = Assert.Single(snapshot.Board.CurrentConnections!);
+        Assert.Equal("이순신", connection.DisplayName);
+        Assert.Equal("p2", connection.MatchedRosterPersonId);
+        Assert.Equal(new[] { "이순신" }, snapshot.JoinedNames);
+        Assert.Empty(snapshot.IgnoredNames);
+    }
+
+    [Fact]
+    public async Task Board_UnmatchedConnectionCountsIncludeAllEventsForItsNormalizedName()
+    {
+        await Apply("meeting-1", Connection("zoom-id:1", "Guest"), Connection("zoom-id:2", "Guest"));
+
+        var snapshot = await Apply("meeting-1", Connection("zoom-id:2", "Guest"), Connection("zoom-id:3", "Visitor"));
+
+        var guest = Assert.Single(snapshot.Board.UnmatchedParticipants, person => person.ParticipantName == "Guest");
+        Assert.Equal(3, guest.EventCount); // Two joins and the departure of the other Guest connection.
+        Assert.Equal(AttendanceState.Present, guest.AttendanceState);
+        var visitor = Assert.Single(snapshot.Board.UnmatchedParticipants, person => person.ParticipantName == "Visitor");
+        Assert.Equal(1, visitor.EventCount);
+    }
+
     private static ParticipantSnapshotParticipant Connection(string presenceKey, string displayName, string? email = null)
         => new(presenceKey, displayName, email);
 
