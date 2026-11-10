@@ -2,7 +2,7 @@
 
 Windows에서 Excel 명단과 진행 중인 Zoom 회의 참가자를 공식 Zoom API로 대조하는 로컬 웹 대시보드입니다. Business용 Dashboard API와 Pro에서도 사용할 수 있는 회의 내 Zoom App 연결을 함께 지원합니다.
 
-[English](README.md) · [Windows 실회의 테스트](docs/windows-live-test-ko.md) · [MIT License](LICENSE)
+[English](README.md) · [Español](README.es.md) · [Windows 실회의 테스트](docs/windows-live-test-ko.md) · [MIT License](LICENSE)
 
 [![CI](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml)
 [![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)

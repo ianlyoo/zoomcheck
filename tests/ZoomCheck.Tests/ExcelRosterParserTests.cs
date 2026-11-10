@@ -310,4 +310,44 @@ public sealed class ExcelRosterParserTests : IDisposable
         Assert.DoesNotContain("3조", person.Aliases);
         Assert.DoesNotContain(person.Aliases, alias => alias.Contains("3조", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void Parse_ReadsEnglishHeaders_Successfully()
+    {
+        var path = WriteRoster("roster-en.xlsx", new List<string?[]>
+        {
+            new string?[] { "ID", "Name", "Email", "Phone", "Organization", "Group" },
+            new string?[] { "101", "John Doe", "john@example.com", "1234567890", "Acme Corp", "Team A" }
+        }, "Students");
+
+        var result = _parser.Parse(path);
+        var person = Assert.Single(result.People);
+
+        Assert.Equal("101", person.Sequence);
+        Assert.Equal("John Doe", person.Name);
+        Assert.Equal("john@example.com", person.Email);
+        Assert.Equal("1234567890", person.Phone);
+        Assert.Equal("Acme Corp", person.Organization);
+        Assert.Equal("Team A", person.Group);
+    }
+
+    [Fact]
+    public void Parse_ReadsSpanishHeaders_Successfully()
+    {
+        var path = WriteRoster("roster-es.xlsx", new List<string?[]>
+        {
+            new string?[] { "DNI", "Nombre", "Correo", "Teléfono", "Institución", "Comisión" },
+            new string?[] { "202", "Juan Pérez", "juan@ejemplo.com", "011-4321-8765", "Universidad de Buenos Aires", "Comisión 1" }
+        }, "Alumnos");
+
+        var result = _parser.Parse(path);
+        var person = Assert.Single(result.People);
+
+        Assert.Equal("202", person.Sequence);
+        Assert.Equal("Juan Pérez", person.Name);
+        Assert.Equal("juan@ejemplo.com", person.Email);
+        Assert.Equal("01143218765", person.Phone);
+        Assert.Equal("Universidad de Buenos Aires", person.Organization);
+        Assert.Equal("Comisión 1", person.Group);
+    }
 }

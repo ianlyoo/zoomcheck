@@ -2,7 +2,7 @@
 
 Windows web dashboard that compares an Excel roster with a live Zoom meeting through either the Business Dashboard API or an in-meeting Zoom App bridge suitable for Pro accounts.
 
-[한국어](README.ko.md) · [Operator guide](docs/windows-operator-guide.md) · [MIT License](LICENSE)
+[한국어](README.ko.md) · [Español](README.es.md) · [Operator guide](docs/windows-operator-guide.md) · [MIT License](LICENSE)
 
 [![CI](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml)
 [![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)
@@ -12,8 +12,9 @@ ZoomCheck does not scrape the participant panel or automate Zoom UI. Business ac
 
 ## Features
 
-- Excel `.xlsx`/`.xls` upload from the browser
-- Roster group columns (`조`, `분반`, `그룹`, `팀`, `반`) with scoped totals, search, and CSV export
+- Multi-language dashboard with instant topbar and settings switcher (Korean default, English, and Spanish)
+- Excel `.xlsx`/`.xls` upload supporting multi-lingual headers (Korean, English, and Spanish for Name, ID, Email, Phone, Organization, and Group)
+- Roster group columns (`조`, `분반`, `그룹`, `팀`, `반`, `Group`, `Team`, `Comisión`, `Grupo`) with scoped totals, search, and CSV export
 - Live Zoom participant sync, manual refresh, and 5–600 second auto-sync
 - Email-first matching plus name, alias, and review confidence levels
 - Persistent join/leave activity log and current attendance state

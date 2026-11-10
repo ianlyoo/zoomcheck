@@ -9,6 +9,7 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/ZoomCheck.Backend/wwwroot/app.js'), 'utf8');
+const localesSource = fs.readFileSync(path.join(__dirname, '../src/ZoomCheck.Backend/wwwroot/locales.js'), 'utf8');
 
 class Element {
   constructor(tag = 'div', document = null) {
@@ -100,6 +101,7 @@ function harness({ autoConfirm = true } = {}) {
     clearInterval: id => intervals.delete(id), setTimeout: window.setTimeout,
     fetch: (url, options) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject }))
   });
+  vm.runInContext(localesSource, context, { filename: 'locales.js' });
   // Expose closure members only in this in-memory copy; production has no test hook.
   const instrumented = source.replace(/\}\)\(\);\s*$/, `
     globalThis.dashboard = { state, el, cacheElements, bindEvents, init,
@@ -108,7 +110,8 @@ function harness({ autoConfirm = true } = {}) {
       setPersonExcluded, setPersonReview, matchConnection, reviewConnection, meetingScope,
       renderFreshness, renderReadiness, renderModeControls, applyAutoRefresh, applyConnectionMode,
       updateParsedCount, confidenceInfo, exportCsv, renderGroupOptions, applyGroup, installUpdate,
-      loadRelaySettings, saveRelaySettings, createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy };
+      loadRelaySettings, saveRelaySettings, createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy,
+      applyLanguage, toggleLanguage, t };
   })();`);
   vm.runInContext(instrumented, context, { filename: 'app.js' });
   const dashboard = context.dashboard;
@@ -856,4 +859,46 @@ test('pairing response started before endpoint save cannot redisplay an obsolete
   await respond(codeRequest, { code: '123456', homeUrl: activeRelay.baseUrl }); await code;
   assert.equal(h.state.pairing, null); assert.equal(h.state.pending, 0);
   assert.equal(h.el.btnCreatePairingCode.disabled, true);
+});
+
+test('language switching: updates html lang attribute, labels, and persists to localStorage', async () => {
+  const h = harness();
+  assert.equal(h.state.lang, 'ko');
+  assert.equal(h.t('attendance_rate'), '출석률');
+
+  h.applyLanguage('en');
+  assert.equal(h.state.lang, 'en');
+  assert.equal(h.document.documentElement.lang, 'en');
+  assert.equal(h.t('attendance_rate'), 'Attendance rate');
+  assert.equal(h.el.btnToggleLang.textContent, 'EN');
+
+  h.applyLanguage('es');
+  assert.equal(h.state.lang, 'es');
+  assert.equal(h.document.documentElement.lang, 'es');
+  assert.equal(h.t('attendance_rate'), 'Tasa de asistencia');
+  assert.equal(h.el.btnToggleLang.textContent, 'ES');
+
+  h.toggleLanguage();
+  assert.equal(h.state.lang, 'ko');
+  assert.equal(h.document.documentElement.lang, 'ko');
+  assert.equal(h.el.btnToggleLang.textContent, 'KO');
+});
+
+test('language switching: translates participant status badges in English and Spanish', async () => {
+  const h = harness();
+  const presentRow = { isExcluded: false, attendanceState: 'Present', confidence: 'Verified' };
+  const unmatchedRow = { kind: 'unmatched', confidence: 'Unmatched' };
+
+  // Korean (default)
+  assert.equal(h.confidenceInfo(presentRow).label, '확인됨');
+
+  // English
+  h.applyLanguage('en');
+  assert.equal(h.confidenceInfo(presentRow).label, 'Verified');
+  assert.equal(h.confidenceInfo(unmatchedRow).label, 'Unmatched');
+
+  // Spanish
+  h.applyLanguage('es');
+  assert.equal(h.confidenceInfo(presentRow).label, 'Verificado');
+  assert.equal(h.confidenceInfo(unmatchedRow).label, 'No emparejado');
 });

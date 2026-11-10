@@ -9,8 +9,10 @@
     connectionMode: 'zoomcheck.connectionMode',
     group: 'zoomcheck.groupFilter',
     theme: 'zoomcheck.theme',
-    tutorialSeen: 'zoomcheck.tutorialSeen.v1'
+    tutorialSeen: 'zoomcheck.tutorialSeen.v1',
+    lang: 'zoomcheck.lang'
   };
+  var SUPPORTED_LANGS = ['ko', 'en', 'es'];
   var CONNECTION_MODES = ['auto', 'business', 'zoomApp', 'manual'];
   var THEME_OPTIONS = ['system', 'light', 'dark'];
   var MODE_LABEL = {
@@ -36,7 +38,48 @@
     NameChanged: '이름 변경'
   };
 
+  function getLocales() {
+    return (typeof ZOOMCHECK_LOCALES !== 'undefined' ? ZOOMCHECK_LOCALES : null) ||
+           (typeof globalThis !== 'undefined' && globalThis.ZOOMCHECK_LOCALES) ||
+           (typeof window !== 'undefined' && window.ZOOMCHECK_LOCALES) || null;
+  }
+
+  function t(key, params) {
+    var locales = getLocales();
+    if (!locales) {
+      return key;
+    }
+    var currentLang = (state && state.lang) || 'ko';
+    var dict = locales[currentLang] || locales.ko || {};
+    var text = dict[key] !== undefined ? dict[key] : ((locales.ko && locales.ko[key]) !== undefined ? locales.ko[key] : key);
+    if (params && typeof params === 'object') {
+      for (var p in params) {
+        if (Object.prototype.hasOwnProperty.call(params, p)) {
+          text = text.replace(new RegExp('\\{' + p + '\\}', 'g'), String(params[p]));
+        }
+      }
+    }
+    return text;
+  }
+
+  function getModeLabel(mode) {
+    var key = 'mode_' + mode;
+    var val = t(key);
+    return (val && val !== key) ? val : (MODE_LABEL[mode] || mode);
+  }
+  function getConfidenceLabel(confidence) {
+    var key = 'confidence_' + confidence;
+    var val = t(key);
+    return (val && val !== key) ? val : (CONFIDENCE_LABEL[confidence] || confidence || '–');
+  }
+  function getEventLabel(event) {
+    var key = 'event_' + event;
+    var val = t(key);
+    return (val && val !== key) ? val : (EVENT_LABEL[event] || event);
+  }
+
   var state = {
+    lang: 'ko',
     board: null,
     roster: [],
     rows: [],
@@ -1196,16 +1239,20 @@
   }
 
   function statusInfo(row) {
-    if (row.isExcluded) { return { label: '오늘 제외', className: 'neutral' }; }
-    if (row.kind === 'unmatched') { return { label: '미매칭', className: 'unmatched' }; }
-    if (row.attendanceState === 'Present') { return { label: '참석 중', className: 'present' }; }
-    if (row.attendanceState === 'Left') { return { label: '퇴장', className: 'left' }; }
-    return { label: '미참석', className: 'absent' };
+    if (row.isExcluded) { return { label: t('status_Excluded') !== 'status_Excluded' ? t('status_Excluded') : '오늘 제외', className: 'neutral' }; }
+    if (row.kind === 'unmatched') { return { label: t('status_Unmatched') !== 'status_Unmatched' ? t('status_Unmatched') : '미매칭', className: 'unmatched' }; }
+    if (row.attendanceState === 'Present') { return { label: t('status_Present') !== 'status_Present' ? t('status_Present') : '참석 중', className: 'present' }; }
+    if (row.attendanceState === 'Left') { return { label: t('status_Left') !== 'status_Left' ? t('status_Left') : '퇴장', className: 'left' }; }
+    return { label: t('status_Absent') !== 'status_Absent' ? t('status_Absent') : '미참석', className: 'absent' };
   }
   function confidenceInfo(row) {
-    if (row.kind === 'roster' && row.attendanceState === 'NotJoined') { return { label: '입장 전', className: 'neutral' }; }
-    if (row.kind === 'unmatched') { return { label: '미매칭', className: 'unmatched' }; }
-    return { label: CONFIDENCE_LABEL[row.confidence] || row.confidence || '–',
+    if (row.kind === 'roster' && row.attendanceState === 'NotJoined') {
+      return { label: t('status_NotJoined') !== 'status_NotJoined' ? t('status_NotJoined') : '입장 전', className: 'neutral' };
+    }
+    if (row.kind === 'unmatched') {
+      return { label: t('status_Unmatched') !== 'status_Unmatched' ? t('status_Unmatched') : '미매칭', className: 'unmatched' };
+    }
+    return { label: getConfidenceLabel(row.confidence),
       className: row.confidence === 'Verified' || row.confidence === 'AliasVerified' ? 'verified' : row.confidence === 'Unmatched' ? 'neutral' : 'review' };
   }
 
@@ -2253,6 +2300,83 @@
     });
   }
 
+  function applyLanguage(lang, opts) {
+    opts = opts || {};
+    var target = SUPPORTED_LANGS.indexOf(lang) >= 0 ? lang : 'ko';
+    state.lang = target;
+    if (opts.persist !== false) {
+      writeStore(STORAGE.lang, target);
+    }
+    if (typeof document !== 'undefined' && document.documentElement) {
+      document.documentElement.lang = target;
+    }
+
+    if (el.btnToggleLang) {
+      el.btnToggleLang.textContent = target.toUpperCase();
+    }
+    if (el.langRadios) {
+      el.langRadios.forEach(function (radio) {
+        radio.checked = radio.value === target;
+      });
+    }
+
+    // Translate elements with data-i18n
+    if (typeof document !== 'undefined') {
+      var i18nNodes = document.querySelectorAll('[data-i18n]');
+      for (var i = 0; i < i18nNodes.length; i++) {
+        var node = i18nNodes[i];
+        var key = node.getAttribute('data-i18n');
+        if (key) {
+          var translated = t(key);
+          if (translated && translated !== key) {
+            node.textContent = translated;
+          }
+        }
+      }
+
+      var placeholderNodes = document.querySelectorAll('[data-i18n-placeholder]');
+      for (var j = 0; j < placeholderNodes.length; j++) {
+        var pNode = placeholderNodes[j];
+        var pKey = pNode.getAttribute('data-i18n-placeholder');
+        if (pKey) {
+          var pText = t(pKey);
+          if (pText && pText !== pKey) {
+            pNode.placeholder = pText;
+          }
+        }
+      }
+
+      var ariaNodes = document.querySelectorAll('[data-i18n-aria]');
+      for (var k = 0; k < ariaNodes.length; k++) {
+        var aNode = ariaNodes[k];
+        var aKey = aNode.getAttribute('data-i18n-aria');
+        if (aKey) {
+          var aText = t(aKey);
+          if (aText && aText !== aKey) {
+            aNode.setAttribute('aria-label', aText);
+          }
+        }
+      }
+    }
+
+    if (state.board) { renderBoard(state.board); }
+    else if (typeof renderParticipants === 'function') { renderParticipants(); }
+    if (typeof renderFreshness === 'function') { renderFreshness(); }
+    if (typeof renderReadiness === 'function') { renderReadiness(); }
+    if (typeof renderModeControls === 'function') { renderModeControls(); }
+    if (typeof renderGroupOptions === 'function') { renderGroupOptions(); }
+
+    if (opts.notify) {
+      var langNames = { ko: '한국어', en: 'English', es: 'Español' };
+      toast('ok', t('language'), langNames[target] || target);
+    }
+  }
+
+  function toggleLanguage() {
+    var nextIndex = (SUPPORTED_LANGS.indexOf(state.lang) + 1) % SUPPORTED_LANGS.length;
+    applyLanguage(SUPPORTED_LANGS[nextIndex], { persist: true, notify: true });
+  }
+
   function cacheElements() {
     [
       'meeting-id','health-dot','health-text','zoom-dot','zoom-status','chk-autorefresh','auto-status','last-sync-time','next-sync-time',
@@ -2260,7 +2384,7 @@
       'scope-note','export-scope','count-excluded','empty-title','empty-note','btn-reset-filters','alert-details','alert-technical',
       'snapshot-result','snapshot-result-summary','snapshot-result-details',
       'action-confirm','action-confirm-message','btn-confirm-cancel','btn-confirm-apply',
-      'btn-sync-zoom','btn-toggle-theme','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
+      'btn-sync-zoom','btn-toggle-lang','btn-toggle-theme','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
       'summary-total','summary-present','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
       'participants-meta','btn-refresh','btn-export','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
       'count-all','count-present','count-absent','count-review','count-unmatched','activity-feed','activity-empty','activity-count',
@@ -2283,6 +2407,7 @@
     el.tutorialProgressButtons = Array.prototype.slice.call(document.querySelectorAll('#tutorial-progress [role="tab"]'));
     el.modeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="connection-mode"]'));
     el.themeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="theme"]'));
+    el.langRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="lang"]'));
     el.chkAutoRefresh = el.chkAutorefresh;
     el.alertAction = el.btnAlertAction;
     el.alertBar = el.alertBar;
@@ -2315,6 +2440,7 @@
     el.btnRefresh.addEventListener('click', function () { refreshBoard({ notify: true }); });
     el.btnExport.addEventListener('click', exportCsv);
     el.btnToggleTheme.addEventListener('click', toggleTheme);
+    if (el.btnToggleLang) { el.btnToggleLang.addEventListener('click', toggleLanguage); }
     el.btnOpenSettings.addEventListener('click', openSettings);
     el.btnOpenTutorial.addEventListener('click', function () { showTutorial(0); });
     el.btnSettingsTutorial.addEventListener('click', function () { showTutorial(0); });
@@ -2352,6 +2478,13 @@
         if (radio.checked) { applyTheme(radio.value, { persist: true, notify: true }); }
       });
     });
+    if (el.langRadios) {
+      el.langRadios.forEach(function (radio) {
+        radio.addEventListener('change', function () {
+          if (radio.checked) { applyLanguage(radio.value, { persist: true, notify: true }); }
+        });
+      });
+    }
     el.btnUploadRoster.addEventListener('click', uploadRoster);
     el.btnReloadRoster.addEventListener('click', function () { loadRoster(true); });
     el.btnSubmitSnapshot.addEventListener('click', submitSnapshot);
@@ -2396,6 +2529,8 @@
   }
 
   function restoreState() {
+    var savedLang = readStore(STORAGE.lang, 'ko');
+    applyLanguage(savedLang, { persist: false, notify: false });
     applyTheme(readStore(STORAGE.theme, 'system'), { persist: false, notify: false });
     el.meetingId.value = normalizeMeetingId(readStore(STORAGE.meetingId, ''));
     var savedInterval = parseInt(readStore(STORAGE.interval, '10'), 10);
