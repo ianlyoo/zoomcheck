@@ -1,0 +1,56 @@
+name: Install clock
+on:
+  workflow_dispatch:
+  push:
+    branches: [audit/install-clock]
+jobs:
+  clock:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [setup, portable]
+    steps:
+      - name: Measure download, install and startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3'
+          $name = if ('${{ matrix.package }}' -eq 'setup') { 'ZoomCheck-Setup-x64.exe' } else { 'ZoomCheck-portable-win-x64.zip' }
+          $clock = [Diagnostics.Stopwatch]::StartNew()
+          Write-Host "download_start_utc=$([DateTime]::UtcNow.ToString('o'))"
+          Invoke-WebRequest "$base/$name" -OutFile $name
+          $download = $clock.Elapsed.TotalSeconds
+          Write-Host "download_end_utc=$([DateTime]::UtcNow.ToString('o')) download_seconds=$download"
+          Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+          $expected = ((Get-Content SHA256SUMS.txt | Where-Object { $_ -match [regex]::Escape($name) }) -split '\s+')[0]
+          if (-not $expected -or (Get-FileHash $name -Algorithm SHA256).Hash -ne $expected) { throw 'SHA256 mismatch' }
+          Write-Host "verified_utc=$([DateTime]::UtcNow.ToString('o'))"
+          $installStart = $clock.Elapsed.TotalSeconds
+          if ('${{ matrix.package }}' -eq 'setup') {
+            $p = Start-Process -FilePath (Resolve-Path $name) -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Installer exit code $($p.ExitCode)" }
+          } else {
+            Expand-Archive $name -DestinationPath portable
+          }
+          $installEnd = $clock.Elapsed.TotalSeconds
+          Write-Host "install_end_utc=$([DateTime]::UtcNow.ToString('o')) install_seconds=$($installEnd - $installStart)"
+          if ('${{ matrix.package }}' -eq 'portable') {
+            $exe = Get-ChildItem portable -Filter ZoomCheck.Backend.exe -Recurse | Select-Object -First 1
+            if (-not $exe) { throw 'Portable executable missing' }
+            Start-Process $exe.FullName -WorkingDirectory $exe.DirectoryName
+          }
+          $launch = $clock.Elapsed.TotalSeconds
+          Write-Host "poll_start_utc=$([DateTime]::UtcNow.ToString('o'))"
+          $deadline = $clock.Elapsed.TotalSeconds + 120
+          do {
+            try {
+              $health = Invoke-WebRequest 'http://127.0.0.1:5078/health' -TimeoutSec 2
+              $page = Invoke-WebRequest 'http://127.0.0.1:5078/' -TimeoutSec 2
+              if ($health.StatusCode -eq 200 -and $page.StatusCode -eq 200) { break }
+            } catch { Start-Sleep -Milliseconds 250 }
+          } while ($clock.Elapsed.TotalSeconds -lt $deadline)
+          if (-not $health -or $health.StatusCode -ne 200 -or -not $page -or $page.StatusCode -ne 200) { throw 'Dashboard did not answer' }
+          $end = $clock.Elapsed.TotalSeconds
+          Write-Host "http_200_utc=$([DateTime]::UtcNow.ToString('o')) poll_seconds=$($end - $launch) total_seconds=$end"
+          Write-Host 'Setup launches during installation; its poll_seconds excludes any overlapping startup.'
