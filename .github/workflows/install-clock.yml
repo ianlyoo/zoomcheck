@@ -88,7 +88,7 @@ jobs:
                           win = windows[0]
                           buttons = [b for b in win.descendants(class_name='TNewButton') if b.is_visible() and b.is_enabled()]
                           texts = [(b.window_text(), b) for b in buttons]
-                          key = (win.window_text(), tuple(t for t, b in texts), tuple(c.window_text() for c in win.descendants() if c.window_text()))
+                          key = (win.window_text(), tuple(t for t, b in texts), tuple(c.window_text() for c in win.descendants() if c.window_text())[:2])
                           if key != last and texts:
                               break
                       time.sleep(.5)
@@ -100,7 +100,8 @@ jobs:
                   last = key
                   choices = [(t,b) for t,b in texts if any(s in t.replace('&','').lower() for s in ('next', 'install', 'finish'))]
                   if not choices:
-                      raise RuntimeError('No expected navigation button')
+                      print('WAIT for installation', flush=True)
+                      continue
                   label, button = choices[-1]
                   print(f'CLICK {label}', flush=True)
                   button.click()
