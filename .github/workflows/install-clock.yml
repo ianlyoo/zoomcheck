@@ -128,9 +128,9 @@ jobs:
           } until (($page -and $page.StatusCode -eq 200) -or (Get-Date) -gt $deadline)
           if (-not $page -or $page.StatusCode -ne 200) { throw 'Dashboard health unavailable' }
           $chrome = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
-          & $chrome --headless --no-sandbox --disable-gpu --disable-dev-shm-usage --hide-scrollbars --window-size=1440,1000 "--user-data-dir=$env:RUNNER_TEMP\capture-profile" "--screenshot=$PWD\screenshots\dashboard.png" http://127.0.0.1:5078/
+          Start-Process $chrome -Wait -ArgumentList @("--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--window-size=1440,1000", "--user-data-dir=$env:RUNNER_TEMP\capture-profile", "--screenshot=$PWD\screenshots\dashboard.png", "http://127.0.0.1:5078/")
           if (-not (Test-Path screenshots/dashboard.png)) { throw 'Dashboard screenshot missing' }
-          & $chrome --headless --no-sandbox --disable-gpu --disable-dev-shm-usage --hide-scrollbars --window-size=1440,1000 "--user-data-dir=$env:RUNNER_TEMP\release-profile" "--screenshot=$PWD\screenshots\release.png" https://github.com/ianlyoo/zoomcheck/releases/tag/v0.6.3
+          Start-Process $chrome -Wait -ArgumentList @("--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--window-size=1440,1000", "--user-data-dir=$env:RUNNER_TEMP\release-profile", "--screenshot=$PWD\screenshots\release.png", "https://github.com/ianlyoo/zoomcheck/releases/tag/v0.6.3")
           if (-not (Test-Path screenshots/release.png)) { throw 'Release screenshot missing' }
       - uses: actions/upload-artifact@v4
         if: always()
