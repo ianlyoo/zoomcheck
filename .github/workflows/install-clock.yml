@@ -28,7 +28,8 @@ jobs:
           Write-Host "verified_utc=$([DateTime]::UtcNow.ToString('o'))"
           $installStart = $clock.Elapsed.TotalSeconds
           if ('${{ matrix.package }}' -eq 'setup') {
-            $p = Start-Process -FilePath (Resolve-Path $name) -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+            $p = Start-Process -FilePath (Resolve-Path $name) -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -PassThru
+            $p.WaitForExit()
             if ($p.ExitCode -ne 0) { throw "Installer exit code $($p.ExitCode)" }
           } else {
             Expand-Archive $name -DestinationPath portable
