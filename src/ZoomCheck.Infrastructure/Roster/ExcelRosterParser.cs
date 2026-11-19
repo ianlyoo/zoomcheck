@@ -9,12 +9,28 @@ namespace ZoomCheck.Infrastructure.Roster;
 
 public sealed class ExcelRosterParser
 {
-    /// <summary>
-    /// Group header names in priority order. The first header present in the sheet wins, so a
-    /// roster carrying both "조" and "반" is read as 조. Matching is exact on the trimmed header
-    /// text, which keeps "분반" from being mistaken for "반".
-    /// </summary>
-    private static readonly string[] GroupColumnNames = { "조", "분반", "그룹", "팀", "반" };
+    private sealed record HeaderAliases(string[] Name, string[] Sequence, string[] Email,
+        string[] Phone, string[] Organization, string[] Group);
+
+    // A workbook with the original header pair uses only the original columns.
+    // Search for that pair across all sheets before considering any extended aliases.
+    private static readonly HeaderAliases OriginalHeaders = new(
+        ["성명"], ["번호"], ["이메일"], ["연락처"], ["소속기관"], ["조", "분반", "그룹", "팀", "반"]);
+
+    private static readonly HeaderAliases[] HeaderPriority =
+    [
+        OriginalHeaders,
+        new(
+            [.. OriginalHeaders.Name, "이름", "Student Name", "Full Name", "Nombre y Apellido", "Name", "Nombre", "Nombres", "Alumno", "Estudiante"],
+            [.. OriginalHeaders.Sequence, "학번", "Student ID", "DNI", "Legajo", "Matrícula", "Matricula",
+                "ID", "Number", "No", "No.", "Número", "Numero", "Nro", "Nro."],
+            [.. OriginalHeaders.Email, "Email", "E-mail", "Mail", "Correo", "Correo Electrónico", "Correo Electronico"],
+            [.. OriginalHeaders.Phone, "전화번호", "Phone", "Telephone", "Mobile", "Teléfono", "Telefono", "Celular", "Móvil", "Movil", "Contacto"],
+            [.. OriginalHeaders.Organization, "소속", "Organization", "Organisation", "Org", "Institution", "Company",
+                "Institución", "Institucion", "Organización", "Organizacion", "Empresa", "Universidad"],
+            [.. OriginalHeaders.Group, "Group", "Team", "Class", "Section", "Comisión", "Comision", "Grupo", "Equipo",
+                "División", "Division", "Curso", "Sección", "Seccion"])
+    ];
 
     public RosterImportResult Parse(string filePath)
     {
@@ -33,29 +49,31 @@ public sealed class ExcelRosterParser
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
         using var reader = ExcelReaderFactory.CreateReader(stream);
-        var dataSet = reader.AsDataSet();
-        var table = dataSet.Tables.Cast<DataTable>().FirstOrDefault(IsRosterTable)
-            ?? throw new InvalidOperationException("Could not find a roster sheet containing 성명 and 번호 headers.");
+        var (table, headerRowIndex, columns, aliases) = FindRoster(reader.AsDataSet());
+        var nameIndex = FindColumnIndex(columns, aliases.Name);
+        var sequenceIndex = FindColumnIndex(columns, aliases.Sequence);
+        var emailIndex = FindColumnIndex(columns, aliases.Email);
+        var phoneIndex = FindColumnIndex(columns, aliases.Phone);
+        var orgIndex = FindColumnIndex(columns, aliases.Organization);
+        var groupIndices = aliases.Group.Where(columns.ContainsKey).Select(header => columns[header]).ToArray();
 
-        var headerRowIndex = FindHeaderRowIndex(table);
-        var columns = BuildColumnMap(table.Rows[headerRowIndex]);
         var people = new List<RosterPerson>();
 
         for (var rowIndex = headerRowIndex + 1; rowIndex < table.Rows.Count; rowIndex++)
         {
             var row = table.Rows[rowIndex];
-            var name = GetValue(row, columns, "성명");
+            var name = GetValue(row, nameIndex);
             if (string.IsNullOrWhiteSpace(name))
             {
                 continue;
             }
 
-            var email = GetValue(row, columns, "이메일").Trim().ToLowerInvariant();
-            var phone = NormalizePhone(GetValue(row, columns, "연락처"));
-            var organization = GetValue(row, columns, "소속기관");
-            var sequence = GetValue(row, columns, "번호");
-            var group = NormalizeWhitespace(GetGroupValue(row, columns));
-            var aliases = BuildAliases(name, email, phone, organization);
+            var email = GetValue(row, emailIndex).ToLowerInvariant();
+            var phone = NormalizePhone(GetValue(row, phoneIndex));
+            var organization = GetValue(row, orgIndex);
+            var sequence = GetValue(row, sequenceIndex);
+            var group = NormalizeWhitespace(GetGroupValue(row, groupIndices));
+            var personAliases = BuildAliases(name, email, phone, organization);
 
             // The group is deliberately excluded from the id key: regrouping people between
             // imports must not orphan their attendance history.
@@ -73,7 +91,7 @@ public sealed class ExcelRosterParser
                 Email: email,
                 Phone: phone,
                 Organization: organization.Trim(),
-                Aliases: aliases,
+                Aliases: personAliases,
                 Group: group));
         }
 
@@ -85,37 +103,30 @@ public sealed class ExcelRosterParser
             People: people);
     }
 
-    private static bool IsRosterTable(DataTable table)
+    private static (DataTable Table, int RowIndex, Dictionary<string, int> Columns, HeaderAliases Aliases) FindRoster(DataSet workbook)
     {
-        for (var rowIndex = 0; rowIndex < Math.Min(table.Rows.Count, 10); rowIndex++)
+        foreach (var aliases in HeaderPriority)
         {
-            var values = table.Rows[rowIndex].ItemArray.Select(cell => cell?.ToString()?.Trim()).ToArray();
-            if (values.Contains("번호") && values.Contains("성명"))
+            foreach (DataTable table in workbook.Tables)
             {
-                return true;
+                for (var rowIndex = 0; rowIndex < Math.Min(table.Rows.Count, 10); rowIndex++)
+                {
+                    var columns = BuildColumnMap(table.Rows[rowIndex]);
+                    if (FindColumnIndex(columns, aliases.Sequence).HasValue && FindColumnIndex(columns, aliases.Name).HasValue)
+                    {
+                        return (table, rowIndex, columns, aliases);
+                    }
+                }
             }
         }
 
-        return false;
-    }
-
-    private static int FindHeaderRowIndex(DataTable table)
-    {
-        for (var rowIndex = 0; rowIndex < Math.Min(table.Rows.Count, 10); rowIndex++)
-        {
-            var values = table.Rows[rowIndex].ItemArray.Select(cell => cell?.ToString()?.Trim()).ToArray();
-            if (values.Contains("번호") && values.Contains("성명"))
-            {
-                return rowIndex;
-            }
-        }
-
-        throw new InvalidOperationException("Roster header row not found.");
+        throw new InvalidOperationException("Could not find a roster sheet containing valid name and ID headers (성명/번호, Name/ID, Nombre/DNI).");
     }
 
     private static Dictionary<string, int> BuildColumnMap(DataRow headerRow)
     {
-        var columns = new Dictionary<string, int>(StringComparer.Ordinal);
+        // Duplicate headings use the leftmost column after trimming and ignoring case.
+        var columns = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (var index = 0; index < headerRow.ItemArray.Length; index++)
         {
             var value = headerRow[index]?.ToString()?.Trim();
@@ -128,24 +139,28 @@ public sealed class ExcelRosterParser
         return columns;
     }
 
-    private static string GetValue(DataRow row, IReadOnlyDictionary<string, int> columns, string columnName)
+    private static int? FindColumnIndex(IReadOnlyDictionary<string, int> columns, IEnumerable<string> candidateNames)
     {
-        return columns.TryGetValue(columnName, out var index)
-            ? row[index]?.ToString()?.Trim() ?? string.Empty
-            : string.Empty;
+        foreach (var candidate in candidateNames)
+        {
+            if (columns.TryGetValue(candidate, out var index))
+            {
+                return index;
+            }
+        }
+
+        return null;
     }
 
-    private static string GetGroupValue(DataRow row, IReadOnlyDictionary<string, int> columns)
-    {
-        foreach (var columnName in GroupColumnNames)
-        {
-            if (!columns.TryGetValue(columnName, out var index))
-            {
-                continue;
-            }
+    private static string GetValue(DataRow row, int? index) =>
+        index.HasValue ? row[index.Value]?.ToString()?.Trim() ?? string.Empty : string.Empty;
 
-            var value = row[index]?.ToString()?.Trim() ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(value))
+    private static string GetGroupValue(DataRow row, IEnumerable<int> groupIndices)
+    {
+        foreach (var index in groupIndices)
+        {
+            var value = GetValue(row, index);
+            if (value.Length > 0)
             {
                 return value;
             }

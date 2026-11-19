@@ -9,6 +9,8 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/ZoomCheck.Backend/wwwroot/app.js'), 'utf8');
+const localesSource = fs.readFileSync(path.join(__dirname, '../src/ZoomCheck.Backend/wwwroot/locales.js'), 'utf8');
+const markup = fs.readFileSync(path.join(__dirname, '../src/ZoomCheck.Backend/wwwroot/index.html'), 'utf8');
 
 class Element {
   constructor(tag = 'div', document = null) {
@@ -26,6 +28,8 @@ class Element {
   }
   set textContent(value) { this.text = String(value); for (const child of this.children) child.parentNode = null; this.children = []; }
   get textContent() { return (this.text || '') + this.children.map(child => child.textContent).join(''); }
+  get childNodes() { return this.children; }
+  replaceChildren(...children) { this.textContent = ''; children.forEach(child => this.appendChild(child)); }
   appendChild(child) { this.children.push(child); child.parentNode = this; return child; }
   addEventListener(name, handler) { (this.listeners[name] ||= []).push(handler); }
   dispatch(name, event = {}) {
@@ -56,7 +60,7 @@ class Element {
   close(value = '') { this.returnValue = value; this.open = false; this.dispatch('close'); }
 }
 
-function harness({ autoConfirm = true } = {}) {
+function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSeen.v1', 'seen']]) } = {}) {
   const elements = new Map();
   const requests = [];
   const intervals = new Map();
@@ -92,7 +96,6 @@ function harness({ autoConfirm = true } = {}) {
     setTimeout(fn, delay) { const id = ++timerId; timeouts.set(id, { fn, delay }); return id; },
     requestAnimationFrame(fn) { fn(); }
   };
-  const storage = new Map([['zoomcheck.tutorialSeen.v1', 'seen']]);
   const context = vm.createContext({
     document, window,
     URL: { createObjectURL: () => 'blob:in-memory', revokeObjectURL() {} },
@@ -100,6 +103,7 @@ function harness({ autoConfirm = true } = {}) {
     clearInterval: id => intervals.delete(id), setTimeout: window.setTimeout,
     fetch: (url, options) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject }))
   });
+  vm.runInContext(localesSource, context, { filename: 'locales.js' });
   // Expose closure members only in this in-memory copy; production has no test hook.
   const instrumented = source.replace(/\}\)\(\);\s*$/, `
     globalThis.dashboard = { state, el, cacheElements, bindEvents, init,
@@ -108,7 +112,8 @@ function harness({ autoConfirm = true } = {}) {
       setPersonExcluded, setPersonReview, matchConnection, reviewConnection, meetingScope,
       renderFreshness, renderReadiness, renderModeControls, applyAutoRefresh, applyConnectionMode,
       updateParsedCount, confidenceInfo, exportCsv, renderGroupOptions, applyGroup, installUpdate,
-      loadRelaySettings, saveRelaySettings, createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy };
+      loadRelaySettings, saveRelaySettings, createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy,
+      applyLanguage, toggleLanguage, restoreState, t };
   })();`);
   vm.runInContext(instrumented, context, { filename: 'app.js' });
   const dashboard = context.dashboard;
@@ -856,4 +861,125 @@ test('pairing response started before endpoint save cannot redisplay an obsolete
   await respond(codeRequest, { code: '123456', homeUrl: activeRelay.baseUrl }); await code;
   assert.equal(h.state.pairing, null); assert.equal(h.state.pending, 0);
   assert.equal(h.el.btnCreatePairingCode.disabled, true);
+});
+
+test('language switching cycles through Korean, English and Spanish', () => {
+  const h = harness();
+  assert.equal(h.state.lang, 'ko');
+  assert.equal(h.t('attendance_rate'), '출석률');
+
+  h.applyLanguage('en');
+  assert.equal(h.state.lang, 'en');
+  assert.equal(h.document.documentElement.lang, 'en');
+  assert.equal(h.t('attendance_rate'), 'Attendance rate');
+  assert.equal(h.el.btnToggleLang.textContent, 'EN');
+
+  h.applyLanguage('es');
+  assert.equal(h.state.lang, 'es');
+  assert.equal(h.document.documentElement.lang, 'es');
+  assert.equal(h.t('attendance_rate'), 'Tasa de asistencia');
+  assert.equal(h.el.btnToggleLang.textContent, 'ES');
+
+  h.toggleLanguage();
+  assert.equal(h.state.lang, 'ko');
+  assert.equal(h.document.documentElement.lang, 'ko');
+  assert.equal(h.el.btnToggleLang.textContent, 'KO');
+});
+
+test('language switching: translates participant status badges in English and Spanish', async () => {
+  const h = harness();
+  const presentRow = { isExcluded: false, attendanceState: 'Present', confidence: 'Verified' };
+  const unmatchedRow = { kind: 'unmatched', confidence: 'Unmatched' };
+
+  // Korean (default)
+  assert.equal(h.confidenceInfo(presentRow).label, '확인됨');
+
+  // English
+  h.applyLanguage('en');
+  assert.equal(h.confidenceInfo(presentRow).label, 'Verified');
+  assert.equal(h.confidenceInfo(unmatchedRow).label, 'Unmatched');
+
+  // Spanish
+  h.applyLanguage('es');
+  assert.equal(h.confidenceInfo(presentRow).label, 'Verificado');
+  assert.equal(h.confidenceInfo(unmatchedRow).label, 'No emparejado');
+});
+
+test('language switching translates rendered attendance controls and activity in English and Spanish', () => {
+  const h = harness();
+  const bindings = [...markup.matchAll(/<(\w+)\b([^>]*\bdata-i18n="[^"]+"[^>]*)>/g)].map(([, tag, attrs]) => {
+    const id = attrs.match(/\bid="([^"]+)"/)?.[1];
+    const node = id ? h.document.getElementById(id) : h.document.createElement(tag);
+    node.setAttribute('data-i18n', attrs.match(/\bdata-i18n="([^"]+)"/)[1]);
+    return node;
+  });
+  h.document.querySelectorAll = selector => selector === '[data-i18n]' ? bindings : [];
+  const groupLabel = bindings.find(node => node.getAttribute('data-i18n') === 'group_filter_aria');
+  const guide = bindings.find(node => node.getAttribute('data-i18n') === 'tutorial_s0_p');
+  const emphasis = guide.appendChild(h.document.createElement('strong'));
+  emphasis.textContent = '호스트 또는 공동호스트';
+  const boardData = decisionBoard();
+  boardData.recentEvents = [{
+    eventType: 'Joined', participantName: 'Alice', source: 'manual-snapshot', occurredAt: '2026-09-05T01:00:00Z'
+  }];
+  h.el.tutorialSteps = [...markup.matchAll(/\bdata-tutorial-step="/g)].map(() => h.document.createElement('section'));
+  assert.ok(h.el.tutorialSteps.length > 1);
+  h.state.rosterLoaded = true;
+  h.renderBoard(boardData);
+
+  for (const [lang, expected] of Object.entries({
+    en: {
+      sync: 'Sync now', readiness: "1. Upload today's roster", step: 'Upload roster',
+      prompt: /upload the Excel roster/i,
+      allGroups: 'All groups', groupLabel: 'Group filter', totals: /Roster present: 1 \/ 2/,
+      activity: /AliceJoinedManual entry/, activityCount: 'Recent: 1', mode: 'Selected: Manual entry',
+      next: 'Next', finish: 'Get started', manual: 'Enter participant list'
+    },
+    es: {
+      sync: 'Sincronizar ahora', readiness: '1. Sube la lista de hoy', step: 'Subir lista',
+      prompt: /sube la lista de Excel/i,
+      allGroups: 'Todos los grupos', groupLabel: 'Filtro de grupo', totals: /Presentes: 1 de 2/,
+      activity: /AliceEntróEntrada manual/, activityCount: 'Recientes: 1', mode: 'Seleccionado: Entrada manual',
+      next: 'Siguiente', finish: 'Empezar', manual: 'Introducir lista de participantes'
+    }
+  })) {
+    h.applyConnectionMode('auto');
+    h.state.tutorialStep = 0;
+    h.applyLanguage(lang);
+    assert.equal(h.el.btnSyncZoom.textContent, expected.sync);
+    assert.equal(h.el.readinessTitle.textContent, expected.readiness);
+    assert.match(h.el.readinessNote.textContent, expected.prompt);
+    assert.equal(h.el.btnNextStep.textContent, expected.step);
+    assert.equal(h.el.groupFilter.children[0].textContent, expected.allGroups);
+    assert.equal(groupLabel.textContent, expected.groupLabel);
+    assert.match(h.el.participantsMeta.textContent, expected.totals);
+    assert.match(h.el.activityFeed.textContent, expected.activity);
+    assert.equal(h.el.activityCount.textContent, expected.activityCount);
+    assert.equal(h.el.btnTutorialNext.textContent, expected.next);
+    assert.equal(guide.children.length, 0);
+    h.applyConnectionMode('manual');
+    h.state.tutorialStep = h.el.tutorialSteps.length - 1;
+    h.applyLanguage(lang);
+    assert.equal(h.el.btnSyncZoom.textContent, expected.manual);
+    assert.ok(h.el.modeNote.textContent.startsWith(expected.mode));
+    assert.equal(h.el.btnTutorialNext.textContent, expected.finish);
+  }
+  h.applyLanguage('ko');
+  assert.equal(guide.children[0], emphasis);
+  assert.equal(h.el.btnSyncZoom.textContent, '참가자 목록 입력');
+});
+
+test('language preference is restored in a fresh dashboard session', () => {
+  const storage = new Map();
+  const first = harness({ storage });
+  first.restoreState();
+  assert.equal(first.document.documentElement.lang, 'ko');
+  first.applyLanguage('es');
+  assert.equal(storage.get('zoomcheck.lang'), 'es');
+
+  const next = harness({ storage });
+  next.restoreState();
+  assert.equal(next.document.documentElement.lang, 'es');
+  assert.equal(next.el.btnToggleLang.textContent, 'ES');
+  assert.equal(next.el.btnSyncZoom.textContent, 'Sincronizar ahora');
 });

@@ -2,7 +2,7 @@
 
 Windows에서 Excel 명단과 진행 중인 Zoom 회의 참가자를 공식 Zoom API로 대조하는 로컬 웹 대시보드입니다. Business용 Dashboard API와 Pro에서도 사용할 수 있는 회의 내 Zoom App 연결을 함께 지원합니다.
 
-[English](README.md) · [Windows 실회의 테스트](docs/windows-live-test-ko.md) · [MIT License](LICENSE)
+[English](README.md) · [Español](README.es.md) · [Windows 실회의 테스트](docs/windows-live-test-ko.md) · [MIT License](LICENSE)
 
 [![CI](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml)
 [![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)
@@ -11,6 +11,9 @@ Windows에서 Excel 명단과 진행 중인 Zoom 회의 참가자를 공식 Zoom
 Zoom 참가자 패널을 화면 인식하거나 UI Automation으로 읽지 않습니다. Business 계정은 공식 Zoom Dashboard API를 조회하고, Pro 경로는 호스트·공동호스트가 회의 안에서 연 Zoom App SDK의 참가자 목록을 사용합니다.
 
 ## 주요 기능
+
+- 상단이나 설정에서 한국어(기본값), 영어, 스페인어를 선택할 수 있는 대시보드
+- 한국어·영어·스페인어 열 이름을 지원하는 Excel 명단 업로드
 
 - 브라우저에서 Excel `.xlsx`/`.xls` 직접 업로드
 - Excel의 `조`·`분반`·`그룹`·`팀`·`반` 열을 읽어 선택한 조만 집계·검색·CSV 내보내기
@@ -90,7 +93,7 @@ Zoom Apps SDK는 앱을 실행한 본인 외 참가자의 카메라 켜짐/꺼�
 ## 회의 중 사용 순서
 
 1. ZoomCheck를 실행하고 실제 회의 ID를 입력합니다.
-2. 번호·성명 열이 있는 Excel 명단을 올립니다. 조별 확인이 필요하면 `조`, `분반`, `그룹`, `팀`, `반` 중 하나의 열을 추가합니다.
+2. 이름과 번호 열이 있는 Excel 명단을 올립니다. 조별 확인이 필요하면 `조`, `분반`, `그룹`, `팀`, `반` 중 하나의 열을 추가합니다.
 3. 상단 **지금 동기화**를 눌러 현재 인원과 첫 입장 로그를 확인합니다.
 4. **자동 동기화**를 켭니다. 기본 10초를 권장합니다.
 5. 현재 참석, 미참석, 검토 필요, 미매칭 Zoom 이름, 입·퇴장 로그를 확인합니다.
@@ -103,6 +106,10 @@ Zoom Apps SDK는 앱을 실행한 본인 외 참가자의 카메라 켜짐/꺼�
 액티브 로그 시각은 실제 Zoom 이벤트 시각이 아니라 API 폴링에서 변화를 관측한 시각입니다. 따라서 최대 한 폴링 간격과 Zoom API 반영 시간만큼 늦을 수 있습니다. API 오류, 불완전한 pagination, 확인되지 않은 빈 응답은 기존 출석 상태를 전원 퇴장으로 덮어쓰지 않습니다.
 
 Windows 데이터베이스는 `%LOCALAPPDATA%\ZoomCheck\data\zoomcheck.db`에 저장됩니다.
+
+### Excel 명단 열 이름
+
+예를 들어 `성명` + `번호`, `Name` + `ID`, `Nombre` + `DNI` 또는 `Legajo`를 사용할 수 있습니다. 기존 한국어 열 쌍이 있는 시트를 우선하고 선택 항목은 기존 열 이름으로 읽습니다. 그 외에는 `Student Name`, `Full Name`, `Student ID`처럼 구체적인 열을 `Name`, `ID`보다 먼저 사용합니다. `Number`는 `No`보다 우선합니다. 앞뒤 공백과 대소문자를 무시했을 때 같은 열 이름이 반복되면 가장 왼쪽 열을 사용합니다.
 
 ## 구조
 

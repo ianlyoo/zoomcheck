@@ -11,7 +11,10 @@ namespace ZoomCheck.Tests;
 /// </summary>
 internal static class MinimalXlsxBuilder
 {
-    public static string WriteWorkbook(string directory, string fileName, string sheetName, IReadOnlyList<string?[]> rows)
+    public static string WriteWorkbook(string directory, string fileName, string sheetName, IReadOnlyList<string?[]> rows) =>
+        WriteWorkbook(directory, fileName, (sheetName, rows));
+
+    public static string WriteWorkbook(string directory, string fileName, params (string Name, IReadOnlyList<string?[]> Rows)[] sheets)
     {
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, fileName);
@@ -19,11 +22,20 @@ internal static class MinimalXlsxBuilder
         using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
         using var archive = new ZipArchive(stream, ZipArchiveMode.Create);
 
-        WriteEntry(archive, "[Content_Types].xml", ContentTypes);
+        var overrides = string.Concat(sheets.Select((_, i) =>
+            $"<Override PartName=\"/xl/worksheets/sheet{i + 1}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\" />"));
+        WriteEntry(archive, "[Content_Types].xml", ContentTypes(overrides));
         WriteEntry(archive, "_rels/.rels", RootRels);
-        WriteEntry(archive, "xl/workbook.xml", Workbook(sheetName));
-        WriteEntry(archive, "xl/_rels/workbook.xml.rels", WorkbookRels);
-        WriteEntry(archive, "xl/worksheets/sheet1.xml", Sheet(rows));
+        var workbookSheets = string.Concat(sheets.Select((sheet, i) =>
+            $"<sheet name=\"{Escape(sheet.Name)}\" sheetId=\"{i + 1}\" r:id=\"rId{i + 1}\" />"));
+        WriteEntry(archive, "xl/workbook.xml", Workbook(workbookSheets));
+        var relationships = string.Concat(sheets.Select((_, i) =>
+            $"<Relationship Id=\"rId{i + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{i + 1}.xml\" />"));
+        WriteEntry(archive, "xl/_rels/workbook.xml.rels", WorkbookRels(relationships));
+        for (var index = 0; index < sheets.Length; index++)
+        {
+            WriteEntry(archive, $"xl/worksheets/sheet{index + 1}.xml", Sheet(sheets[index].Rows));
+        }
 
         return path;
     }
@@ -35,13 +47,13 @@ internal static class MinimalXlsxBuilder
         writer.Write(content);
     }
 
-    private const string ContentTypes = """
+    private static string ContentTypes(string overrides) => $"""
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
           <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />
           <Default Extension="xml" ContentType="application/xml" />
           <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml" />
-          <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml" />
+          {overrides}
         </Types>
         """;
 
@@ -52,17 +64,17 @@ internal static class MinimalXlsxBuilder
         </Relationships>
         """;
 
-    private const string WorkbookRels = """
+    private static string WorkbookRels(string relationships) => $"""
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-          <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml" />
+          {relationships}
         </Relationships>
         """;
 
-    private static string Workbook(string sheetName) => $"""
+    private static string Workbook(string sheets) => $"""
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-          <sheets><sheet name="{Escape(sheetName)}" sheetId="1" r:id="rId1" /></sheets>
+          <sheets>{sheets}</sheets>
         </workbook>
         """;
 

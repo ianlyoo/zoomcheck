@@ -2,7 +2,7 @@
 
 Windows web dashboard that compares an Excel roster with a live Zoom meeting through either the Business Dashboard API or an in-meeting Zoom App bridge suitable for Pro accounts.
 
-[한국어](README.ko.md) · [Operator guide](docs/windows-operator-guide.md) · [MIT License](LICENSE)
+[한국어](README.ko.md) · [Español](README.es.md) · [Operator guide](docs/windows-operator-guide.md) · [MIT License](LICENSE)
 
 [![CI](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml)
 [![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)
@@ -12,8 +12,9 @@ ZoomCheck does not scrape the participant panel or automate Zoom UI. Business ac
 
 ## Features
 
-- Excel `.xlsx`/`.xls` upload from the browser
-- Roster group columns (`조`, `분반`, `그룹`, `팀`, `반`) with scoped totals, search, and CSV export
+- Multi-language dashboard with instant topbar and settings switcher (Korean default, English, and Spanish)
+- Excel `.xlsx`/`.xls` upload with Korean, English, and Spanish header aliases
+- Roster group columns (`조`, `분반`, `그룹`, `팀`, `반`, `Group`, `Team`, `Comisión`, `Grupo`) with scoped totals, search, and CSV export
 - Live Zoom participant sync, manual refresh, and 5–600 second auto-sync
 - Email-first matching plus name, alias, and review confidence levels
 - Persistent join/leave activity log and current attendance state
@@ -60,7 +61,7 @@ The Zoom Apps SDK does not expose other participants' camera on/off state to thi
 ## Use during a meeting
 
 1. Install and launch ZoomCheck; the local dashboard opens in the default browser.
-2. Enter the live meeting ID and upload an Excel roster containing number/name columns.
+2. Enter the live meeting ID and upload an Excel roster with a name and an ID column.
 3. Select **Sync Zoom participants now** and verify the current count.
 4. Enable automatic sync; 10 seconds is the recommended default.
 5. Select a participant row to inspect raw Zoom names, safe canonicalization, connections, and attendance history.
@@ -68,6 +69,10 @@ The Zoom Apps SDK does not expose other participants' camera on/off state to thi
 7. In Business mode, confirm a true zero-participant response from the warning bar. The Pro Zoom App bridge confirms two consecutive empty snapshots automatically.
 
 Times in the activity log are polling observation times and may lag Zoom by one polling interval. API errors, incomplete pagination, and unconfirmed empty responses leave the previous attendance snapshot unchanged.
+
+### Excel roster headers
+
+Use `성명` + `번호`, `Name` + `ID`, or `Nombre` + `DNI`/`Legajo`, for example. The original Korean pair takes precedence across sheets and keeps the original optional columns. Otherwise, more specific aliases such as `Student Name`, `Full Name`, and `Student ID` take precedence over `Name` and `ID`. `Number` takes precedence over `No`. Duplicate headings use the leftmost column after trimming spaces and ignoring case.
 
 ## Architecture
 

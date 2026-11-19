@@ -158,7 +158,7 @@ button { color: inherit; }
 .topbar {
   height: 68px;
   display: grid;
-  grid-template-columns: max-content minmax(160px, 240px) minmax(340px, 1fr) max-content max-content max-content max-content max-content;
+  grid-template-columns: max-content minmax(160px, 240px) minmax(340px, 1fr) max-content max-content max-content max-content max-content max-content;
   align-items: center;
   gap: 14px;
   padding: 0 18px;
@@ -252,6 +252,7 @@ button.connection-item { cursor: pointer; }
 .btn.compact { min-height: 32px; padding: 0 10px; font-size: 12px; }
 .icon-button { padding: 0 12px; }
 .theme-button { min-width: 91px; }
+.lang-button { min-width: 48px; font-weight: 700; font-size: 13px; text-transform: uppercase; }
 .sync-button::before { content: "↻"; font-size: 18px; line-height: 1; }
 
 .alert-bar {
@@ -587,7 +588,7 @@ body:has(.alert-bar:not([hidden])) .dashboard { height: calc(100vh - 110px); }
 }
 
 @media (max-width: 1480px) and (min-width: 1181px) {
-  .topbar { grid-template-columns: max-content minmax(160px, 240px) minmax(0, 1fr) repeat(4, max-content); }
+  .topbar { grid-template-columns: max-content minmax(160px, 240px) minmax(0, 1fr) repeat(5, max-content); }
   .sync-clock { display: none; }
   .connection-item { display: grid; grid-template-columns: max-content max-content; gap: 2px 6px; }
   .connection-item .status-dot, .connection-item .switch { grid-row: 1 / span 2; }

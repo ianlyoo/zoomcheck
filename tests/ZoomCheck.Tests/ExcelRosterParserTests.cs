@@ -310,4 +310,116 @@ public sealed class ExcelRosterParserTests : IDisposable
         Assert.DoesNotContain("3조", person.Aliases);
         Assert.DoesNotContain(person.Aliases, alias => alias.Contains("3조", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void Parse_ReadsEnglishHeaders_Successfully()
+    {
+        var path = WriteRoster("roster-en.xlsx", new List<string?[]>
+        {
+            new string?[] { "ID", "Name", "Email", "Phone", "Organization", "Group" },
+            new string?[] { "101", "John Doe", "john@example.com", "1234567890", "Acme Corp", "Team A" }
+        }, "Students");
+
+        var result = _parser.Parse(path);
+        var person = Assert.Single(result.People);
+
+        Assert.Equal("101", person.Sequence);
+        Assert.Equal("John Doe", person.Name);
+        Assert.Equal("john@example.com", person.Email);
+        Assert.Equal("1234567890", person.Phone);
+        Assert.Equal("Acme Corp", person.Organization);
+        Assert.Equal("Team A", person.Group);
+    }
+
+    [Fact]
+    public void Parse_ReadsSpanishHeaders_Successfully()
+    {
+        var path = WriteRoster("roster-es.xlsx", new List<string?[]>
+        {
+            new string?[] { "DNI", "Nombre", "Correo", "Teléfono", "Institución", "Comisión" },
+            new string?[] { "202", "Juan Pérez", "juan@ejemplo.com", "011-4321-8765", "Universidad de Buenos Aires", "Comisión 1" }
+        }, "Alumnos");
+
+        var result = _parser.Parse(path);
+        var person = Assert.Single(result.People);
+
+        Assert.Equal("202", person.Sequence);
+        Assert.Equal("Juan Pérez", person.Name);
+        Assert.Equal("juan@ejemplo.com", person.Email);
+        Assert.Equal("01143218765", person.Phone);
+        Assert.Equal("Universidad de Buenos Aires", person.Organization);
+        Assert.Equal("Comisión 1", person.Group);
+    }
+
+    [Fact]
+    public void Parse_PreservesOriginalHeaderAndPersonIdsAcrossRowsAndSheets()
+    {
+        string?[][] roster =
+        [
+            ["No", "Name"],
+            [" 번호 ", " 성명 ", "Email", "전화번호", "Organization", "Group"],
+            ["1", "김하늘", "other@example.test", "5551234", "Other", "Team A"],
+            ["1", "김하늘"]
+        ];
+        var path = MinimalXlsxBuilder.WriteWorkbook(_workDirectory, "multiple.xlsx",
+            ("Notes", [["No", "Name"], ["9", "Other Person"]]),
+            ("Korean", roster),
+            ("Later Korean", [Header(), ["8", "나중사람"]]));
+        var original = WriteRoster("original.xlsx", [roster[0], Header(), roster[2][..2], roster[3]]);
+
+        var people = _parser.Parse(path).People;
+        Assert.Equal(2, people.Count);
+        Assert.Equal(_parser.Parse(original).People.Select(person => person.Id), people.Select(person => person.Id));
+        Assert.All(people, person =>
+        {
+            Assert.Equal("김하늘", person.Name);
+            Assert.Equal("1", person.Sequence);
+            Assert.Equal(string.Empty, person.Email);
+            Assert.Equal(string.Empty, person.Phone);
+            Assert.Equal(string.Empty, person.Organization);
+            Assert.Equal(string.Empty, person.Group);
+        });
+    }
+
+    [Fact]
+    public void Parse_PrefersSpecificNameAndIdOverGenericAliases()
+    {
+        var path = WriteRoster("specific.xlsx",
+        [
+            ["Student ID", "Student Name", "ID", "name", "No", "Number", "Full Name"],
+            ["000101", "Alice Student", "42", "Parent A", "1", "555555", "Alice Student Full"]
+        ]);
+
+        var person = Assert.Single(_parser.Parse(path).People);
+        Assert.Equal("000101", person.Sequence);
+        Assert.Equal("Alice Student", person.Name);
+    }
+
+    [Fact]
+    public void Parse_PrefersNumberOverNoAndFullNameOverName()
+    {
+        var path = WriteRoster("number.xlsx",
+        [
+            ["No", "Name", "Number", " Full Name "],
+            ["7", "Parent A", "555555", "Alice Student"]
+        ]);
+
+        var person = Assert.Single(_parser.Parse(path).People);
+        Assert.Equal("555555", person.Sequence);
+        Assert.Equal("Alice Student", person.Name);
+    }
+
+    [Fact]
+    public void Parse_UsesLeftmostDuplicateAfterTrimmingAndIgnoringCase()
+    {
+        var path = WriteRoster("duplicates.xlsx",
+        [
+            [" ID ", "id", " nAmE ", "NAME"],
+            ["42", "101", "Alice Student", "Parent A"]
+        ]);
+
+        var person = Assert.Single(_parser.Parse(path).People);
+        Assert.Equal("42", person.Sequence);
+        Assert.Equal("Alice Student", person.Name);
+    }
 }

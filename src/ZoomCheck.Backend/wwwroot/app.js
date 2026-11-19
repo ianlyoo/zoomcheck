@@ -9,8 +9,10 @@
     connectionMode: 'zoomcheck.connectionMode',
     group: 'zoomcheck.groupFilter',
     theme: 'zoomcheck.theme',
-    tutorialSeen: 'zoomcheck.tutorialSeen.v1'
+    tutorialSeen: 'zoomcheck.tutorialSeen.v1',
+    lang: 'zoomcheck.lang'
   };
+  var SUPPORTED_LANGS = ['ko', 'en', 'es'];
   var CONNECTION_MODES = ['auto', 'business', 'zoomApp', 'manual'];
   var THEME_OPTIONS = ['system', 'light', 'dark'];
   var MODE_LABEL = {
@@ -36,7 +38,43 @@
     NameChanged: '이름 변경'
   };
 
+  function getLocales() {
+    return (typeof ZOOMCHECK_LOCALES !== 'undefined' ? ZOOMCHECK_LOCALES : null) ||
+           (typeof globalThis !== 'undefined' && globalThis.ZOOMCHECK_LOCALES) ||
+           (typeof window !== 'undefined' && window.ZOOMCHECK_LOCALES) || null;
+  }
+
+  function t(key, params) {
+    var locales = getLocales();
+    if (!locales) {
+      return key;
+    }
+    var currentLang = (state && state.lang) || 'ko';
+    var dict = locales[currentLang] || locales.ko || {};
+    var text = dict[key] !== undefined ? dict[key] : ((locales.ko && locales.ko[key]) !== undefined ? locales.ko[key] : key);
+    return params ? text.replace(/\{(\w+)\}/g, function (placeholder, name) {
+      return Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : placeholder;
+    }) : text;
+  }
+
+  function getModeLabel(mode) {
+    var key = 'mode_' + mode;
+    var val = t(key);
+    return (val && val !== key) ? val : (MODE_LABEL[mode] || mode);
+  }
+  function getConfidenceLabel(confidence) {
+    var key = 'confidence_' + confidence;
+    var val = t(key);
+    return (val && val !== key) ? val : (CONFIDENCE_LABEL[confidence] || confidence || '–');
+  }
+  function getEventLabel(event) {
+    var key = 'event_' + event;
+    var val = t(key);
+    return (val && val !== key) ? val : (EVENT_LABEL[event] || event);
+  }
+
   var state = {
+    lang: 'ko',
     board: null,
     roster: [],
     rows: [],
@@ -102,9 +140,9 @@
   function renderThemeControls() {
     var effective = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
     if (el.btnToggleTheme) {
-      var nextLabel = effective === 'dark' ? '라이트 모드' : '다크 모드';
+      var nextLabel = t(effective === 'dark' ? 'light_mode' : 'dark_mode');
       setText(el.btnToggleTheme, nextLabel);
-      el.btnToggleTheme.setAttribute('aria-label', nextLabel + '로 전환');
+      el.btnToggleTheme.setAttribute('aria-label', t('theme_switch', { theme: nextLabel }));
       el.btnToggleTheme.setAttribute('aria-pressed', effective === 'dark' ? 'true' : 'false');
     }
     if (el.themeRadios) {
@@ -241,7 +279,7 @@
     if (el.snapshotResult) { el.snapshotResult.hidden = true; }
     setText(el.lastSyncTime, '–');
     el.syncSummary.querySelector('.status-dot').className = 'status-dot';
-    setText(el.syncSummary.lastChild, '동기화 대기');
+    setText(el.syncSummary.lastChild, t('sync_waiting'));
     hideAlert();
     renderBoard({ meetingId: currentMeetingId(), people: [], currentConnections: [], recentEvents: [] });
     state.board = null;
@@ -387,16 +425,16 @@
     renderModeNote();
     renderZoomAppStrip();
     if (opts.notify) {
-      toast('ok', '연결 방식 변경', MODE_LABEL[state.connectionMode] + '으로 동기화합니다.');
+      toast('ok', t('mode_changed'), t('mode_sync_with', { mode: getModeLabel(state.connectionMode) }));
     }
   }
 
   function renderModeNote() {
     var active = effectiveMode();
-    var note = '선택: ' + MODE_LABEL[state.connectionMode];
-    if (state.connectionMode === 'auto') { note += ' · 현재 적용: ' + MODE_LABEL[active]; }
-    if (state.recommendedMode) { note += ' · 권장: ' + (MODE_LABEL[state.recommendedMode] || state.recommendedMode); }
-    if (active === 'manual') { note += ' · 아래 “전체 참가자 목록 직접 붙여넣기”를 사용하세요.'; }
+    var note = t('mode_selected', { mode: getModeLabel(state.connectionMode) });
+    if (state.connectionMode === 'auto') { note += t('mode_current', { mode: getModeLabel(active) }); }
+    if (state.recommendedMode) { note += t('mode_recommended', { mode: getModeLabel(state.recommendedMode) }); }
+    if (active === 'manual') { note += t('mode_manual_help'); }
     setText(el.modeNote, note);
     renderModeControls();
     renderReadiness();
@@ -411,32 +449,32 @@
   }
   function renderModeControls() {
     var manual = effectiveMode() === 'manual';
-    setText(el.btnSyncZoom, manual ? '참가자 목록 입력' : '지금 동기화');
+    setText(el.btnSyncZoom, manual ? t('sync_paste_list') : t('sync_now'));
     el.chkAutoRefresh.disabled = manual;
     el.settingsAutoRefresh.disabled = manual;
     el.intervalInput.disabled = manual;
-    setText(el.autoStatus, manual ? '직접 입력' : (el.chkAutoRefresh.checked ? '활성' : '꺼짐'));
-    setText(el.autoModeNote, manual ? '직접 입력 모드에서는 자동 수집하지 않습니다. 이전 자동 수집 설정은 보존됩니다.' : '연결된 회의의 참가자 전체 목록을 주기적으로 수집합니다.');
+    setText(el.autoStatus, manual ? t('mode_manual') : t(el.chkAutoRefresh.checked ? 'auto_active' : 'off'));
+    setText(el.autoModeNote, manual ? t('auto_manual_hint') : t('auto_sync_hint'));
     if (manual) { state.nextSyncAt = null; setText(el.nextSyncTime, '–'); }
   }
   function renderReadiness() {
     if (!el.readiness) { return; }
     var title = '', note = '', label = '', action = null;
     if (state.rosterError) {
-      title = '명단을 불러오지 못했습니다'; note = '연결을 확인한 뒤 저장된 명단을 다시 읽어 주세요.'; label = '명단 다시 읽기'; action = function () { loadRoster(true); };
+      title = t('readiness_error_title'); note = t('readiness_error_note'); label = t('readiness_error_action'); action = function () { loadRoster(true); };
     } else if (!state.rosterLoaded && !state.roster.length) {
-      title = '저장된 명단 확인 중'; note = '회의 준비 상태를 확인하고 있습니다.';
+      title = t('readiness_checking_title'); note = t('readiness_checking_note');
     } else if (!state.roster.length) {
-      title = '1. 오늘 사용할 명단을 올려 주세요'; note = 'Excel 명단 → 회의 ID → 연결 방식 순서로 준비합니다.'; label = '명단 올리기'; action = function () { openSettingsSection('roster', 'roster-file'); };
+      title = t('readiness_upload_title'); note = t('readiness_upload_note'); label = t('readiness_upload_action'); action = function () { openSettingsSection('roster', 'roster-file'); };
     } else if (!currentMeetingId()) {
-      title = '2. 회의 ID를 확인해 주세요'; note = '명단 ' + state.roster.length + '명 등록됨 · 출석과 검토는 이 회의에 저장됩니다.'; label = '회의 ID 입력'; action = function () { el.meetingId.focus(); };
+      title = t('readiness_meeting_title'); note = t('readiness_meeting_note', { count: state.roster.length }); label = t('readiness_meeting_action'); action = function () { el.meetingId.focus(); };
     } else if (effectiveMode() === 'zoomApp' && (!state.zoomApp || !state.zoomApp.sessionActive)) {
-      title = '3. Zoom 앱을 연결해 주세요'; note = '회의 안 ZoomCheck 앱에 페어링 코드를 입력하세요.'; label = '연결 준비'; action = function () { openSettingsSection('pairing', 'btn-create-pairing-code'); };
+      title = t('readiness_pair_title'); note = t('readiness_pair_note'); label = t('readiness_pair_action'); action = function () { openSettingsSection('pairing', 'btn-create-pairing-code'); };
     } else if (effectiveMode() === 'business' && !state.zoomConfigured) {
-      title = '3. 수집 방식을 확인해 주세요'; note = 'API 설정을 확인하거나 Zoom 앱·직접 입력을 선택하세요.'; label = '연결 방식 선택'; action = function () { openSettingsSection('mode', 'mode-auto'); };
+      title = t('readiness_api_title'); note = t('readiness_api_note'); label = t('readiness_api_action'); action = function () { openSettingsSection('mode', 'mode-auto'); };
     } else if (!state.board || (!state.board.lastReceivedAt && !state.board.latestEventAt)) {
-      title = '참가자 목록을 처음 받아 주세요'; note = '명단은 준비되었습니다. 참가자를 받기 전의 0명은 출석 결과가 아닙니다.';
-      label = effectiveMode() === 'manual' ? '참가자 목록 입력' : '참가자 받기'; action = function () { syncNow({ silent: false }); };
+      title = t('readiness_sync_title'); note = t('readiness_sync_note');
+      label = effectiveMode() === 'manual' ? t('sync_paste_list') : t('readiness_sync_action'); action = function () { syncNow({ silent: false }); };
     }
     el.readiness.hidden = !title;
     setText(el.readinessTitle, title); setText(el.readinessNote, note);
@@ -444,12 +482,12 @@
     state.readinessAction = action;
   }
   function sourceLabel(source) {
-    if (source === 'web-dashboard' || source === 'manual-snapshot') { return '직접 입력'; }
-    if (source === 'zoom-live-participants') { return 'Zoom 참가자'; }
+    if (source === 'web-dashboard' || source === 'manual-snapshot') { return t('mode_manual'); }
+    if (source === 'zoom-live-participants') { return t('source_participants'); }
     if (source === 'zoom-api') { return 'Zoom API'; }
-    if (source === 'zoom-webhook' || source === 'zoom-webhook-raw') { return 'Zoom 활동 알림'; }
-    if (String(source).indexOf('zoom-app') >= 0 || String(source).indexOf('relay') >= 0) { return 'Zoom 앱'; }
-    return source || '저장된 출석';
+    if (source === 'zoom-webhook' || source === 'zoom-webhook-raw') { return t('source_webhook'); }
+    if (String(source).indexOf('zoom-app') >= 0 || String(source).indexOf('relay') >= 0) { return t('zoom_app'); }
+    return source || t('source_saved');
   }
   function renderFreshness() {
     var board = state.board || {};
@@ -459,23 +497,24 @@
     var age = valid ? Math.max(0, Math.floor((Date.now() - time) / 1000)) : 0;
     var sources = asArray(board.snapshotSources).map(function (item) { return sourceLabel(item.source); });
     sources = sources.filter(function (item, index) { return sources.indexOf(item) === index; });
-    var source = sources.join(' + ') || (effectiveMode() === 'manual' ? '직접 입력' : MODE_LABEL[effectiveMode()]);
+    var source = sources.join(' + ') || getModeLabel(effectiveMode());
     if (valid && state.awaitingSnapshot && (!state.requestedAfterReceipt || time > new Date(state.requestedAfterReceipt).getTime())) { state.awaitingSnapshot = false; state.lastSyncOk = true; }
     state.lastSyncAt = valid ? new Date(received) : null;
     setText(el.lastSyncTime, valid ? formatTime(received) : '–');
-    setText(el.summaryTime, valid ? source + ' · 마지막 참가자 수신 ' + formatTime(received) + ' · ' + (age < 60 ? age + '초 전' : Math.floor(age / 60) + '분 전')
-      : board.latestEventAt ? '최근 활동 ' + formatDateTime(board.latestEventAt) + ' · 참가자 수신 기록 없음' : '아직 참가자 수신 기록이 없습니다.');
+    setText(el.summaryTime, valid ? t('freshness_details', { source: source, time: formatTime(received),
+      age: age < 60 ? t('freshness_seconds', { count: age }) : t('freshness_minutes', { count: Math.floor(age / 60) }) })
+      : board.latestEventAt ? t('freshness_latest', { time: formatDateTime(board.latestEventAt) }) : t('freshness_empty'));
     var automatic = effectiveMode() !== 'manual' && el.chkAutoRefresh.checked;
     var late = automatic && valid && age > Math.max(30, intervalSeconds() * 3);
-    var status = state.lastSyncOk === false ? '연결 실패 · 기존 출석 유지'
-      : late ? '수신 지연 · 기존 출석 유지'
-      : state.awaitingSnapshot ? '동기화 요청됨 · 참가자 수신 대기'
-      : valid ? '참가자 수신 기록 있음' : '참가자 수신 대기';
-    setText(el.sourceStatus, status + (state.lastAttemptAt ? ' · 마지막 시도 ' + formatTime(state.lastAttemptAt) : '')
-      + (board.generatedAt ? ' · 화면 조회 ' + formatTime(board.generatedAt) : ''));
+    var status = state.lastSyncOk === false ? t('freshness_failed')
+      : late ? t('freshness_late')
+      : state.awaitingSnapshot ? t('freshness_requested')
+      : valid ? t('freshness_received') : t('freshness_waiting');
+    setText(el.sourceStatus, status + (state.lastAttemptAt ? t('freshness_attempt', { time: formatTime(state.lastAttemptAt) }) : '')
+      + (board.generatedAt ? t('freshness_view', { time: formatTime(board.generatedAt) }) : ''));
     el.syncSummary.querySelector('.status-dot').className = 'status-dot ' + (state.lastSyncOk === false ? 'bad' : late || state.awaitingSnapshot ? 'warn' : valid ? 'ok' : '');
     setText(el.syncSummary.lastChild, status);
-    setText(el.activityMode, '저장된 활동');
+    setText(el.activityMode, t('activity_saved'));
   }
 
   function describeZoomAppRole(role) {
@@ -697,7 +736,7 @@
   function requestZoomAppSync(options) {
     var opts = options || {};
     if (state.zoomApp && state.zoomApp.meetingId && normalizeMeetingId(state.zoomApp.meetingId) !== currentMeetingId()) {
-      showAlert('warn', '연결된 회의가 다릅니다', '선택한 회의 ID와 Zoom 앱의 회의 ID를 확인하세요.', '회의 ID 확인', function () { el.meetingId.focus(); });
+      showAlert('warn', '연결된 회의가 다릅니다', '선택한 회의 ID와 Zoom 앱의 회의 ID를 확인하세요.', t('sync_check_meeting'), function () { el.meetingId.focus(); });
       return Promise.resolve(null);
     }
     var context = beginMeetingRequest(opts.silent ? null : 'Zoom 앱에 동기화를 요청하는 중…');
@@ -739,44 +778,52 @@
     return syncZoomParticipants(opts);
   }
 
+  function renderRosterNote() {
+    if (!state.rosterLoaded) {
+      setText(el.rosterNote, t('roster_status_checking'));
+    } else if (state.rosterError) {
+      setText(el.rosterNote, t('roster_error', { error: state.rosterError.message }));
+    } else {
+      setText(el.rosterNote, state.roster.length ? t('roster_loaded', { count: state.roster.length }) : t('roster_load_empty'));
+    }
+  }
+
   function loadRoster(showToast) {
     return request('/api/roster').then(function (people) {
       state.rosterLoaded = true; state.rosterError = false;
       state.roster = asArray(people);
-      setText(el.rosterSummary, '명단 ' + state.roster.length + '명');
-      setText(el.rosterNote, state.roster.length
-        ? '현재 ' + state.roster.length + '명의 명단이 등록되어 있습니다.'
-        : '등록된 명단이 없습니다. Excel 파일을 올려 주세요.');
-      if (showToast) { toast('ok', '명단 확인 완료', state.roster.length + '명'); }
+      setText(el.rosterSummary, t('roster_count', { count: state.roster.length }));
+      renderRosterNote();
+      if (showToast) { toast('ok', t('roster_checked'), state.roster.length + '명'); }
       if (state.board) { renderBoard(state.board); }
       else { state.groups = collectGroups(null); renderGroupOptions(); }
       renderReadiness();
       return state.roster;
     }, function (error) {
-      state.rosterLoaded = true; state.rosterError = true; renderReadiness();
-      setText(el.rosterNote, '명단을 읽지 못했습니다 — ' + error.message);
-      if (showToast) { toast('bad', '명단 읽기 실패', error.message); }
+      state.rosterLoaded = true; state.rosterError = error; renderReadiness();
+      renderRosterNote();
+      if (showToast) { toast('bad', t('roster_load_failed'), error.message); }
       return [];
     });
   }
 
   function uploadRoster() {
     var file = el.rosterFile.files && el.rosterFile.files[0];
-    if (!file) { toast('warn', 'Excel 파일을 선택하세요', '.xlsx 또는 .xls 명단이 필요합니다.'); return; }
+    if (!file) { toast('warn', t('roster_select_file'), t('roster_file_required')); return; }
     var lower = file.name.toLowerCase();
-    if (lower.slice(-5) !== '.xlsx' && lower.slice(-4) !== '.xls') { toast('warn', '지원하지 않는 파일', 'Excel .xlsx 또는 .xls 파일만 올릴 수 있습니다.'); return; }
-    if (file.size > MAX_ROSTER_BYTES) { toast('warn', '파일이 너무 큽니다', '20MB 이하 파일을 사용하세요.'); return; }
+    if (lower.slice(-5) !== '.xlsx' && lower.slice(-4) !== '.xls') { toast('warn', t('roster_invalid_file'), t('roster_allowed_files')); return; }
+    if (file.size > MAX_ROSTER_BYTES) { toast('warn', t('roster_file_too_large'), t('roster_file_size')); return; }
     var form = new FormData();
     form.append('file', file, file.name);
-    var busy = beginBusy('명단을 올리는 중…');
+    var busy = beginBusy(t('roster_uploading'));
     request('/api/roster/upload', { method: 'POST', headers: { Accept: 'application/json' }, body: form }).then(function (result) {
       endBusy(busy);
       el.rosterFile.value = '';
-      toast('ok', '명단 업로드 완료', (result && result.count !== undefined ? result.count : '') + '명');
+      toast('ok', t('roster_uploaded'), (result && result.count !== undefined ? result.count : '') + '명');
       return Promise.all([loadRoster(false), refreshBoard({ silent: true })]);
     }, function (error) {
       endBusy(busy);
-      toast('bad', '명단 업로드 실패', error.message);
+      toast('bad', t('roster_upload_failed'), error.message);
     });
   }
 
@@ -784,7 +831,7 @@
     var meetingId = currentMeetingId();
     if (!meetingId) {
       el.meetingId.focus();
-      toast('warn', '회의 ID가 필요합니다', '상단에 Zoom 회의 ID를 입력하세요.');
+      toast('warn', t('meeting_id_required'), t('meeting_id_required_note'));
       return null;
     }
     return meetingId;
@@ -797,21 +844,21 @@
     renderFreshness();
   }
   function showSyncError(error, mode) {
-    var message = '일시적으로 연결할 수 없습니다. 기존 출석은 유지됩니다.';
-    var label = '다시 시도', action = function () { syncNow({ silent: false }); };
+    var message = t('sync_error_default');
+    var label = t('retry'), action = function () { syncNow({ silent: false }); };
     if (error.status === 403 || error.status === 401) {
-      message = '연결 권한을 확인해 주세요. 기존 출석은 유지됩니다.'; label = '권한 설정 확인';
+      message = t('sync_error_permission'); label = t('sync_check_permissions');
       action = function () { openSettingsSection(mode === 'zoomApp' ? 'pairing' : 'api'); };
     } else if (error.status === 404) {
-      message = '회의를 찾지 못했습니다. 회의 ID와 진행 상태를 확인하세요.'; label = '회의 ID 확인'; action = function () { el.meetingId.focus(); };
+      message = t('sync_error_meeting'); label = t('sync_check_meeting'); action = function () { el.meetingId.focus(); };
     } else if (error.status === 429) {
-      message = '요청이 너무 잦습니다. 동기화 간격을 늘린 뒤 다시 시도하세요.'; label = '간격 조정'; action = function () { openSettingsSection('auto', 'autorefresh-interval'); };
+      message = t('sync_error_interval'); label = t('sync_set_interval'); action = function () { openSettingsSection('auto', 'autorefresh-interval'); };
     } else if (error.status === 409 && mode === 'zoomApp') {
-      message = 'Zoom 앱 연결 상태를 확인해 주세요.'; label = '연결 확인'; action = function () { openSettingsSection('pairing'); };
+      message = t('sync_error_zoom_app'); label = t('sync_check_connection'); action = function () { openSettingsSection('pairing'); };
     } else if (error.status === 503 && mode === 'business' && !state.zoomConfigured) {
-      message = 'API 연결 설정이 필요합니다. 다른 수집 방식도 선택할 수 있습니다.'; label = '연결 방식 선택'; action = function () { openSettingsSection('mode'); };
+      message = t('sync_error_api'); label = t('readiness_api_action'); action = function () { openSettingsSection('mode'); };
     }
-    showAlert('warn', '참가자 수신 실패', message, label, action);
+    showAlert('warn', t('sync_receive_failed'), message, label, action);
     if (el.alertDetails) { el.alertDetails.hidden = false; setText(el.alertTechnical, error.message); }
   }
 
@@ -821,7 +868,7 @@
     if (!meetingId) { return Promise.resolve(null); }
     var path = '/api/zoom/meetings/' + encodeURIComponent(meetingId) + '/sync';
     if (opts.allowEmpty) { path += '?allowEmptySnapshot=true'; }
-    var context = beginMeetingRequest(opts.silent ? null : 'Zoom 참가자를 동기화하는 중…');
+    var context = beginMeetingRequest(opts.silent ? null : t('sync_in_progress'));
     return request(path, { method: 'POST' }).then(function (result) {
       if (!finishMeetingRequest(context)) { return null; }
       hideAlert();
@@ -831,8 +878,8 @@
       if (result && result.snapshot && result.snapshot.board) { renderBoard(result.snapshot.board); }
       markSync(true, ' 참가자 ' + (result && result.activeParticipants !== undefined ? result.activeParticipants : '–') + '명');
       scheduleNextSync();
-      logSession('ok', 'Zoom 동기화', '현재 ' + (result && result.activeParticipants !== undefined ? result.activeParticipants : '–') + '명');
-      if (!opts.silent) { toast('ok', '실시간 동기화 완료', '현재 참가자 ' + result.activeParticipants + '명'); }
+      logSession('ok', t('sync_zoom'), '현재 ' + (result && result.activeParticipants !== undefined ? result.activeParticipants : '–') + '명');
+      if (!opts.silent) { toast('ok', t('sync_zoom_complete'), t('sync_current_participants', { count: result.activeParticipants })); }
       return result;
     }, function (error) {
       if (!finishMeetingRequest(context)) { return null; }
@@ -848,8 +895,8 @@
           }
         });
       } else { showSyncError(error, 'business'); }
-      logSession('bad', 'Zoom 동기화 실패', error.message);
-      if (!opts.silent) { toast('bad', 'Zoom 동기화 실패', error.message); }
+      logSession('bad', t('sync_zoom_failed'), error.message);
+      if (!opts.silent) { toast('bad', t('sync_zoom_failed'), error.message); }
       return null;
     });
   }
@@ -858,15 +905,15 @@
     var opts = options || {};
     var meetingId = opts.silent ? currentMeetingId() : requireMeetingId();
     if (!meetingId) { return Promise.resolve(null); }
-    var context = beginMeetingRequest(opts.silent ? null : '출석 현황을 불러오는 중…');
+    var context = beginMeetingRequest(opts.silent ? null : t('board_loading'));
     return request('/api/meetings/' + encodeURIComponent(meetingId) + '/board').then(function (board) {
       if (!finishMeetingRequest(context)) { return null; }
       renderBoard(board);
-      if (opts.notify) { toast('ok', '화면 새로고침 완료', '저장된 최신 상태를 표시합니다.'); }
+      if (opts.notify) { toast('ok', t('board_refreshed'), t('board_refreshed_note')); }
       return board;
     }, function (error) {
       if (!finishMeetingRequest(context)) { return null; }
-      if (!opts.silent) { toast('bad', '화면 새로고침 실패', error.message); }
+      if (!opts.silent) { toast('bad', t('board_refresh_failed'), error.message); }
       return null;
     });
   }
@@ -1054,7 +1101,7 @@
     el.groupFilter.textContent = '';
     var all = document.createElement('option');
     all.value = '';
-    all.textContent = '전체 그룹';
+    all.textContent = t('all_groups');
     el.groupFilter.appendChild(all);
     known.forEach(function (name) {
       var option = document.createElement('option');
@@ -1119,7 +1166,7 @@
     if (state.board) { renderBoard(state.board); }
     else { renderGroupOptions(); renderParticipants(); }
     if (opts.notify) {
-      toast('ok', '그룹 필터 변경', state.group ? state.group + ' 기준으로 표시합니다.' : '전체 그룹을 표시합니다.');
+      toast('ok', t('group_changed'), state.group ? t('group_show', { group: state.group }) : t('group_show_all'));
     }
   }
 
@@ -1153,16 +1200,17 @@
     setText(el.summaryPresent, present.length);
     setText(el.summaryRate, total ? rate + '%' : '–');
     el.rateRing.style.setProperty('--rate', total ? rate : 0);
-    setText(el.metricPresent, present.length + '명');
-    setText(el.metricAbsent, absent.length + '명');
-    setText(el.metricReview, review.length + '항목');
-    setText(el.metricDuplicate, duplicates.length + '명');
+    setText(el.metricPresent, t('count_people', { count: present.length }));
+    setText(el.metricAbsent, t('count_people', { count: absent.length }));
+    setText(el.metricReview, t('count_items', { count: review.length }));
+    setText(el.metricDuplicate, t('count_people', { count: duplicates.length }));
     renderFreshness();
     renderReadiness();
-    setText(el.participantsMeta, '명단 참석 ' + present.length + ' / ' + total + '명 · 미매칭 이름 ' + unmatched.length + '개 · 기기 연결 ' + connectionCount + '건');
-    setText(el.scopeNote, (state.group ? state.group + ' · ' : '') + '미매칭은 그룹과 관계없이 표시 · 오늘 제외 ' + excluded.length + '명' + (board.attendanceDate ? ' · ' + board.attendanceDate : ''));
-    setText(el.btnExport, (state.group || '전체') + ' 명단 CSV · ' + total + '명');
-    setText(el.exportScope, 'CSV: 제외되지 않은 ' + (state.group || '전체') + ' 명단 · 검색·상태 필터와 미매칭 항목은 미포함');
+    setText(el.participantsMeta, t('participants_totals', { present: present.length,
+      total: total, unmatched: unmatched.length, connections: connectionCount }));
+    setText(el.scopeNote, (state.group ? state.group + ' · ' : '') + t('scope_exclusions', { count: excluded.length }) + (board.attendanceDate ? ' · ' + board.attendanceDate : ''));
+    setText(el.btnExport, t('export_group_label', { group: state.group || t('group_all_scope'), count: total }));
+    setText(el.exportScope, t('export_group_scope', { group: state.group || t('group_all_scope') }));
     el.btnExport.disabled = !currentMeetingId() || total === 0;
 
     setText(el.countAll, scoped.length);
@@ -1171,7 +1219,7 @@
     setText(el.countReview, review.length);
     setText(el.countUnmatched, unmatched.length);
     setText(el.countExcluded, excluded.length);
-    setText(el.rosterSummary, state.group ? state.group + ' ' + total + '명' : '명단 ' + total + '명');
+    setText(el.rosterSummary, state.group ? t('group_count', { group: state.group, count: total }) : t('roster_count', { count: total }));
 
     renderParticipants();
     renderActivity(scopedEvents(board.recentEvents, scoped), duplicates);
@@ -1196,16 +1244,20 @@
   }
 
   function statusInfo(row) {
-    if (row.isExcluded) { return { label: '오늘 제외', className: 'neutral' }; }
-    if (row.kind === 'unmatched') { return { label: '미매칭', className: 'unmatched' }; }
-    if (row.attendanceState === 'Present') { return { label: '참석 중', className: 'present' }; }
-    if (row.attendanceState === 'Left') { return { label: '퇴장', className: 'left' }; }
-    return { label: '미참석', className: 'absent' };
+    if (row.isExcluded) { return { label: t('status_Excluded') !== 'status_Excluded' ? t('status_Excluded') : '오늘 제외', className: 'neutral' }; }
+    if (row.kind === 'unmatched') { return { label: t('status_Unmatched') !== 'status_Unmatched' ? t('status_Unmatched') : '미매칭', className: 'unmatched' }; }
+    if (row.attendanceState === 'Present') { return { label: t('status_Present') !== 'status_Present' ? t('status_Present') : '참석 중', className: 'present' }; }
+    if (row.attendanceState === 'Left') { return { label: t('status_Left') !== 'status_Left' ? t('status_Left') : '퇴장', className: 'left' }; }
+    return { label: t('status_Absent') !== 'status_Absent' ? t('status_Absent') : '미참석', className: 'absent' };
   }
   function confidenceInfo(row) {
-    if (row.kind === 'roster' && row.attendanceState === 'NotJoined') { return { label: '입장 전', className: 'neutral' }; }
-    if (row.kind === 'unmatched') { return { label: '미매칭', className: 'unmatched' }; }
-    return { label: CONFIDENCE_LABEL[row.confidence] || row.confidence || '–',
+    if (row.kind === 'roster' && row.attendanceState === 'NotJoined') {
+      return { label: t('status_NotJoined') !== 'status_NotJoined' ? t('status_NotJoined') : '입장 전', className: 'neutral' };
+    }
+    if (row.kind === 'unmatched') {
+      return { label: t('status_Unmatched') !== 'status_Unmatched' ? t('status_Unmatched') : '미매칭', className: 'unmatched' };
+    }
+    return { label: getConfidenceLabel(row.confidence),
       className: row.confidence === 'Verified' || row.confidence === 'AliasVerified' ? 'verified' : row.confidence === 'Unmatched' ? 'neutral' : 'review' };
   }
 
@@ -1231,9 +1283,9 @@
     var rows = scopedRows().filter(rowMatchesFilter).filter(rowMatchesSearch);
     el.participantRows.textContent = '';
     el.participantsEmpty.hidden = rows.length > 0;
-    setText(el.visibleCount, rows.length + '항목 표시');
-    setText(el.emptyTitle, state.filter === 'excluded' ? '오늘 제외한 사람이 없습니다.' : state.filter === 'review' ? '현재 필터에 검토할 항목이 없습니다.' : '표시할 참가자가 없습니다.');
-    setText(el.emptyNote, state.filter === 'excluded' ? '오늘 제외한 사람은 여기서 복원할 수 있으며 다음 날 다시 포함됩니다. 원본 명단과 과거 기록은 유지됩니다.' : '검색·그룹·상태 필터를 확인하세요. 모두 제외했다면 제외됨 목록에서 복원할 수 있습니다.');
+    setText(el.visibleCount, t('visible_count', { count: rows.length }));
+    setText(el.emptyTitle, state.filter === 'excluded' ? t('empty_excluded_title') : state.filter === 'review' ? t('empty_review_title') : t('empty_participants_title'));
+    setText(el.emptyNote, state.filter === 'excluded' ? t('empty_excluded_note') : t('empty_filtered_note'));
     if (el.btnResetFilters) { el.btnResetFilters.hidden = !state.group && !el.participantSearch.value && state.filter === 'all'; }
 
     rows.forEach(function (row) {
@@ -1248,11 +1300,11 @@
       name.textContent = (row.key === state.selectedKey ? '− ' : '+ ') + row.name;
       name.dataset.focusKey = 'row:' + row.key;
       name.setAttribute('aria-expanded', row.key === state.selectedKey ? 'true' : 'false');
-      name.setAttribute('aria-label', row.name + ' 상세 ' + (row.key === state.selectedKey ? '접기' : '펼치기'));
+      name.setAttribute('aria-label', t('participant_row_details', { name: row.name, action: t(row.key === state.selectedKey ? 'collapse' : 'expand') }));
       name.addEventListener('click', function (event) { event.stopPropagation(); toggleParticipant(row.key); });
       var secondary = document.createElement('span');
       secondary.className = 'participant-secondary';
-      secondary.textContent = row.email || (row.kind === 'unmatched' ? 'Zoom 표시 이름' : '이메일 없음');
+      secondary.textContent = row.email || (row.kind === 'unmatched' ? t('participant_display_name') : t('participant_no_email'));
       nameCell.appendChild(name);
       nameCell.appendChild(secondary);
       tr.appendChild(nameCell);
@@ -1270,11 +1322,11 @@
       tr.appendChild(orgCell);
       appendPillCell(tr, confidenceInfo(row), 'match-pill');
       appendTextCell(tr, formatTime(row.lastJoinedAt));
-      appendTextCell(tr, row.attendanceState === 'Left' ? '퇴장 ' + formatTime(row.lastLeftAt) : (row.lastJoinedAt ? '입장 ' + formatTime(row.lastJoinedAt) : '–'));
+      appendTextCell(tr, row.attendanceState === 'Left' ? t('participant_left_at', { time: formatTime(row.lastLeftAt) }) : (row.lastJoinedAt ? t('participant_joined_at', { time: formatTime(row.lastJoinedAt) }) : '–'));
       var connectionCell = document.createElement('td');
       var connectionPill = document.createElement('span');
       connectionPill.className = 'connection-pill' + (row.duplicate ? ' duplicate' : '');
-      connectionPill.textContent = row.connections.length ? row.connections.length + '건' : '–';
+      connectionPill.textContent = row.connections.length ? t('connection_count', { count: row.connections.length }) : '–';
       connectionCell.appendChild(connectionPill);
       tr.appendChild(connectionCell);
       tr.addEventListener('click', function (event) {
@@ -1410,10 +1462,10 @@
   function setPersonReview(row, kind, status, scope) {
     var token = kind === 'identity' ? row.identityEvidenceToken : row.duplicateEvidenceToken;
     if (!token) { return Promise.resolve(null); }
-    var label = kind === 'identity' ? '신원' : '중복 기기';
+    var label = kind === 'identity' ? t('review_identity') : t('review_devices');
     return mutateMeeting(scope || meetingScope(), '/people/' + encodeURIComponent(row.rosterPersonId) + '/review',
       { kind: kind, status: status, expectedEvidenceToken: token }, personLabel(row) + '\n' + label + ' 검토를 '
-      + (status === 'confirmed' ? '이번 회의에서 확인' : status === 'deferred' ? '보류' : '미확인으로 되돌림') + ' 처리할까요?\n실제 매칭 근거와 입퇴장 상태는 바뀌지 않습니다.', label + ' 검토를 저장했습니다');
+      + (status === 'confirmed' ? t('review_confirm') : status === 'deferred' ? t('review_defer') : '미확인으로 되돌림') + ' 처리할까요?\n실제 매칭 근거와 입퇴장 상태는 바뀌지 않습니다.', label + ' 검토를 저장했습니다');
   }
   function matchConnection(connection, personId, scope) {
     if (!connection.source || !connection.presenceKey || !connection.evidenceToken) { return Promise.resolve(null); }
@@ -1437,20 +1489,20 @@
     button.addEventListener('click', function (event) { event.stopPropagation(); handler(); }); parent.appendChild(button); return button;
   }
   function reviewExplanation(row) {
-    if (row.isExcluded) { return '오늘 제외 · 원본 명단과 과거 기록 유지, 다음 날 다시 포함'; }
-    if (row.attendanceState === 'NotJoined') { return '아직 입장 기록이 없습니다. 참가자가 입장하면 명단과 연결합니다.'; }
-    var reason = row.confidence === 'NameOnly' ? '이름만 일치합니다. 이메일로는 확인되지 않았습니다.'
-      : row.confidence === 'Possible' ? '비슷한 이름의 명단 인물을 찾았습니다. 같은 사람인지 확인해 주세요.'
-      : row.confidence === 'AliasVerified' ? '등록된 별명으로 명단 인물과 연결했습니다.'
+    if (row.isExcluded) { return t('review_excluded_reason'); }
+    if (row.attendanceState === 'NotJoined') { return t('review_not_joined'); }
+    var reason = row.confidence === 'NameOnly' ? t('review_name_only')
+      : row.confidence === 'Possible' ? t('review_possible_match')
+      : row.confidence === 'AliasVerified' ? t('review_alias_match')
       : row.confidence === 'Verified' ? (row.connections.some(function (connection) { return connection.manualMatch; })
-        ? '운영자가 이번 회의에서 명단 인물과 연결했습니다.' : '이메일로 명단 인물을 확인했습니다.')
-      : '명단에서 같은 사람을 확인하지 못했습니다. 연결할 명단 인물을 선택해 주세요.';
-    if (row.duplicate) { reason += ' 같은 명단 인물에 여러 기기가 연결되어 있습니다. 기기 연결도 확인해 주세요.'; }
+        ? t('review_manual_match') : t('review_email_match'))
+      : t('review_no_match');
+    if (row.duplicate) { reason += t('review_duplicate_reason'); }
     return reason;
   }
   function appendPersonActions(parent, row, scope) {
     var section = document.createElement('section'); section.className = 'review-actions';
-    var heading = document.createElement('h3'); heading.textContent = '이번 회의 검토'; section.appendChild(heading);
+    var heading = document.createElement('h3'); heading.textContent = t('review_this_meeting'); section.appendChild(heading);
     var reason = document.createElement('p'); reason.textContent = reviewExplanation(row);
     section.appendChild(reason);
     if (!row.isExcluded) {
@@ -1458,18 +1510,18 @@
         var status = row[kind + 'ReviewStatus'];
         if (!status || status === 'none') { return; }
         var line = document.createElement('div'); line.className = 'review-action-line';
-        var label = document.createElement('strong'); label.textContent = (kind === 'identity' ? '신원' : '중복 기기') + ' · '
-          + (status === 'confirmed' ? '확인됨' : status === 'deferred' ? '보류' : '검토 필요'); line.appendChild(label);
+        var label = document.createElement('strong'); label.textContent = (kind === 'identity' ? t('review_identity') : t('review_devices')) + ' · '
+          + (status === 'confirmed' ? t('confidence_Verified') : status === 'deferred' ? t('review_deferred') : t('metric_review')); line.appendChild(label);
         var disabled = !row[kind + 'EvidenceToken'];
-        if (status !== 'confirmed') { actionButton(line, '이번 회의에서 확인', row.key + ':' + kind + ':confirm', function () { setPersonReview(row, kind, 'confirmed', scope); }, disabled); }
-        if (status === 'pending') { actionButton(line, '보류', row.key + ':' + kind + ':defer', function () { setPersonReview(row, kind, 'deferred', scope); }, disabled); }
-        if (status !== 'pending') { actionButton(line, '판단 취소', row.key + ':' + kind + ':undo', function () { setPersonReview(row, kind, 'pending', scope); }, disabled); }
+        if (status !== 'confirmed') { actionButton(line, t('review_confirm'), row.key + ':' + kind + ':confirm', function () { setPersonReview(row, kind, 'confirmed', scope); }, disabled); }
+        if (status === 'pending') { actionButton(line, t('review_defer'), row.key + ':' + kind + ':defer', function () { setPersonReview(row, kind, 'deferred', scope); }, disabled); }
+        if (status !== 'pending') { actionButton(line, t('review_undo'), row.key + ':' + kind + ':undo', function () { setPersonReview(row, kind, 'pending', scope); }, disabled); }
         section.appendChild(line);
       });
     }
     {
-      actionButton(section, row.isExcluded ? '오늘 명단에 복원' : '오늘 명단에서 제외 (불참)', row.key + ':exclusion', function () { setPersonExcluded(row, !row.isExcluded, scope); });
-      var note = document.createElement('p'); note.className = 'muted'; note.textContent = '오늘 이 회의에만 적용 · 원본 명단과 과거 기록 유지 · 다음 날 다시 포함'; section.appendChild(note);
+      actionButton(section, row.isExcluded ? t('review_restore') : t('review_exclude'), row.key + ':exclusion', function () { setPersonExcluded(row, !row.isExcluded, scope); });
+      var note = document.createElement('p'); note.className = 'muted'; note.textContent = t('review_exclude_note'); section.appendChild(note);
     }
     parent.appendChild(section);
   }
@@ -1477,40 +1529,40 @@
     var key = JSON.stringify([connection.source, connection.presenceKey]);
     var draft = state.connectionDrafts[key] || (state.connectionDrafts[key] = { query: '', personId: '', open: false });
     var label = document.createElement('p'); label.className = 'connection-identity';
-    label.textContent = '연결 ' + (index + 1) + ' · ' + sourceLabel(connection.source) + ' · ' + (connection.presenceKey || 'ID 없음')
-      + (connection.manualMatch ? ' · 이번 회의에서 운영자가 연결함' : '') + (connection.reviewStatus === 'deferred' ? ' · 보류' : ''); card.appendChild(label);
+    label.textContent = t('connection_number', { number: index + 1 }) + ' · ' + sourceLabel(connection.source) + ' · ' + (connection.presenceKey || t('connection_no_id'))
+      + (connection.manualMatch ? t('connection_manual_tag') : '') + (connection.reviewStatus === 'deferred' ? t('connection_deferred_tag') : ''); card.appendChild(label);
     if (row.isExcluded || !connection.source || !connection.presenceKey || !connection.evidenceToken) { return; }
     var details = document.createElement('details'); details.className = 'connection-actions'; details.open = draft.open;
-    var summary = document.createElement('summary'); summary.textContent = '명단 연결·검토'; summary.dataset.focusKey = key + ':details'; details.appendChild(summary);
+    var summary = document.createElement('summary'); summary.textContent = t('review_link'); summary.dataset.focusKey = key + ':details'; details.appendChild(summary);
     details.addEventListener('toggle', function () { draft.open = details.open; });
-    var searchLabel = document.createElement('label'); searchLabel.textContent = '연결할 명단 인물 검색';
-    var search = document.createElement('input'); search.type = 'search'; search.value = draft.query; search.placeholder = '이름·이메일·그룹'; search.dataset.focusKey = key + ':search'; searchLabel.appendChild(search); details.appendChild(searchLabel);
-    var selectLabel = document.createElement('label'); selectLabel.textContent = '이번 회의의 명단 인물';
+    var searchLabel = document.createElement('label'); searchLabel.textContent = t('review_search');
+    var search = document.createElement('input'); search.type = 'search'; search.value = draft.query; search.placeholder = t('review_search_placeholder'); search.dataset.focusKey = key + ':search'; searchLabel.appendChild(search); details.appendChild(searchLabel);
+    var selectLabel = document.createElement('label'); selectLabel.textContent = t('review_roster_person');
     var select = document.createElement('select'); select.dataset.focusKey = key + ':person'; selectLabel.appendChild(select); details.appendChild(selectLabel);
     function choices() {
       var rosterPeople = rosterById();
       select.textContent = '';
-      var empty = document.createElement('option'); empty.value = ''; empty.textContent = '명단 인물을 선택하세요'; select.appendChild(empty);
+      var empty = document.createElement('option'); empty.value = ''; empty.textContent = t('review_choose_person'); select.appendChild(empty);
       asArray(state.board && state.board.people).filter(function (person) {
         var roster = rosterPeople[person.rosterPersonId] || {};
         return !person.isExcluded && normalizeSearch([person.name, person.group, person.organization, roster.email].join(' ')).indexOf(normalizeSearch(draft.query)) >= 0;
       }).forEach(function (person) {
         var roster = rosterPeople[person.rosterPersonId] || {};
         var option = document.createElement('option'); option.value = person.rosterPersonId;
-        option.textContent = person.name + ' · ' + (person.group || '그룹 없음') + ' · ' + (roster.email || '번호 ' + (person.sequence || person.rosterPersonId)); select.appendChild(option);
+        option.textContent = person.name + ' · ' + (person.group || t('review_no_group')) + ' · ' + (roster.email || t('roster_sequence', { id: person.sequence || person.rosterPersonId })); select.appendChild(option);
       });
       select.value = draft.personId;
       if (select.value !== draft.personId) { draft.personId = ''; select.value = ''; }
     }
     choices();
-    var apply = actionButton(details, '이 명단 인물과 연결', key + ':match', function () { matchConnection(connection, select.value, scope); }, !draft.personId);
+    var apply = actionButton(details, t('review_match'), key + ':match', function () { matchConnection(connection, select.value, scope); }, !draft.personId);
     search.addEventListener('input', function () { draft.query = search.value; draft.personId = ''; choices(); apply.disabled = true; });
     select.addEventListener('change', function () { draft.personId = select.value; apply.disabled = !select.value; });
-    if (connection.manualMatch) { actionButton(details, '운영자 연결 취소', key + ':undo-match', function () { matchConnection(connection, null, scope); }); }
+    if (connection.manualMatch) { actionButton(details, t('review_unmatch'), key + ':undo-match', function () { matchConnection(connection, null, scope); }); }
     if (row.kind === 'unmatched') {
-      actionButton(details, connection.reviewStatus === 'deferred' ? '보류 취소' : '이 연결 보류', key + ':defer', function () { reviewConnection(connection, connection.reviewStatus === 'deferred' ? 'pending' : 'deferred', scope); });
+      actionButton(details, connection.reviewStatus === 'deferred' ? t('review_undefer') : t('review_defer_connection'), key + ':defer', function () { reviewConnection(connection, connection.reviewStatus === 'deferred' ? 'pending' : 'deferred', scope); });
     }
-    var note = document.createElement('p'); note.textContent = '이 회의의 이 연결에만 적용합니다. 다음 회의의 별명으로 저장하지 않습니다.'; details.appendChild(note); card.appendChild(details);
+    var note = document.createElement('p'); note.textContent = t('review_connection_note'); details.appendChild(note); card.appendChild(details);
   }
   function buildDetailRow(row) {
     var tr = document.createElement('tr');
@@ -1525,7 +1577,7 @@
     var connectionBlock = document.createElement('section');
     connectionBlock.className = 'detail-block';
     var connectionTitle = document.createElement('h3');
-    connectionTitle.textContent = '현재 Zoom 연결 ' + row.connections.length + '건';
+    connectionTitle.textContent = t('connection_current', { count: row.connections.length });
     connectionBlock.appendChild(connectionTitle);
     var cards = document.createElement('div');
     cards.className = 'connection-cards';
@@ -1533,9 +1585,9 @@
       var empty = document.createElement('div');
       empty.className = 'connection-card';
       var emptyStrong = document.createElement('strong');
-      emptyStrong.textContent = '활성 연결 없음';
+      emptyStrong.textContent = t('connection_none');
       var emptySpan = document.createElement('span');
-      emptySpan.textContent = '명단 기록과 이전 입퇴장 이력만 있습니다.';
+      emptySpan.textContent = t('connection_none_note');
       empty.appendChild(emptyStrong);
       empty.appendChild(emptySpan);
       cards.appendChild(empty);
@@ -1544,10 +1596,10 @@
       var card = document.createElement('div');
       card.className = 'connection-card';
       var strong = document.createElement('strong');
-      strong.textContent = connection.rawName || connection.canonicalName || 'Zoom 연결';
+      strong.textContent = connection.rawName || connection.canonicalName || t('duplicate_connection');
       var span = document.createElement('span');
       var normalized = connection.canonicalName && connection.rawName && connection.canonicalName !== connection.rawName
-        ? '자동 정리: ' + connection.canonicalName
+        ? t('connection_normalized_name', { name: connection.canonicalName })
         : (connection.email || sourceLabel(connection.source));
       span.textContent = normalized;
       var time = document.createElement('time');
@@ -1567,14 +1619,14 @@
       var renameButton = document.createElement('button');
       renameButton.type = 'button';
       renameButton.className = 'btn secondary compact';
-      renameButton.textContent = 'Zoom 이름을 ' + candidate.target + '으로 변경';
+      renameButton.textContent = t('connection_rename', { name: candidate.target });
       renameButton.addEventListener('click', function (event) {
         event.stopPropagation();
         renameZoomParticipant(candidate);
       });
       var renameNote = document.createElement('p');
       renameNote.className = 'rename-note';
-      renameNote.textContent = '호스트 또는 공동호스트 권한과 이름 변경을 지원하는 Zoom 클라이언트에서만 적용됩니다.';
+      renameNote.textContent = t('connection_rename_note');
       renameBox.appendChild(renameButton);
       renameBox.appendChild(renameNote);
       connectionBlock.appendChild(renameBox);
@@ -1583,19 +1635,19 @@
     var matchBlock = document.createElement('section');
     matchBlock.className = 'detail-block';
     var matchTitle = document.createElement('h3');
-    matchTitle.textContent = '명단 및 활동 상세';
+    matchTitle.textContent = t('detail_title');
     matchBlock.appendChild(matchTitle);
     var dl = document.createElement('dl');
     dl.className = 'detail-list';
     [
-      ['명단 이름', row.name],
-      ['그룹', row.group || '없음'],
-      ['이메일', row.email || '없음'],
-      ['전화번호', row.phone || '없음'],
-      ['매칭 상태', confidenceInfo(row).label],
-      ['최근 입장', formatDateTime(row.lastJoinedAt)],
-      ['마지막 퇴장', formatDateTime(row.lastLeftAt)],
-      ['입장 기록', row.joinCount + '회']
+      [t('detail_roster_name'), row.name],
+      [t('detail_group'), row.group || t('detail_none')],
+      [t('detail_email'), row.email || t('detail_none')],
+      [t('detail_phone'), row.phone || t('detail_none')],
+      [t('detail_match'), confidenceInfo(row).label],
+      [t('detail_last_join'), formatDateTime(row.lastJoinedAt)],
+      [t('detail_last_leave'), formatDateTime(row.lastLeftAt)],
+      [t('detail_join_count'), t('join_count', { count: row.joinCount })]
     ].forEach(function (pair) {
       var dt = document.createElement('dt'); dt.textContent = pair[0];
       var dd = document.createElement('dd'); dd.textContent = pair[1];
@@ -1628,7 +1680,7 @@
         type: type,
         at: event.occurredAt,
         title: type === 'NameChanged' ? (oldName ? oldName + ' → ' + newName : newName) : event.participantName,
-        detail: EVENT_LABEL[type] || type,
+        detail: getEventLabel(type),
         meta: sourceLabel(event.source),
         sortAt: new Date(event.occurredAt || 0).getTime()
       };
@@ -1638,14 +1690,14 @@
         var at = new Date(item.lastSeenAt || item.firstSeenAt || 0).getTime();
         return at > value ? at : value;
       }, 0);
-      items.push({ key: 'duplicate:' + group.key, type: 'Duplicate', at: latest ? new Date(latest) : null, title: group.personName, detail: '중복 연결 감지', meta: group.connections.length + '건', sortAt: latest });
+      items.push({ key: 'duplicate:' + group.key, type: 'Duplicate', at: latest ? new Date(latest) : null, title: group.personName, detail: t('activity_duplicate'), meta: t('connection_count', { count: group.connections.length }), sortAt: latest });
     });
     items.sort(function (a, b) { return b.sortAt - a.sortAt; });
     items = items.slice(0, 30);
     el.activityFeed.textContent = '';
     el.activityEmpty.hidden = items.length > 0;
     el.activityFeed.hidden = items.length === 0;
-    setText(el.activityCount, '최근 ' + items.length + '건');
+    setText(el.activityCount, t('activity_count', { count: items.length }));
     items.forEach(function (item) {
       var li = document.createElement('li');
       li.className = 'activity-item';
@@ -1659,7 +1711,7 @@
       var main = document.createElement('div');
       main.className = 'activity-main';
       var title = document.createElement('strong');
-      title.textContent = item.title || '알 수 없는 참가자';
+      title.textContent = item.title || t('activity_unknown');
       var detail = document.createElement('span');
       detail.textContent = item.detail;
       main.appendChild(title);
@@ -1686,22 +1738,22 @@
       var name = document.createElement('button');
       name.type = 'button'; name.className = 'duplicate-person';
       name.disabled = !group.rosterPersonId;
-      name.setAttribute('aria-label', group.personName + ' 참가자 상세 보기');
+      name.setAttribute('aria-label', t('duplicate_details', { name: group.personName }));
       name.textContent = group.personName;
       var count = document.createElement('span');
-      count.textContent = group.connections.length + '건 연결';
+      count.textContent = t('duplicate_connections', { count: group.connections.length });
       header.appendChild(name); header.appendChild(count);
       var reason = document.createElement('p');
-      reason.textContent = group.reason || '출석은 한 명으로 계산하고 연결은 별도로 표시합니다.';
+      reason.textContent = group.reason || t('duplicate_count_as_one');
       var list = document.createElement('div');
       list.className = 'duplicate-connections';
       group.connections.forEach(function (connection) {
         var row = document.createElement('div');
         row.className = 'duplicate-connection';
         var label = document.createElement('strong');
-        label.textContent = connection.rawName || connection.canonicalName || 'Zoom 연결';
+        label.textContent = connection.rawName || connection.canonicalName || t('duplicate_connection');
         var time = document.createElement('time');
-        time.textContent = formatTime(connection.firstSeenAt) + ' ~ 현재';
+        time.textContent = t('connected_since', { time: formatTime(connection.firstSeenAt) });
         row.appendChild(label); row.appendChild(time); list.appendChild(row);
       });
       card.appendChild(header); card.appendChild(reason); card.appendChild(list);
@@ -1727,7 +1779,7 @@
   function exportCsv() {
     var meetingId = requireMeetingId();
     if (!meetingId) { return; }
-    var busy = beginBusy('CSV를 준비하는 중…');
+    var busy = beginBusy(t('export_csv_preparing'));
     var path = '/api/meetings/' + encodeURIComponent(meetingId) + '/export';
     var group = state.group;
     if (group) { path += '?group=' + encodeURIComponent(group); }
@@ -1744,8 +1796,8 @@
       document.body.appendChild(link);
       link.click(); link.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-      toast('ok', 'CSV 내보내기 시작', link.download);
-    }, function (error) { endBusy(busy); toast('bad', 'CSV 내보내기 실패', error.message); });
+      toast('ok', t('export_csv_started'), link.download);
+    }, function (error) { endBusy(busy); toast('bad', t('export_csv_failed'), error.message); });
   }
 
   function parseNames(raw) {
@@ -1788,7 +1840,7 @@
       setText(el.snapshotResultSummary, '회의 ' + meetingId + ' · ' + summary + ' — 변경 내역');
       el.snapshotResultDetails.textContent = '';
       [['입장', 'joinedNames'], ['퇴장', 'leftNames'], ['처리 제외', 'ignoredNames']].forEach(function (pair) {
-        var item = document.createElement('p'); item.textContent = pair[0] + ': ' + (asArray(result && result[pair[1]]).join(', ') || '없음'); el.snapshotResultDetails.appendChild(item);
+        var item = document.createElement('p'); item.textContent = pair[0] + ': ' + (asArray(result && result[pair[1]]).join(', ') || t('detail_none')); el.snapshotResultDetails.appendChild(item);
       });
       el.snapshotResult.hidden = false; el.snapshotResult.open = true;
       toast('ok', '전체 목록 적용 완료', summary);
@@ -1814,7 +1866,7 @@
     stopAutoRefresh();
     writeStore(STORAGE.autoRefresh, checked ? '1' : '0');
     writeStore(STORAGE.interval, intervalSeconds());
-    setText(el.autoStatus, checked ? '활성' : '꺼짐');
+    setText(el.autoStatus, checked ? t('auto_active') : t('off'));
     renderModeControls();
     if (checked) {
       state.timerId = window.setInterval(function () {
@@ -1869,7 +1921,7 @@
     });
     setText(el.tutorialProgressText, (state.tutorialStep + 1) + ' / ' + total);
     el.btnTutorialBack.disabled = state.tutorialStep === 0;
-    setText(el.btnTutorialNext, state.tutorialStep === total - 1 ? '시작하기' : '다음');
+    setText(el.btnTutorialNext, t(state.tutorialStep === total - 1 ? 'btn_tutorial_finish' : 'btn_tutorial_next'));
   }
 
   function showTutorial(step) {
@@ -2253,6 +2305,106 @@
     });
   }
 
+  var originalRichLabels = new WeakMap();
+  function applyLanguage(lang, opts) {
+    opts = opts || {};
+    var target = SUPPORTED_LANGS.indexOf(lang) >= 0 ? lang : 'ko';
+    state.lang = target;
+    if (opts.persist !== false) {
+      writeStore(STORAGE.lang, target);
+    }
+    if (typeof document !== 'undefined' && document.documentElement) {
+      document.documentElement.lang = target;
+    }
+
+    if (el.btnToggleLang) {
+      el.btnToggleLang.textContent = target.toUpperCase();
+    }
+    if (el.langRadios) {
+      el.langRadios.forEach(function (radio) {
+        radio.checked = radio.value === target;
+      });
+    }
+
+    // Translate elements with data-i18n
+    if (typeof document !== 'undefined') {
+      var i18nNodes = document.querySelectorAll('[data-i18n]');
+      for (var i = 0; i < i18nNodes.length; i++) {
+        var node = i18nNodes[i];
+        var key = node.getAttribute('data-i18n');
+        if (key) {
+          var translated = t(key);
+          if (translated && translated !== key) {
+            if (node.children.length) {
+              if (target === 'ko') { continue; }
+              originalRichLabels.set(node, Array.from(node.childNodes));
+            }
+            var original = originalRichLabels.get(node);
+            if (target === 'ko' && original) {
+              node.replaceChildren.apply(node, original);
+            } else {
+              node.textContent = translated;
+            }
+          }
+        }
+      }
+
+      var placeholderNodes = document.querySelectorAll('[data-i18n-placeholder]');
+      for (var j = 0; j < placeholderNodes.length; j++) {
+        var pNode = placeholderNodes[j];
+        var pKey = pNode.getAttribute('data-i18n-placeholder');
+        if (pKey) {
+          var pText = t(pKey);
+          if (pText && pText !== pKey) {
+            pNode.placeholder = pText;
+          }
+        }
+      }
+
+      var ariaNodes = document.querySelectorAll('[data-i18n-aria]');
+      for (var k = 0; k < ariaNodes.length; k++) {
+        var aNode = ariaNodes[k];
+        var aKey = aNode.getAttribute('data-i18n-aria');
+        if (aKey) {
+          var aText = t(aKey);
+          if (aText && aText !== aKey) {
+            aNode.setAttribute('aria-label', aText);
+          }
+        }
+      }
+    }
+
+    document.title = t('app_title');
+    renderModeNote();
+    renderThemeControls();
+    renderRosterNote();
+    if (el.tutorialSteps.length) { renderTutorial(); }
+    if (state.board) {
+      renderBoard(state.board);
+    } else {
+      renderParticipants();
+      renderFreshness();
+      renderGroupOptions();
+      renderActivity([], []);
+      setText(el.rosterSummary, t('roster_count', { count: state.roster.length }));
+      var zeroPeople = t('count_people', { count: 0 });
+      setText(el.metricPresent, zeroPeople);
+      setText(el.metricAbsent, zeroPeople);
+      setText(el.metricReview, t('count_items', { count: 0 }));
+      setText(el.metricDuplicate, zeroPeople);
+    }
+
+    if (opts.notify) {
+      var langNames = { ko: '한국어', en: 'English', es: 'Español' };
+      toast('ok', t('language'), langNames[target] || target);
+    }
+  }
+
+  function toggleLanguage() {
+    var nextIndex = (SUPPORTED_LANGS.indexOf(state.lang) + 1) % SUPPORTED_LANGS.length;
+    applyLanguage(SUPPORTED_LANGS[nextIndex], { persist: true, notify: true });
+  }
+
   function cacheElements() {
     [
       'meeting-id','health-dot','health-text','zoom-dot','zoom-status','chk-autorefresh','auto-status','last-sync-time','next-sync-time',
@@ -2260,7 +2412,7 @@
       'scope-note','export-scope','count-excluded','empty-title','empty-note','btn-reset-filters','alert-details','alert-technical',
       'snapshot-result','snapshot-result-summary','snapshot-result-details',
       'action-confirm','action-confirm-message','btn-confirm-cancel','btn-confirm-apply',
-      'btn-sync-zoom','btn-toggle-theme','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
+      'btn-sync-zoom','btn-toggle-lang','btn-toggle-theme','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
       'summary-total','summary-present','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
       'participants-meta','btn-refresh','btn-export','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
       'count-all','count-present','count-absent','count-review','count-unmatched','activity-feed','activity-empty','activity-count',
@@ -2283,6 +2435,7 @@
     el.tutorialProgressButtons = Array.prototype.slice.call(document.querySelectorAll('#tutorial-progress [role="tab"]'));
     el.modeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="connection-mode"]'));
     el.themeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="theme"]'));
+    el.langRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="lang"]'));
     el.chkAutoRefresh = el.chkAutorefresh;
     el.alertAction = el.btnAlertAction;
     el.alertBar = el.alertBar;
@@ -2315,6 +2468,7 @@
     el.btnRefresh.addEventListener('click', function () { refreshBoard({ notify: true }); });
     el.btnExport.addEventListener('click', exportCsv);
     el.btnToggleTheme.addEventListener('click', toggleTheme);
+    if (el.btnToggleLang) { el.btnToggleLang.addEventListener('click', toggleLanguage); }
     el.btnOpenSettings.addEventListener('click', openSettings);
     el.btnOpenTutorial.addEventListener('click', function () { showTutorial(0); });
     el.btnSettingsTutorial.addEventListener('click', function () { showTutorial(0); });
@@ -2352,6 +2506,13 @@
         if (radio.checked) { applyTheme(radio.value, { persist: true, notify: true }); }
       });
     });
+    if (el.langRadios) {
+      el.langRadios.forEach(function (radio) {
+        radio.addEventListener('change', function () {
+          if (radio.checked) { applyLanguage(radio.value, { persist: true, notify: true }); }
+        });
+      });
+    }
     el.btnUploadRoster.addEventListener('click', uploadRoster);
     el.btnReloadRoster.addEventListener('click', function () { loadRoster(true); });
     el.btnSubmitSnapshot.addEventListener('click', submitSnapshot);
@@ -2396,6 +2557,8 @@
   }
 
   function restoreState() {
+    var savedLang = readStore(STORAGE.lang, 'ko');
+    applyLanguage(savedLang, { persist: false, notify: false });
     applyTheme(readStore(STORAGE.theme, 'system'), { persist: false, notify: false });
     el.meetingId.value = normalizeMeetingId(readStore(STORAGE.meetingId, ''));
     var savedInterval = parseInt(readStore(STORAGE.interval, '10'), 10);
