@@ -55,3 +55,83 @@ jobs:
           $end = $clock.Elapsed.TotalSeconds
           Write-Host "http_200_utc=$([DateTime]::UtcNow.ToString('o')) poll_seconds=$($end - $launch) total_seconds=$end"
           Write-Host 'Setup launches during installation; its poll_seconds excludes any overlapping startup.'
+  walkthrough:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Prepare installer and tools
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path screenshots | Out-Null
+          Invoke-WebRequest 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3/ZoomCheck-Setup-x64.exe' -OutFile setup.exe
+          Set-Content -Path setup.exe -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+          Get-AuthenticodeSignature setup.exe | Format-List Status,StatusMessage,SignerCertificate
+          python -m pip install pywinauto pillow
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Capture installer screens
+        shell: pwsh
+        run: |
+          @'
+          import time, subprocess, pathlib, traceback
+          from PIL import ImageGrab
+          from pywinauto import Desktop
+          out = pathlib.Path('screenshots')
+          start = time.monotonic()
+          subprocess.Popen([str(pathlib.Path('setup.exe').resolve())])
+          last = None
+          try:
+              for i in range(1, 15):
+                  deadline = time.monotonic() + 45
+                  while time.monotonic() < deadline:
+                      windows = [w for w in Desktop(backend='win32').windows() if 'Setup' in w.window_text() and w.is_visible()]
+                      if windows:
+                          win = windows[0]
+                          buttons = [b for b in win.descendants(class_name='TNewButton') if b.is_visible() and b.is_enabled()]
+                          texts = [(b.window_text(), b) for b in buttons]
+                          key = (win.window_text(), tuple(t for t, b in texts), tuple(c.window_text() for c in win.descendants() if c.window_text()))
+                          if key != last and texts:
+                              break
+                      time.sleep(.5)
+                  else:
+                      raise RuntimeError('Installer screen not found or did not advance')
+                  time.sleep(.5)
+                  ImageGrab.grab(all_screens=True).save(out / f'{i:02d}-installer.png')
+                  print(f'SCREEN {i}: {key}', flush=True)
+                  last = key
+                  choices = [(t,b) for t,b in texts if any(s in t.replace('&','').lower() for s in ('next', 'install', 'finish'))]
+                  if not choices:
+                      raise RuntimeError('No expected navigation button')
+                  label, button = choices[-1]
+                  print(f'CLICK {label}', flush=True)
+                  button.click()
+                  if 'finish' in label.lower():
+                      break
+              else:
+                  raise RuntimeError('Too many screens')
+              print(f'INSTALLER_SECONDS={time.monotonic()-start}', flush=True)
+              time.sleep(5)
+              ImageGrab.grab(all_screens=True).save(out / 'app-and-tray.png')
+          except Exception:
+              ImageGrab.grab(all_screens=True).save(out / 'failure.png')
+              traceback.print_exc()
+              raise
+          '@ | Set-Content -Encoding utf8 walkthrough.py
+          python walkthrough.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Capture dashboard
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddMinutes(2)
+          do {
+            try { $page = Invoke-WebRequest http://127.0.0.1:5078/health -TimeoutSec 2 } catch { Start-Sleep -Seconds 1 }
+          } until (($page -and $page.StatusCode -eq 200) -or (Get-Date) -gt $deadline)
+          if (-not $page -or $page.StatusCode -ne 200) { throw 'Dashboard health unavailable' }
+          $edge = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+          & $edge --headless --disable-gpu --hide-scrollbars --window-size=1440,1000 "--screenshot=$PWD\screenshots\dashboard.png" http://127.0.0.1:5078/
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: install-walkthrough
+          path: screenshots/
+          if-no-files-found: warn
