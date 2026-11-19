@@ -12,8 +12,8 @@ ZoomCheck no realiza scraping de la ventana ni automatiza la interfaz gráfica d
 
 ## Características principales
 
-- **Soporte multi-idioma**: Interfaz disponible en coreano (por defecto), español e inglés con selector rápido en la barra superior y en configuración.
-- **Carga de padrón Excel flexible**: Soporta archivos `.xlsx` y `.xls` con encabezados en español (`Nombre`, `DNI`/`Legajo`, `Correo`, `Teléfono`, `Institución`), inglés o coreano.
+- **Idioma del panel**: Coreano (predeterminado), inglés y español. Se puede cambiar en la barra superior o en la configuración.
+- **Lista de asistencia en Excel**: Admite archivos `.xlsx` y `.xls` con encabezados en coreano, inglés o español.
 - **Columnas de comisión o grupo**: Admite agrupaciones (`Comisión`, `Grupo`, `Equipo`, `조`, `분반`, `Team`, `Class`) con totales filtrados, búsqueda y exportación CSV.
 - **Sincronización en vivo**: Consulta manual instantánea o sincronización automática configurable entre 5 y 600 segundos.
 - **Coincidencia inteligente**: Prioridad por email, nombre, alias y niveles de confianza claros (Verificado, Alias, Solo nombre, Posible, No emparejado).
@@ -25,6 +25,10 @@ ZoomCheck no realiza scraping de la ventana ni automatiza la interfaz gráfica d
 - **Instalador autónomo para Windows**: No requiere instalación previa de .NET.
 - **Tema claro y oscuro**: Sincronización con las preferencias de Windows y personalización manual guardada en el equipo.
 - **Seguridad y privacidad local**: Servidor local exclusivo en `http://127.0.0.1:5078`; base de datos bajo `%LOCALAPPDATA%\ZoomCheck`.
+
+### Encabezados de Excel
+
+La lista necesita una columna de nombre y otra de identificación. Por ejemplo, usa `성명` + `번호`, `Name` + `ID` o `Nombre` + `DNI`/`Legajo`. Si alguna hoja contiene el par original en coreano, se le da prioridad y se conservan sus columnas opcionales originales. En los demás casos, los encabezados más específicos, como `Student Name`, `Full Name` y `Student ID`, tienen prioridad sobre `Name` e `ID`. `Number` tiene prioridad sobre `No`. Si se repite un encabezado al quitar los espacios de los extremos e ignorar las mayúsculas, se usa la columna situada más a la izquierda.
 
 ## Modos de conexión
 

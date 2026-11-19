@@ -36,7 +36,7 @@
       <span class="vh" id="meeting-help" data-i18n="meeting_id_help">Zoom 회의 ID를 입력하세요.</span>
     </label>
 
-    <div class="connection-strip" aria-label="연결 상태">
+    <div class="connection-strip" aria-label="연결 상태" data-i18n-aria="connection_status_aria">
       <button type="button" class="connection-item" id="btn-health-detail">
         <span class="status-dot" id="health-dot" aria-hidden="true"></span>
         <span data-i18n="backend">백엔드</span><strong id="health-text">확인 중</strong>
@@ -62,7 +62,7 @@
     </div>
 
     <button type="button" class="btn primary sync-button" id="btn-sync-zoom" data-i18n="sync_now">지금 동기화</button>
-    <button type="button" class="btn icon-button lang-button" id="btn-toggle-lang" title="Language / 언어 / Idioma" aria-label="언어 변경">KO</button>
+    <button type="button" class="btn icon-button lang-button" id="btn-toggle-lang" title="Language / 언어 / Idioma" aria-label="언어 변경" data-i18n-aria="change_language">KO</button>
     <button type="button" class="btn icon-button theme-button" id="btn-toggle-theme" aria-pressed="false" data-i18n="dark_mode">다크 모드</button>
     <button type="button" class="btn icon-button help-button" id="btn-open-tutorial" aria-haspopup="dialog" data-i18n="guide">사용법</button>
     <button type="button" class="btn icon-button settings-button" id="btn-open-settings" aria-haspopup="dialog" data-i18n="settings">설정</button>
@@ -85,13 +85,13 @@
         <strong><span id="summary-total">0</span>명 중 <span id="summary-present">0</span>명 출석</strong>
         <span id="summary-time" data-i18n="summary_empty_prompt">회의 ID와 명단을 설정해 주세요.</span><span id="source-status" class="source-status"></span>
       </div>
-      <div class="rate-gauge" aria-label="현재 출석률">
+      <div class="rate-gauge" aria-label="현재 출석률" data-i18n-aria="current_rate_aria">
         <div class="rate-ring" id="rate-ring"><strong id="summary-rate">–</strong><span data-i18n="attendance_rate">출석률</span></div>
       </div>
       <dl class="metric-list">
         <div class="metric present"><dt data-i18n="metric_present">명단 참석</dt><dd id="metric-present">0명</dd></div>
         <div class="metric absent"><dt data-i18n="metric_absent">미참석</dt><dd id="metric-absent">0명</dd></div>
-        <div class="metric review"><dt data-i18n="metric_review">검토 필요</dt><dd><button type="button" id="btn-review" class="metric-action"><span id="metric-review">0항목</span><span class="vh"> 검토 목록 열기</span></button></dd></div>
+        <div class="metric review"><dt data-i18n="metric_review">검토 필요</dt><dd><button type="button" id="btn-review" class="metric-action"><span id="metric-review">0항목</span><span class="vh" data-i18n="open_review_list"> 검토 목록 열기</span></button></dd></div>
         <div class="metric duplicate"><dt data-i18n="metric_duplicate">중복 연결</dt><dd id="metric-duplicate">0명</dd></div>
       </dl>
     </section>
@@ -115,7 +115,7 @@
         </div>
         <div class="scope-note"><span id="scope-note" data-i18n="scope_note_unmatched">미매칭은 그룹과 관계없이 표시됩니다.</span><span id="export-scope" data-i18n="scope_note_csv">CSV는 명단 전체 기준이며 검색·상태 필터를 적용하지 않습니다.</span></div>
         <div class="participant-toolbar">
-          <div class="filter-tabs" role="group" aria-label="참가자 상태 필터">
+          <div class="filter-tabs" role="group" aria-label="참가자 상태 필터" data-i18n-aria="filter_aria_label">
             <button type="button" aria-pressed="true" data-filter="all"><span data-i18n="filter_all">전체</span> <span id="count-all">0</span></button>
             <button type="button" aria-pressed="false" data-filter="present"><span data-i18n="filter_present">참석 항목</span> <span id="count-present">0</span></button>
             <button type="button" aria-pressed="false" data-filter="absent"><span data-i18n="filter_absent">미참석</span> <span id="count-absent">0</span></button>
@@ -125,21 +125,21 @@
           </div>
           <div class="toolbar-filters">
             <label class="group-box" for="group-filter">
-              <span class="vh">소속 그룹 필터</span>
+              <span class="vh" data-i18n="group_filter_aria">소속 그룹 필터</span>
               <select id="group-filter">
                 <option value="" data-i18n="all_groups">전체 그룹</option>
               </select>
             </label>
             <label class="search-box" for="participant-search">
-              <span class="vh">참가자 검색</span>
+              <span class="vh" data-i18n="search_aria">참가자 검색</span>
               <input type="search" id="participant-search" autocomplete="off" placeholder="이름, 이메일, 소속, 그룹, 연락처 검색" data-i18n-placeholder="search_placeholder" />
             </label>
           </div>
         </div>
 
-        <div class="participant-table-wrap" id="participant-table-wrap" tabindex="0" aria-label="참가자 표">
+        <div class="participant-table-wrap" id="participant-table-wrap" tabindex="0" aria-label="참가자 표" data-i18n-aria="participants_table_aria">
           <table class="participant-table">
-            <caption class="vh">명단 및 Zoom 참가자 목록. 행을 선택하면 상세 연결 정보가 표시됩니다.</caption>
+            <caption class="vh" data-i18n="table_caption">명단 및 Zoom 참가자 목록. 행을 선택하면 상세 연결 정보가 표시됩니다.</caption>
             <thead>
               <tr>
                 <th scope="col" data-i18n="th_status">상태</th>
@@ -163,7 +163,7 @@
         </div>
       </section>
 
-      <aside class="right-rail" aria-label="회의 실시간 정보">
+      <aside class="right-rail" aria-label="회의 실시간 정보" data-i18n-aria="meeting_live_aria">
         <section class="rail-panel activity-panel" aria-labelledby="activity-title">
           <div class="rail-header">
             <div><h2 id="activity-title" data-i18n="activity_title">최근 활동</h2><span class="live-label" id="activity-mode">저장된 활동</span></div>
@@ -200,7 +200,7 @@
     <form method="dialog" class="settings-shell">
       <header class="settings-header">
         <div><p data-i18n="settings_header_desc">ZoomCheck 운영 설정</p><h2 id="settings-title" data-i18n="settings_title">설정</h2></div>
-        <button type="submit" class="btn icon-button" aria-label="설정 닫기" data-i18n="close">닫기</button>
+        <button type="submit" class="btn icon-button" aria-label="설정 닫기" data-i18n-aria="settings_close_aria" data-i18n="close">닫기</button>
       </header>
       <div class="settings-content">
         <h2 class="settings-group-title" data-i18n="settings_group_prep">명단·회의 준비</h2>
@@ -216,7 +216,7 @@
           <div class="settings-copy"><h3 data-i18n="settings_manual_title">전체 참가자 목록 직접 붙여넣기</h3><p data-i18n="settings_manual_desc">API를 쓸 수 없을 때만 사용합니다. 목록에 없는 기존 참석자는 퇴장으로 기록되므로 반드시 현재 참가자 전체를 붙여넣으세요.</p></div>
           <div class="settings-control">
             <label for="snapshot-names" data-i18n="manual_line_label">한 줄에 한 명</label>
-            <textarea id="snapshot-names" rows="7" spellcheck="false" placeholder="김민수&#10;이서연&#10;Park, Jiwon"></textarea>
+            <textarea id="snapshot-names" rows="7" spellcheck="false" placeholder="김민수&#10;이서연&#10;Park, Jiwon" data-i18n-placeholder="snapshot_placeholder"></textarea>
             <div class="manual-meta"><span id="snapshot-parsed">입력 0줄 · 서로 다른 이름 0개 · 중복 0줄</span><label><input type="checkbox" id="chk-empty-ok" /> <span data-i18n="manual_empty_ok">빈 목록 허용</span></label></div>
             <div class="button-row"><button type="button" class="btn primary" id="btn-submit-snapshot" data-i18n="btn_submit_snapshot">전체 목록 확인 후 적용</button><button type="button" class="btn secondary" id="btn-clear-snapshot" data-i18n="btn_clear_snapshot">입력 지우기</button></div>
             <details id="snapshot-result" hidden><summary id="snapshot-result-summary"></summary><div id="snapshot-result-details"></div></details>
@@ -226,7 +226,7 @@
         <section id="settings-mode" tabindex="-1" class="settings-section">
           <div class="settings-copy"><h3 data-i18n="settings_mode_title">연결 방식</h3><p data-i18n="settings_mode_desc">자동을 권장합니다. 일반 사용자는 Zoom 앱(Pro) 릴레이를 쓰고, 기존 Business API와 직접 HTTPS 방식도 그대로 사용할 수 있습니다.</p></div>
           <div class="settings-control">
-            <div class="mode-options" role="radiogroup" aria-label="연결 방식 선택">
+            <div class="mode-options" role="radiogroup" aria-label="연결 방식 선택" data-i18n-aria="readiness_api_action">
               <label class="mode-option"><input type="radio" name="connection-mode" value="auto" id="mode-auto" /><span><strong data-i18n="mode_auto">자동</strong><small data-i18n="mode_auto_desc">연결 상태에 따라 선택 · Zoom 앱 우선</small></span></label>
               <label class="mode-option"><input type="radio" name="connection-mode" value="business" id="mode-business" /><span><strong>Business API</strong><small data-i18n="mode_business_desc">Server-to-Server OAuth 대시보드 API</small></span></label>
               <label class="mode-option"><input type="radio" name="connection-mode" value="zoomApp" id="mode-zoom-app" /><span><strong data-i18n="mode_zoomApp">Zoom 앱 (Pro)</strong><small data-i18n="mode_zoom_app_desc">회의 안에서 실행되는 컴패니언 앱</small></span></label>
@@ -286,9 +286,9 @@
         </section>
         <h2 class="settings-group-title" data-i18n="settings_group_display">화면·관리</h2>
         <section id="settings-language" tabindex="-1" class="settings-section">
-          <div class="settings-copy"><h3 data-i18n="settings_language_title">언어 설정</h3><p data-i18n="settings_language_desc">대시보드 표시 언어를 변경할 수 있습니다. 설정은 이 PC에 저장됩니다.</p></div>
+          <div class="settings-copy"><h3 data-i18n="settings_language_title">언어 설정</h3><p data-i18n="settings_language_desc">대시보드 표시 언어를 변경할 수 있습니다. 설정은 이 브라우저에 저장됩니다.</p></div>
           <div class="settings-control">
-            <div class="mode-options lang-options" role="radiogroup" aria-label="언어 선택">
+            <div class="mode-options lang-options" role="radiogroup" aria-label="언어 선택" data-i18n-aria="choose_language">
               <label class="mode-option"><input type="radio" name="lang" value="ko" checked /><span><strong data-i18n="language_ko">한국어</strong><small>Korean</small></span></label>
               <label class="mode-option"><input type="radio" name="lang" value="en" /><span><strong data-i18n="language_en">English</strong><small>English</small></span></label>
               <label class="mode-option"><input type="radio" name="lang" value="es" /><span><strong data-i18n="language_es">Español</strong><small>Español</small></span></label>
@@ -298,7 +298,7 @@
         <section id="settings-theme" tabindex="-1" class="settings-section">
           <div class="settings-copy"><h3 data-i18n="settings_theme_title">화면 테마</h3><p data-i18n="settings_theme_desc">Windows 화면 설정을 따르거나 밝은 모드와 다크 모드를 직접 고를 수 있습니다. 선택은 이 PC에 저장됩니다.</p></div>
           <div class="settings-control">
-            <div class="mode-options theme-options" role="radiogroup" aria-label="화면 테마 선택">
+            <div class="mode-options theme-options" role="radiogroup" aria-label="화면 테마 선택" data-i18n-aria="theme_select_aria">
               <label class="mode-option"><input type="radio" name="theme" value="system" /><span><strong data-i18n="theme_system">시스템 설정</strong><small data-i18n="theme_system_desc">Windows 밝게·어둡게 설정을 자동으로 따름</small></span></label>
               <label class="mode-option"><input type="radio" name="theme" value="light" /><span><strong data-i18n="theme_light">밝게</strong><small data-i18n="theme_light_desc">항상 밝은 대시보드 사용</small></span></label>
               <label class="mode-option"><input type="radio" name="theme" value="dark" /><span><strong data-i18n="theme_dark">어둡게</strong><small data-i18n="theme_dark_desc">눈부심을 줄인 다크 대시보드 사용</small></span></label>
@@ -346,76 +346,76 @@
           <h2 class="tutorial-brand" id="tutorial-title" data-i18n="tutorial_title">ZoomCheck 시작 안내</h2>
           <strong id="tutorial-progress-text">1 / 6</strong>
         </div>
-        <button type="button" class="btn icon-button" id="btn-close-tutorial" aria-label="사용법 닫기" data-i18n="close">닫기</button>
+        <button type="button" class="btn icon-button" id="btn-close-tutorial" aria-label="사용법 닫기" data-i18n-aria="tutorial_close_aria" data-i18n="close">닫기</button>
       </header>
 
-      <div class="tutorial-progress" id="tutorial-progress" role="tablist" aria-label="사용법 단계">
-        <button type="button" role="tab" aria-label="1단계 회의 준비" aria-selected="true"></button>
-        <button type="button" role="tab" aria-label="2단계 명단 올리기" aria-selected="false"></button>
-        <button type="button" role="tab" aria-label="3단계 Zoom 앱 연결" aria-selected="false"></button>
-        <button type="button" role="tab" aria-label="4단계 동기화 시작" aria-selected="false"></button>
-        <button type="button" role="tab" aria-label="5단계 결과 확인" aria-selected="false"></button>
-        <button type="button" role="tab" aria-label="6단계 조별 확인과 마무리" aria-selected="false"></button>
+      <div class="tutorial-progress" id="tutorial-progress" role="tablist" aria-label="사용법 단계" data-i18n-aria="tutorial_steps_aria">
+        <button type="button" role="tab" aria-label="1단계 회의 준비" data-i18n-aria="tutorial_s0_aria" aria-selected="true"></button>
+        <button type="button" role="tab" aria-label="2단계 명단 올리기" data-i18n-aria="tutorial_s1_aria" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="3단계 Zoom 앱 연결" data-i18n-aria="tutorial_s2_aria" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="4단계 동기화 시작" data-i18n-aria="tutorial_s3_aria" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="5단계 결과 확인" data-i18n-aria="tutorial_s4_aria" aria-selected="false"></button>
+        <button type="button" role="tab" aria-label="6단계 조별 확인과 마무리" data-i18n-aria="tutorial_s5_aria" aria-selected="false"></button>
       </div>
 
       <main class="tutorial-content" id="tutorial-description">
         <section class="tutorial-step" data-tutorial-step="0">
-          <div class="tutorial-illustration is-blue" aria-hidden="true"><span>01</span><strong>회의 준비</strong></div>
+          <div class="tutorial-illustration is-blue" aria-hidden="true"><span>01</span><strong data-i18n="tutorial_s0_illustration">회의 준비</strong></div>
           <div class="tutorial-copy">
-            <span class="tutorial-kicker">시작 전에</span>
-            <h2>회의 ID와 권한을 확인하세요</h2>
-            <p>Zoom 회의에는 <strong>호스트 또는 공동호스트</strong>로 들어가고, ZoomCheck 상단에 회의 ID를 입력합니다. 숫자 사이 공백은 자동으로 정리됩니다.</p>
-            <ul><li>회의를 진행하는 PC와 ZoomCheck PC가 달라도 됩니다.</li><li>Pro 계정은 회의 안의 ZoomCheck 앱으로 참가자를 가져옵니다.</li></ul>
+            <span class="tutorial-kicker" data-i18n="tutorial_s0_kicker">시작 전에</span>
+            <h2 data-i18n="tutorial_s0_title">회의 ID와 권한을 확인하세요</h2>
+            <p data-i18n="tutorial_s0_p">Zoom 회의에는 <strong>호스트 또는 공동호스트</strong>로 들어가고, ZoomCheck 상단에 회의 ID를 입력합니다. 숫자 사이 공백은 자동으로 정리됩니다.</p>
+            <ul><li data-i18n="tutorial_s0_li1">회의를 진행하는 PC와 ZoomCheck PC가 달라도 됩니다.</li><li data-i18n="tutorial_s0_li2">Pro 계정은 회의 안의 ZoomCheck 앱으로 참가자를 가져옵니다.</li></ul>
           </div>
         </section>
 
         <section class="tutorial-step" data-tutorial-step="1" hidden>
-          <div class="tutorial-illustration is-green" aria-hidden="true"><span>02</span><strong>Excel 명단</strong></div>
+          <div class="tutorial-illustration is-green" aria-hidden="true"><span>02</span><strong data-i18n="tutorial_s1_illustration">Excel 명단</strong></div>
           <div class="tutorial-copy">
-            <span class="tutorial-kicker">설정 → Excel 명단</span>
-            <h2>출석 명단을 올리세요</h2>
-            <p><strong>번호·성명</strong> 열이 있는 Excel 파일을 선택하고 <strong>명단 올리기</strong>를 누릅니다. 기존 입퇴장 기록은 같은 명단을 다시 올려도 유지됩니다.</p>
-            <ul><li>전화번호·이메일·소속기관 열도 참가자 상세와 검색에 사용됩니다.</li><li>조별 실습은 <strong>조·분반·그룹·팀·반</strong> 열 중 하나를 추가하세요.</li></ul>
+            <span class="tutorial-kicker" data-i18n="tutorial_s1_kicker">설정 → Excel 명단</span>
+            <h2 data-i18n="tutorial_s1_title">출석 명단을 올리세요</h2>
+            <p data-i18n="tutorial_s1_p"><strong>번호·성명</strong> 열이 있는 Excel 파일을 선택하고 <strong>명단 올리기</strong>를 누릅니다. 기존 입퇴장 기록은 같은 명단을 다시 올려도 유지됩니다.</p>
+            <ul><li data-i18n="tutorial_s1_li1">전화번호·이메일·소속기관 열도 참가자 상세와 검색에 사용됩니다.</li><li data-i18n="tutorial_s1_li2">조별 실습은 <strong>조·분반·그룹·팀·반</strong> 열 중 하나를 추가하세요.</li></ul>
           </div>
         </section>
 
         <section class="tutorial-step" data-tutorial-step="2" hidden>
-          <div class="tutorial-illustration is-violet" aria-hidden="true"><span>03</span><strong>Zoom 연결</strong></div>
+          <div class="tutorial-illustration is-violet" aria-hidden="true"><span>03</span><strong data-i18n="tutorial_s2_illustration">Zoom 연결</strong></div>
           <div class="tutorial-copy">
-            <span class="tutorial-kicker">설정 → Zoom 앱 (Pro) 페어링</span>
-            <h2>6자리 코드로 회의와 연결하세요</h2>
-            <p><strong>페어링 코드 생성</strong>을 누른 뒤, Zoom 회의의 <strong>Apps → ZoomCheck</strong>에서 코드를 입력합니다.</p>
-            <ol><li>연결 방식은 <strong>자동</strong>을 권장합니다.</li><li>코드는 10분·1회용이며 연결 후에는 코드 만료와 무관하게 세션이 유지됩니다.</li><li>Zoom 앱 상태가 <strong>호스트 연결</strong> 또는 <strong>공동호스트 연결</strong>인지 확인합니다.</li></ol>
+            <span class="tutorial-kicker" data-i18n="tutorial_s2_kicker">설정 → Zoom 앱 (Pro) 페어링</span>
+            <h2 data-i18n="tutorial_s2_title">6자리 코드로 회의와 연결하세요</h2>
+            <p data-i18n="tutorial_s2_p"><strong>페어링 코드 생성</strong>을 누른 뒤, Zoom 회의의 <strong>Apps → ZoomCheck</strong>에서 코드를 입력합니다.</p>
+            <ol><li data-i18n="tutorial_s2_li1">연결 방식은 <strong>자동</strong>을 권장합니다.</li><li data-i18n="tutorial_s2_li2">코드는 10분·1회용이며 연결 후에는 코드 만료와 무관하게 세션이 유지됩니다.</li><li data-i18n="tutorial_s2_li3">Zoom 앱 상태가 <strong>호스트 연결</strong> 또는 <strong>공동호스트 연결</strong>인지 확인합니다.</li></ol>
           </div>
         </section>
 
         <section class="tutorial-step" data-tutorial-step="3" hidden>
-          <div class="tutorial-illustration is-amber" aria-hidden="true"><span>04</span><strong>실시간 동기화</strong></div>
+          <div class="tutorial-illustration is-amber" aria-hidden="true"><span>04</span><strong data-i18n="tutorial_s3_illustration">실시간 동기화</strong></div>
           <div class="tutorial-copy">
-            <span class="tutorial-kicker">대시보드 상단</span>
-            <h2>지금 동기화를 눌러 출석을 시작하세요</h2>
-            <p>처음에는 <strong>지금 동기화</strong>를 눌러 명단과 현재 참가자가 맞는지 확인합니다. 이후 <strong>자동 동기화</strong>를 켜면 기본 10초마다 갱신됩니다.</p>
-            <ul><li>회의 ID가 비어 있으면 연결된 Zoom 회의 ID를 자동으로 가져옵니다.</li><li>Zoom 앱에서 “암호화 전송”이 보이면 참가자 정보가 PC로 안전하게 전달되는 중입니다.</li></ul>
+            <span class="tutorial-kicker" data-i18n="tutorial_s3_kicker">대시보드 상단</span>
+            <h2 data-i18n="tutorial_s3_title">지금 동기화를 눌러 출석을 시작하세요</h2>
+            <p data-i18n="tutorial_s3_p">처음에는 <strong>지금 동기화</strong>를 눌러 명단과 현재 참가자가 맞는지 확인합니다. 이후 <strong>자동 동기화</strong>를 켜면 기본 10초마다 갱신됩니다.</p>
+            <ul><li data-i18n="tutorial_s3_li1">회의 ID가 비어 있으면 연결된 Zoom 회의 ID를 자동으로 가져옵니다.</li><li data-i18n="tutorial_s3_li2">Zoom 앱에서 “암호화 전송”이 보이면 참가자 정보가 PC로 안전하게 전달되는 중입니다.</li></ul>
           </div>
         </section>
 
         <section class="tutorial-step" data-tutorial-step="4" hidden>
-          <div class="tutorial-illustration is-red" aria-hidden="true"><span>05</span><strong>결과 확인</strong></div>
+          <div class="tutorial-illustration is-red" aria-hidden="true"><span>05</span><strong data-i18n="tutorial_s4_illustration">결과 확인</strong></div>
           <div class="tutorial-copy">
-            <span class="tutorial-kicker">참가자 · 최근 활동 · 중복 연결</span>
-            <h2>검토가 필요한 사람을 확인하세요</h2>
-            <p>참가자 행을 누르면 원래 Zoom 이름, 전화번호, 조, 입퇴장 이력을 볼 수 있습니다. 검토 이유를 읽고 이번 회의의 신원·중복 기기를 각각 확인하거나 보류할 수 있습니다.</p>
-            <ul><li><strong>검토</strong>에서 판단을 기록하세요. 미매칭 연결은 이번 회의에서만 명단 인물과 연결하며 취소할 수 있습니다.</li><li>최근 활동에는 입장·퇴장·이름 변경, 중복 연결에는 다중 기기 접속이 표시됩니다.</li></ul>
+            <span class="tutorial-kicker" data-i18n="tutorial_s4_kicker">참가자 · 최근 활동 · 중복 연결</span>
+            <h2 data-i18n="tutorial_s4_title">검토가 필요한 사람을 확인하세요</h2>
+            <p data-i18n="tutorial_s4_p">참가자 행을 누르면 원래 Zoom 이름, 전화번호, 조, 입퇴장 이력을 볼 수 있습니다. 검토 이유를 읽고 이번 회의의 신원·중복 기기를 각각 확인하거나 보류할 수 있습니다.</p>
+            <ul><li data-i18n="tutorial_s4_li1"><strong>검토</strong>에서 판단을 기록하세요. 미매칭 연결은 이번 회의에서만 명단 인물과 연결하며 취소할 수 있습니다.</li><li data-i18n="tutorial_s4_li2">최근 활동에는 입장·퇴장·이름 변경, 중복 연결에는 다중 기기 접속이 표시됩니다.</li></ul>
           </div>
         </section>
 
         <section class="tutorial-step" data-tutorial-step="5" hidden>
-          <div class="tutorial-illustration is-blue" aria-hidden="true"><span>06</span><strong>마무리</strong></div>
+          <div class="tutorial-illustration is-blue" aria-hidden="true"><span>06</span><strong data-i18n="tutorial_s5_illustration">마무리</strong></div>
           <div class="tutorial-copy">
-            <span class="tutorial-kicker">조별 확인 · CSV · 업데이트</span>
-            <h2>필요한 범위만 확인하고 저장하세요</h2>
-            <p>그룹 선택 시 미매칭은 함께 표시됩니다. CSV에는 제외되지 않은 해당 그룹 명단만 포함되며 검색·상태 필터는 적용되지 않습니다. 회의가 끝나면 <strong>CSV 내보내기</strong>로 결과를 저장하세요.</p>
-            <ul><li>출석 DB는 이 PC의 로컬 폴더에 저장됩니다.</li><li>새 버전은 자동으로 확인·검증하며, 설치는 직접 누를 때만 진행됩니다.</li><li>이 안내는 상단 <strong>사용법</strong> 또는 설정에서 언제든 다시 열 수 있습니다.</li></ul>
+            <span class="tutorial-kicker" data-i18n="tutorial_s5_kicker">조별 확인 · CSV · 업데이트</span>
+            <h2 data-i18n="tutorial_s5_title">필요한 범위만 확인하고 저장하세요</h2>
+            <p data-i18n="tutorial_s5_p">그룹 선택 시 미매칭은 함께 표시됩니다. CSV에는 제외되지 않은 해당 그룹 명단만 포함되며 검색·상태 필터는 적용되지 않습니다. 회의가 끝나면 <strong>CSV 내보내기</strong>로 결과를 저장하세요.</p>
+            <ul><li data-i18n="tutorial_s5_li1">출석 DB는 이 PC의 로컬 폴더에 저장됩니다.</li><li data-i18n="tutorial_s5_li2">새 버전은 자동으로 확인·검증하며, 설치는 직접 누를 때만 진행됩니다.</li><li data-i18n="tutorial_s5_li3">이 안내는 상단 <strong>사용법</strong> 또는 설정에서 언제든 다시 열 수 있습니다.</li></ul>
           </div>
         </section>
       </main>
