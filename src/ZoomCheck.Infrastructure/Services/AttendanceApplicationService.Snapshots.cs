@@ -467,7 +467,9 @@ public sealed partial class AttendanceApplicationService
             RawParticipantName: rawName,
             CanonicalParticipantName: canonicalName,
             PreviousParticipantName: previousName,
-            PreviousRawParticipantName: previousRawName);
+            PreviousRawParticipantName: previousRawName,
+            NeedsReview: candidate.NeedsReview,
+            ReviewReasonCode: candidate.ReviewReasonCode);
     }
 
     private sealed record PresentParticipant(

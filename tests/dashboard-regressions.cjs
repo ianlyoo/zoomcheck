@@ -450,8 +450,11 @@ test('excluded roster people are absent from normal totals, review and rows, but
   assert.equal(h.el.summaryTotal.textContent, '2');
   assert.equal(h.el.summaryPresent.textContent, '1');
   assert.equal(h.el.countExcluded.textContent, '1');
-  assert.equal(h.el.countAll.textContent, '3');
+  assert.equal(h.el.countAll.textContent, '2');
+  assert.equal(h.el.countPresent.textContent, '1');
+  assert.equal(h.el.countAbsent.textContent, '1');
   assert.equal(h.el.countReview.textContent, '2');
+  assert.equal(h.el.countUnmatched.textContent, '1');
   assert.match(h.el.participantsMeta.textContent, /기기 연결 3건/);
   assert.ok(!h.el.participantRows.textContent.includes('Carol'));
   h.state.filter = 'excluded'; h.renderParticipants();
@@ -547,7 +550,7 @@ test('deferred reviews remain in review; confirmed evidence does not turn a Name
 test('same-name connections with the same key in different sources retain separate controls and tokens', async () => {
   const h = harness(); h.renderBoard(decisionBoard());
   const unmatched = h.state.rows.find(row => row.kind === 'unmatched');
-  h.state.selectedKey = unmatched.key; h.renderParticipants();
+  h.state.filter = 'unmatched'; h.state.selectedKey = unmatched.key; h.renderParticipants();
   assert.equal(unmatched.connections.length, 2);
   const selects = h.el.participantRows.querySelectorAll('select');
   assert.equal(selects.length, 2);
@@ -680,7 +683,7 @@ test('row disclosure, review action and connection drafts retain focus across re
   const confirm = h.el.participantRows.querySelectorAll('button').find(button => button.dataset.focusKey === 'roster:a:identity:confirm');
   confirm.focus(); h.renderBoard(decisionBoard());
   assert.equal(h.document.activeElement.dataset.focusKey, confirm.dataset.focusKey);
-  h.state.selectedKey = 'unmatched:ipad'; h.renderParticipants();
+  h.state.filter = 'unmatched'; h.state.selectedKey = 'unmatched:ipad'; h.renderParticipants();
   const search = h.el.participantRows.querySelectorAll('input')[1];
   search.focus(); search.value = 'Bo'; search.dispatch('input'); search.setSelectionRange(1, 2);
   h.renderBoard(decisionBoard());
@@ -716,12 +719,20 @@ test('filter buttons expose aria-pressed and keep excluded filter separate', () 
   assert.ok(!h.el.participantRows.textContent.includes('Alice'));
 });
 
-test('group scope and CSV label omit exclusions but preserve unmatched review visibility', () => {
+test('group scope and tab counts follow the roster and exclude unmatched under a group filter', () => {
   const h = harness(); h.renderBoard(decisionBoard()); h.applyGroup('A');
   assert.equal(h.el.summaryTotal.textContent, '2');
-  assert.equal(h.el.countUnmatched.textContent, '1');
+  assert.equal(h.el.countAll.textContent, '2');
+  assert.equal(h.el.countPresent.textContent, '1');
+  assert.equal(h.el.countAbsent.textContent, '1');
+  assert.equal(h.el.countReview.textContent, '1');
+  assert.equal(h.el.countUnmatched.textContent, '0');
+  assert.match(h.el.scopeNote.textContent, /미매칭 1개는 전체 그룹에서 확인/);
   assert.match(h.el.btnExport.textContent, /A 명단 CSV · 2명/);
   assert.match(h.el.exportScope.textContent, /검색·상태 필터와 미매칭 항목은 미포함/);
+  h.state.filter = 'unmatched'; h.renderParticipants();
+  assert.match(h.el.emptyTitle.textContent, /그룹 필터에서는 미매칭을 표시하지 않습니다/);
+  assert.match(h.el.emptyNote.textContent, /미매칭 1개/);
   h.state.filter = 'review'; h.el.participantSearch.value = 'Alice';
   h.exportCsv();
   assert.equal(h.requests[0].url, '/api/meetings/111/export?group=A');
@@ -736,7 +747,7 @@ test('activity and connection details translate known sources without guessing s
   h.renderBoard(data);
   for (const label of ['직접 입력', 'Zoom 앱', 'Zoom API', 'Zoom 참가자']) assert.ok(h.el.activityFeed.textContent.includes(label));
   assert.doesNotMatch(h.el.activityFeed.textContent, /web-dashboard|zoom-live-participants/);
-  h.state.selectedKey = 'unmatched:ipad'; h.renderParticipants();
+  h.state.filter = 'unmatched'; h.state.selectedKey = 'unmatched:ipad'; h.renderParticipants();
   assert.match(h.el.participantRows.textContent, /직접 입력/);
   assert.doesNotMatch(h.el.participantRows.textContent, /web-dashboard/);
 });
@@ -1095,11 +1106,15 @@ const rowKeys = h => h.el.participantRows.children.filter(row => row.className.i
 test('participants sort by roster number in numeric order with numberless rows last, and the choice persists', () => {
   const storage = new Map([['zoomcheck.tutorialSeen.v1', 'seen']]);
   const h = harness({ storage }); h.restoreState(); select(h, '111'); h.renderBoard(rosterBoard());
-  assert.deepEqual(rowKeys(h), ['roster:p1', 'roster:p2', 'roster:p3', 'roster:p10', 'roster:px', 'unmatched:손님']);
+  assert.deepEqual(rowKeys(h), ['roster:p1', 'roster:p2', 'roster:p3', 'roster:p10', 'roster:px']);
   assert.equal(h.el.participantRows.children[0].children[0].textContent, '1');
   assert.equal(h.sortButtons[0].parentNode.getAttribute('aria-sort'), 'ascending');
+  h.state.filter = 'review'; h.renderParticipants();
+  assert.deepEqual(rowKeys(h), ['roster:p1', 'unmatched:손님']);
   h.sortButtons[1].dispatch('click');
-  assert.deepEqual(rowKeys(h), ['unmatched:손님', 'roster:p1', 'roster:p2', 'roster:p3', 'roster:p10', 'roster:px']);
+  assert.deepEqual(rowKeys(h), ['unmatched:손님', 'roster:p1']);
+  h.state.filter = 'all'; h.renderParticipants();
+  assert.deepEqual(rowKeys(h), ['roster:p1', 'roster:p2', 'roster:p3', 'roster:p10', 'roster:px']);
   assert.equal(h.sortButtons[1].parentNode.getAttribute('aria-sort'), 'ascending');
   assert.equal(h.sortButtons[0].parentNode.getAttribute('aria-sort'), null);
   assert.equal(storage.get('zoomcheck.participantSort'), 'name');
@@ -1107,6 +1122,37 @@ test('participants sort by roster number in numeric order with numberless rows l
   const next = harness({ storage }); next.restoreState(); select(next, '111'); next.renderBoard(rosterBoard());
   assert.equal(next.state.sort, 'name');
   assert.equal(next.sortButtons[1].parentNode.getAttribute('aria-sort'), 'ascending');
+});
+
+test('clean NameOnly uses neutral pill and review reasons translate in ko, en and es', () => {
+  const h = harness();
+  const payload = decisionBoard();
+  payload.people[0].identityReviewStatus = 'none';
+  payload.people[0].duplicateReviewStatus = 'none';
+  payload.people[0].reviewRequired = false;
+  h.renderBoard(payload);
+  assert.equal(h.confidenceInfo(h.state.rows[0]).className, 'neutral');
+  assert.equal(h.el.countReview.textContent, '1');
+
+  const reasons = [
+    ['duplicate_roster_name', /같은 이름/, /share this name/, /mismo nombre/],
+    ['email_conflict', /이메일이 명단과 다릅니다/, /email differs from the roster/, /correo de Zoom no coincide/],
+    ['identifier_conflict', /서로 다른 사람/, /different people on the roster/, /distintas personas/],
+    ['duplicate_roster_email', /같은 이메일/, /share this email/, /comparten este correo/],
+    ['ambiguous_possible_match', /비슷한 이름이 명단에 여러 명/, /similar to several people/, /parece a varias personas/]
+  ];
+  for (const [code, koRe, enRe, esRe] of reasons) {
+    payload.people[0].identityReviewStatus = 'pending';
+    payload.people[0].reviewRequired = true;
+    payload.people[0].identityReviewReason = code;
+    h.applyLanguage('ko'); h.renderBoard(payload); h.state.selectedKey = 'roster:a'; h.renderParticipants();
+    assert.equal(h.confidenceInfo(h.state.rows[0]).className, 'review');
+    assert.match(h.el.participantRows.textContent, koRe);
+    h.applyLanguage('en');
+    assert.match(h.el.participantRows.textContent, enRe);
+    h.applyLanguage('es');
+    assert.match(h.el.participantRows.textContent, esRe);
+  }
 });
 
 test('status text follows the group scope: count, absentees by number, duplicate connections', () => {

@@ -27,7 +27,7 @@
   var MAX_SNAPSHOT_NAMES = 2000;
   var MAX_SESSION_LOG = 60;
   var CONNECTION_POLL_MS = 5000;
-  var REVIEW_CONFIDENCE = ['NameOnly', 'Possible'];
+  var REVIEW_CONFIDENCE = ['Possible'];
   var CONFIDENCE_LABEL = {
     Verified: '확인됨',
     AliasVerified: '별명 확인',
@@ -1265,7 +1265,8 @@
         confidence: item.confidence || item.matchConfidence || 'Unmatched',
         source: item.source || '',
         manualMatch: !!item.manualMatch, reviewStatus: item.reviewStatus || 'none',
-        evidenceToken: item.evidenceToken, matchReason: item.matchReason || ''
+        evidenceToken: item.evidenceToken, matchReason: item.matchReason || '',
+        needsReview: !!item.needsReview, reviewReasonCode: item.reviewReasonCode || ''
       };
     });
   }
@@ -1348,6 +1349,7 @@
         duplicate: !!duplicate,
         isExcluded: !!person.isExcluded,
         identityReviewStatus: person.identityReviewStatus || 'none', duplicateReviewStatus: person.duplicateReviewStatus || 'none',
+        identityReviewReason: person.identityReviewReason || '',
         identityEvidenceToken: person.identityEvidenceToken, duplicateEvidenceToken: person.duplicateEvidenceToken,
         review: !person.isExcluded && (typeof person.reviewRequired === 'boolean' ? person.reviewRequired : REVIEW_CONFIDENCE.indexOf(person.confidence) >= 0 || !!duplicate)
       };
@@ -1434,10 +1436,10 @@
     el.groupFilter.disabled = known.length === 0;
   }
 
-  /* 그룹 선택 시에도 미매칭 참가자는 검토 대상이므로 항상 남긴다. */
+  /* 그룹 선택 시 명단 기준 집계에 맞춰 소속이 없는 미매칭은 제외한다. */
   function rowInSelectedGroup(row) {
     if (!state.group) { return true; }
-    if (row.kind === 'unmatched') { return true; }
+    if (row.kind === 'unmatched') { return false; }
     return sameGroup(row.group, state.group);
   }
   function scopedRows() {
@@ -1455,10 +1457,10 @@
     var allowed = {};
     rosterScoped.forEach(function (row) { if (row.rosterPersonId) { allowed[row.rosterPersonId] = true; } });
     return state.connections.filter(function (connection) {
-      return !connection.rosterPersonId || allowed[connection.rosterPersonId];
+      return (!state.group && !connection.rosterPersonId) || allowed[connection.rosterPersonId];
     }).length;
   }
-  /* 활동 피드도 선택 그룹 인물과 미매칭 이름만 남긴다. */
+  /* 활동 피드도 선택 그룹 인물만 남긴다. */
   function scopedEvents(events, scoped) {
     if (!state.group) { return events; }
     var allowedPeople = {};
@@ -1467,8 +1469,7 @@
     });
     return asArray(events).filter(function (event) {
       var personId = event.matchedRosterPersonId || event.rosterPersonId || null;
-      /* 미매칭 활동은 어느 조인지 알 수 없으므로 검토를 위해 계속 표시한다. */
-      return !personId || !!allowedPeople[personId];
+      return !!personId && !!allowedPeople[personId];
     });
   }
   /* 그룹을 바꿔 선택 행이 사라지면 상세를 닫는다. */
@@ -1527,6 +1528,7 @@
     var absent = summary.absent;
     var review = scoped.filter(function (row) { return row.review; });
     var unmatched = scoped.filter(function (row) { return row.kind === 'unmatched'; });
+    var globalUnmatchedCount = state.rows.filter(function (row) { return !row.isExcluded && row.kind === 'unmatched'; }).length;
     var duplicates = summary.duplicates;
     var connectionCount = scopedConnectionCount(rosterScoped);
     var total = rosterScoped.length;
@@ -1548,15 +1550,20 @@
     renderReadiness();
     setText(el.participantsMeta, t('participants_totals', { present: present.length,
       total: total, unmatched: unmatched.length, connections: connectionCount }));
-    setText(el.scopeNote, (state.group ? state.group + ' · ' : '') + t('scope_exclusions', { count: excluded.length }) + (board.attendanceDate ? ' · ' + board.attendanceDate : ''));
+    var scopeSummary = state.group
+      ? state.group + ' · ' + (globalUnmatchedCount > 0
+        ? t('scope_exclusions_group', { unmatched: globalUnmatchedCount, count: excluded.length })
+        : t('scope_exclusions_only', { count: excluded.length }))
+      : t('scope_exclusions', { count: excluded.length });
+    setText(el.scopeNote, scopeSummary + (board.attendanceDate ? ' · ' + board.attendanceDate : ''));
     setText(el.btnExport, t('export_group_label', { group: state.group || t('group_all_scope'), count: total }));
     setText(el.exportScope, t('export_group_scope', { group: state.group || t('group_all_scope') }));
     el.btnExport.disabled = !currentMeetingId() || total === 0;
     el.btnCopyStatus.disabled = el.btnExport.disabled;
 
-    setText(el.countAll, scoped.length);
-    setText(el.countPresent, scoped.filter(function (row) { return row.attendanceState === 'Present'; }).length);
-    setText(el.countAbsent, scoped.filter(function (row) { return row.attendanceState !== 'Present'; }).length);
+    setText(el.countAll, rosterScoped.length);
+    setText(el.countPresent, present.length);
+    setText(el.countAbsent, absent.length);
     setText(el.countReview, review.length);
     setText(el.countUnmatched, unmatched.length);
     setText(el.countExcluded, excluded.length);
@@ -1570,8 +1577,9 @@
   function rowMatchesFilter(row) {
     if (state.filter === 'excluded') { return !!row.isExcluded; }
     if (row.isExcluded) { return false; }
-    if (state.filter === 'present') { return row.attendanceState === 'Present'; }
-    if (state.filter === 'absent') { return row.attendanceState !== 'Present'; }
+    if (state.filter === 'all') { return row.kind === 'roster'; }
+    if (state.filter === 'present') { return row.kind === 'roster' && row.attendanceState === 'Present'; }
+    if (state.filter === 'absent') { return row.kind === 'roster' && row.attendanceState !== 'Present'; }
     if (state.filter === 'review') { return row.review; }
     if (state.filter === 'unmatched') { return row.kind === 'unmatched'; }
     return true;
@@ -1630,8 +1638,14 @@
     if (row.kind === 'unmatched') {
       return { label: t('status_Unmatched') !== 'status_Unmatched' ? t('status_Unmatched') : '미매칭', className: 'unmatched' };
     }
-    return { label: getConfidenceLabel(row.confidence),
-      className: row.confidence === 'Verified' || row.confidence === 'AliasVerified' ? 'verified' : row.confidence === 'Unmatched' ? 'neutral' : 'review' };
+    var needsIdentityAttention = row.identityReviewStatus && row.identityReviewStatus !== 'none';
+    if (row.confidence === 'Verified' || row.confidence === 'AliasVerified') {
+      return { label: getConfidenceLabel(row.confidence), className: needsIdentityAttention ? 'review' : 'verified' };
+    }
+    if (row.confidence === 'NameOnly') {
+      return { label: getConfidenceLabel(row.confidence), className: needsIdentityAttention ? 'review' : 'neutral' };
+    }
+    return { label: getConfidenceLabel(row.confidence), className: row.confidence === 'Unmatched' ? 'neutral' : 'review' };
   }
 
   function appendTextCell(tr, text, className) {
@@ -1657,11 +1671,16 @@
     el.participantRows.textContent = '';
     el.participantsEmpty.hidden = rows.length > 0;
     setText(el.visibleCount, t('visible_count', { count: rows.length }));
+    var globalUnmatchedCount = state.rows.filter(function (row) { return !row.isExcluded && row.kind === 'unmatched'; }).length;
+    var unmatchedHiddenByGroup = state.filter === 'unmatched' && !!state.group && globalUnmatchedCount > 0;
     var emptyTitleKey = 'empty_participants_title';
     var emptyNoteText = t('empty_filtered_note');
     if (state.filter === 'excluded') {
       emptyTitleKey = 'empty_excluded_title';
       emptyNoteText = t('empty_excluded_note');
+    } else if (unmatchedHiddenByGroup) {
+      emptyTitleKey = 'empty_unmatched_group_title';
+      emptyNoteText = t('empty_unmatched_group_note', { count: globalUnmatchedCount });
     } else if (state.filter === 'review') {
       emptyTitleKey = 'empty_review_title';
     } else if (!state.rows.length) {
@@ -1883,7 +1902,18 @@
   function reviewExplanation(row) {
     if (row.isExcluded) { return t('review_excluded_reason'); }
     if (row.attendanceState === 'NotJoined') { return t('review_not_joined'); }
-    var reason = row.confidence === 'NameOnly' ? t('review_name_only')
+    var reasonByCode = {
+      duplicate_roster_name: 'review_duplicate_roster_name',
+      email_conflict: 'review_email_conflict',
+      identifier_conflict: 'review_identifier_conflict',
+      duplicate_roster_email: 'review_duplicate_roster_email',
+      ambiguous_possible_match: 'review_ambiguous_possible_match',
+      blank_name: 'review_blank_name'
+    };
+    var codeKey = row.identityReviewReason ? reasonByCode[row.identityReviewReason] : null;
+    var reason = codeKey ? t(codeKey)
+      : row.confidence === 'NameOnly' ? (row.identityReviewStatus && row.identityReviewStatus !== 'none'
+        ? t('review_name_only') : t('review_exact_name_match'))
       : row.confidence === 'Possible' ? t('review_possible_match')
       : row.confidence === 'AliasVerified' ? t('review_alias_match')
       : row.confidence === 'Verified' ? (row.connections.some(function (connection) { return connection.manualMatch; })

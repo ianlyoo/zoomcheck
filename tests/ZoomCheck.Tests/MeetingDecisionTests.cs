@@ -68,7 +68,7 @@ public sealed class MeetingDecisionTests : IAsyncLifetime
     [Fact]
     public async Task Restore_IsIdempotentAndPreservesOriginalAttendance()
     {
-        await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수") });
+        await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수 (태블릿)") });
         await _service.SetMeetingExclusionAsync(Meeting, "p1", true);
         await _service.SetMeetingExclusionAsync(Meeting, "p1", true);
         await _service.SetMeetingExclusionAsync(Meeting, "p1", false);
@@ -136,25 +136,25 @@ public sealed class MeetingDecisionTests : IAsyncLifetime
     [Fact]
     public async Task Confirmation_IsDurableMeetingScopedAndDoesNotChangeMatchConfidence()
     {
-        var initial = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수") })).Board;
+        var initial = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수", "other@example.com") })).Board;
         var confirmed = await _service.SetPersonReviewAsync(Meeting, "p1", "identity", "confirmed", P(initial).IdentityEvidenceToken);
         Assert.Equal("confirmed", P(confirmed).IdentityReviewStatus);
         Assert.False(P(confirmed).ReviewRequired);
         Assert.Equal(MatchConfidence.NameOnly, P(confirmed).Confidence);
-        await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수") });
+        await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수", "other@example.com") });
         var reloaded = await CreateService(new SqliteAttendanceRepository(_path)).BuildBoardAsync(Meeting);
         Assert.Equal("confirmed", P(reloaded).IdentityReviewStatus);
         Assert.Contains("\"confirmed\"", await _service.BuildBoardCsvAsync(Meeting));
-        var other = (await Snapshot(meeting: "another", people: new[] { new ParticipantSnapshotParticipant("a", "김민수") })).Board;
+        var other = (await Snapshot(meeting: "another", people: new[] { new ParticipantSnapshotParticipant("a", "김민수", "other@example.com") })).Board;
         Assert.Equal("pending", P(other).IdentityReviewStatus);
     }
 
     [Fact]
     public async Task Confirmation_InvalidatesWhenEvidenceChanges_AndRejectsOldToken()
     {
-        var initial = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수") })).Board;
+        var initial = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수", "other@example.com") })).Board;
         await _service.SetPersonReviewAsync(Meeting, "p1", "identity", "confirmed", P(initial).IdentityEvidenceToken);
-        var changed = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수"), new ParticipantSnapshotParticipant("b", "김민수") })).Board;
+        var changed = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수", "other@example.com"), new ParticipantSnapshotParticipant("b", "김민수", "other@example.com") })).Board;
         Assert.Equal("pending", P(changed).IdentityReviewStatus);
         Assert.True(P(changed).ReviewRequired);
         await Assert.ThrowsAsync<InvalidOperationException>(() => _service.SetPersonReviewAsync(Meeting, "p1", "identity", "confirmed", P(initial).IdentityEvidenceToken));
@@ -163,7 +163,7 @@ public sealed class MeetingDecisionTests : IAsyncLifetime
     [Fact]
     public async Task IdentityAndDuplicateConfirmation_AreSeparateAndUndoable()
     {
-        var board = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수"), new ParticipantSnapshotParticipant("b", "김민수") })).Board;
+        var board = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수", "other@example.com"), new ParticipantSnapshotParticipant("b", "김민수", "other@example.com") })).Board;
         board = await _service.SetPersonReviewAsync(Meeting, "p1", "identity", "confirmed", P(board).IdentityEvidenceToken);
         Assert.True(P(board).ReviewRequired);
         board = await _service.SetPersonReviewAsync(Meeting, "p1", "duplicate", "confirmed", P(board).DuplicateEvidenceToken);
@@ -177,7 +177,7 @@ public sealed class MeetingDecisionTests : IAsyncLifetime
     [Fact]
     public async Task DeferredReview_RemainsInReviewQueue()
     {
-        var board = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수") })).Board;
+        var board = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", "김민수", "other@example.com") })).Board;
         board = await _service.SetPersonReviewAsync(Meeting, "p1", "identity", "deferred", P(board).IdentityEvidenceToken);
         Assert.Equal("deferred", P(board).IdentityReviewStatus);
         Assert.True(P(board).ReviewRequired);
@@ -380,4 +380,131 @@ public sealed class MeetingDecisionTests : IAsyncLifetime
     [Fact]
     public void MissingMatchTargetIsNotSilentlyTreatedAsUndo()
         => Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<MeetingConnectionMatchRequest>("{\"Source\":\"s\",\"PresenceKey\":\"a\"}"));
+
+    [Fact]
+    public async Task CleanExactUniqueNameMatch_IsNotFlaggedForReview_WhilePresentLeftOrEventOnly()
+    {
+        var present = (await Snapshot(people: new[] { new ParticipantSnapshotParticipant("a", " 김 민 수 ") })).Board;
+        Assert.Equal(AttendanceState.Present, P(present).AttendanceState);
+        Assert.Equal(MatchConfidence.NameOnly, P(present).Confidence);
+        Assert.Equal("none", P(present).IdentityReviewStatus);
+        Assert.Equal("none", P(present).DuplicateReviewStatus);
+        Assert.False(P(present).ReviewRequired);
+        Assert.Equal(string.Empty, P(present).IdentityReviewReason);
+
+        var left = (await Snapshot()).Board;
+        Assert.Equal(AttendanceState.Left, P(left).AttendanceState);
+        Assert.Equal("none", P(left).IdentityReviewStatus);
+        Assert.False(P(left).ReviewRequired);
+
+        await _service.RecordParticipantEventAsync(new("event-only", _start, ParticipantEventType.Joined, "김민수", null, "webhook", "{}"));
+        var eventBoard = await _service.BuildBoardAsync("event-only");
+        Assert.Equal(AttendanceState.Present, P(eventBoard).AttendanceState);
+        Assert.False(P(eventBoard).ReviewRequired);
+    }
+
+    [Fact]
+    public async Task ReviewQueue_FlagsHomonymsConflictsFuzzyDuplicatesAndUnmatched_Only()
+    {
+        await _repository.ReplaceRosterAsync(new RosterImportResult("review-cases", "roster.xlsx", "roster.xlsx", _start, new[]
+        {
+            Person("r1", "101", "학생001", "student001@example.com", "1조"),
+            Person("r2", "102", "학생002", "student002@example.com", "1조"),
+            Person("r3a", "103", "학생003", "student003a@example.com", "1조"),
+            Person("r3b", "104", "학생003", "student003b@example.com", "1조"),
+            Person("r5", "105", "학생005", "student005@example.com", "1조"),
+            Person("r6", "106", "학생006", "student006@example.com", "2조"),
+            Person("r7a", "107", "학생007", "shared@example.com", "2조"),
+            Person("r7b", "108", "학생008", "shared@example.com", "2조"),
+            Person("r120", "120", "학생120", "student120@example.com", "2조"),
+            Person("r121", "121", "학생121", "student121@example.com", "2조")
+        }));
+
+        var board = (await Snapshot(people: new[]
+        {
+            new ParticipantSnapshotParticipant("clean", "학생001"),
+            new ParticipantSnapshotParticipant("conflict-email", "학생002", "stranger@example.com"),
+            new ParticipantSnapshotParticipant("homonym", "학생003"),
+            new ParticipantSnapshotParticipant("fuzzy", "학생005 (태블릿)"),
+            new ParticipantSnapshotParticipant("dup-1", "학생006"),
+            new ParticipantSnapshotParticipant("dup-2", "학생006"),
+            new ParticipantSnapshotParticipant("shared-email", "iPad", "shared@example.com"),
+            new ParticipantSnapshotParticipant("cross-person", "학생121", "student120@example.com"),
+            new ParticipantSnapshotParticipant("unmatched", "Guest 12")
+        })).Board;
+
+        // Clean exact unique name match: not flagged.
+        Assert.False(P(board, "r1").ReviewRequired);
+        Assert.Equal("none", P(board, "r1").IdentityReviewStatus);
+
+        // Name-only match with conflicting email: flagged.
+        Assert.True(P(board, "r2").ReviewRequired);
+        Assert.Equal("pending", P(board, "r2").IdentityReviewStatus);
+        Assert.Equal(MatchReviewReasons.EmailConflict, P(board, "r2").IdentityReviewReason);
+
+        // Same name twice on the roster: flagged.
+        Assert.True(P(board, "r3a").ReviewRequired);
+        Assert.Equal("pending", P(board, "r3a").IdentityReviewStatus);
+        Assert.Equal(MatchReviewReasons.DuplicateRosterName, P(board, "r3a").IdentityReviewReason);
+
+        // Fuzzy/Possible match: flagged.
+        Assert.True(P(board, "r5").ReviewRequired);
+        Assert.Equal("pending", P(board, "r5").IdentityReviewStatus);
+        Assert.Equal(MatchReviewReasons.PossibleMatch, P(board, "r5").IdentityReviewReason);
+
+        // Duplicate active connections on a clean unique name: duplicate flagged, identity clean.
+        Assert.True(P(board, "r6").ReviewRequired);
+        Assert.Equal("none", P(board, "r6").IdentityReviewStatus);
+        Assert.Equal("pending", P(board, "r6").DuplicateReviewStatus);
+
+        // Duplicate roster email: flagged.
+        Assert.True(P(board, "r7a").ReviewRequired);
+        Assert.Equal("pending", P(board, "r7a").IdentityReviewStatus);
+        Assert.Equal(MatchReviewReasons.DuplicateRosterEmail, P(board, "r7a").IdentityReviewReason);
+
+        // One connection matching two people (email -> r120, display name -> r121): flagged.
+        Assert.True(P(board, "r120").ReviewRequired);
+        Assert.Equal("pending", P(board, "r120").IdentityReviewStatus);
+        Assert.Equal(MatchReviewReasons.IdentifierConflict, P(board, "r120").IdentityReviewReason);
+
+        // Unmatched off-roster participant: kept in unmatched review list.
+        Assert.Single(board.UnmatchedParticipants);
+        Assert.Equal("pending", C(board, "unmatched").ReviewStatus);
+
+        // Flagged identity cases stay flagged after leaving.
+        var afterLeave = (await Snapshot()).Board;
+        Assert.False(P(afterLeave, "r1").ReviewRequired);
+        Assert.True(P(afterLeave, "r2").ReviewRequired);
+        Assert.True(P(afterLeave, "r3a").ReviewRequired);
+        Assert.True(P(afterLeave, "r5").ReviewRequired);
+        Assert.True(P(afterLeave, "r7a").ReviewRequired);
+        Assert.True(P(afterLeave, "r120").ReviewRequired);
+    }
+
+    [Fact]
+    public async Task Synthetic300Dataset_ReducesReviewQueueToOnlyAmbiguousDuplicateAndUnmatchedRows()
+    {
+        var rosterPeople = Enumerable.Range(1, 300)
+            .Select(i => Person($"p{i:D3}", i.ToString(), $"학생{i:D3}", $"student{i:D3}@example.com", $"{(i - 1) / 30 + 1}조"))
+            .ToArray();
+        await _repository.ReplaceRosterAsync(new RosterImportResult("syn-300", "roster-300.xlsx", "roster-300.xlsx", _start, rosterPeople));
+
+        var skipped = new HashSet<int> { 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238 };
+        var names = Enumerable.Range(1, 240)
+            .Where(i => !skipped.Contains(i))
+            .Select(i => $"학생{i:D3}")
+            .Concat(new[] { "학생010_1조", "학생12", "iPhone", "Guest 12", "김민수", "갤럭시 S24", "학생005 (태블릿)", "선생님" })
+            .ToArray();
+
+        var result = await _service.ApplyParticipantSnapshotAsync(new(Meeting, names, "web-dashboard", _start.AddMinutes(1)));
+        var board = result.Board;
+
+        Assert.Equal(300, board.People.Count);
+        Assert.Equal(226, board.People.Count(p => p.AttendanceState == AttendanceState.Present));
+        Assert.Equal(74, board.People.Count(p => p.AttendanceState != AttendanceState.Present));
+        Assert.Equal(3, board.People.Count(p => p.ReviewRequired));
+        Assert.Equal(5, board.UnmatchedParticipants.Count);
+        Assert.Equal(8, board.People.Count(p => p.ReviewRequired) + board.UnmatchedParticipants.Count);
+        Assert.Equal(new[] { "p005", "p010", "p012" }, board.People.Where(p => p.ReviewRequired).Select(p => p.RosterPersonId).OrderBy(id => id).ToArray());
+    }
 }

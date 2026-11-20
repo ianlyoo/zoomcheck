@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using ZoomCheck.Core.Enums;
 
 namespace ZoomCheck.Core.Models;
@@ -18,7 +19,9 @@ public sealed record ParticipantEvent(
     string? RawParticipantName = null,
     string? CanonicalParticipantName = null,
     string? PreviousParticipantName = null,
-    string? PreviousRawParticipantName = null)
+    string? PreviousRawParticipantName = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool NeedsReview = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string ReviewReasonCode = "")
 {
     /// <summary>Raw Zoom-reported name when available, otherwise the effective participant name.</summary>
     public string EffectiveRawParticipantName => string.IsNullOrWhiteSpace(RawParticipantName)

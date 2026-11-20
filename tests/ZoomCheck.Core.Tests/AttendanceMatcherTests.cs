@@ -479,4 +479,181 @@ public sealed class AttendanceMatcherTests
         Assert.Equal(first.Reason, second.Reason);
         Assert.Same(first.Person, second.Person);
     }
+
+    // --------------------------------------------------- review-signal rules
+
+    [Fact]
+    public void Match_CleanUniqueExactNameWithoutEmail_DoesNotRequireReview()
+    {
+        var target = Person("p1", "학생001", "student001@example.com");
+        var roster = new[] { target, Person("p2", "학생002", "student002@example.com") };
+
+        var result = CreateMatcher().Match(roster, NoAliases, " 학생 001 ", null);
+
+        Assert.Equal(MatchConfidence.NameOnly, result.Confidence);
+        Assert.Same(target, result.Person);
+        Assert.False(result.NeedsReview);
+        Assert.Equal(MatchReviewReasons.None, result.ReviewReasonCode);
+    }
+
+    [Fact]
+    public void Match_UniqueExactNameWhenRosterHasNoEmail_DoesNotRequireReview()
+    {
+        var target = Person("p1", "학생001", string.Empty);
+        var roster = new[] { target };
+
+        var result = CreateMatcher().Match(roster, NoAliases, "학생001", "student001@example.com");
+
+        Assert.Equal(MatchConfidence.NameOnly, result.Confidence);
+        Assert.Same(target, result.Person);
+        Assert.False(result.NeedsReview);
+        Assert.Equal(MatchReviewReasons.None, result.ReviewReasonCode);
+    }
+
+    [Fact]
+    public void Match_DuplicateNormalizedNamesOnRoster_RequiresReview()
+    {
+        var first = Person("p1", "학생005", "student005a@example.com", sequence: "5");
+        var second = Person("p2", "학생 005", "student005b@example.com", sequence: "31");
+        var roster = new[] { first, second };
+
+        var result = CreateMatcher().Match(roster, NoAliases, "학생005", null);
+
+        Assert.Equal(MatchConfidence.NameOnly, result.Confidence);
+        Assert.Same(first, result.Person);
+        Assert.True(result.NeedsReview);
+        Assert.Equal(MatchReviewReasons.DuplicateRosterName, result.ReviewReasonCode);
+    }
+
+    [Fact]
+    public void Match_NameOnlyWithConflictingEmail_RequiresReview()
+    {
+        var target = Person("p1", "학생001", "student001@example.com");
+        var roster = new[] { target };
+
+        var result = CreateMatcher().Match(roster, NoAliases, "학생001", "other@example.com");
+
+        Assert.Equal(MatchConfidence.NameOnly, result.Confidence);
+        Assert.Same(target, result.Person);
+        Assert.True(result.NeedsReview);
+        Assert.Equal(MatchReviewReasons.EmailConflict, result.ReviewReasonCode);
+    }
+
+    [Fact]
+    public void Match_AliasWithConflictingEmail_RequiresReview()
+    {
+        var target = Person("p1", "학생001", "student001@example.com");
+        var roster = new[] { target };
+        var aliases = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [NameNormalizer.Normalize("학생1번")] = "p1"
+        };
+
+        var result = CreateMatcher().Match(roster, aliases, "학생1번", "other@example.com");
+
+        Assert.Equal(MatchConfidence.AliasVerified, result.Confidence);
+        Assert.Same(target, result.Person);
+        Assert.True(result.NeedsReview);
+        Assert.Equal(MatchReviewReasons.EmailConflict, result.ReviewReasonCode);
+    }
+
+    [Fact]
+    public void Match_EmailMatchingOnePersonAndNameMatchingAnother_RequiresReview()
+    {
+        var byEmail = Person("p1", "학생001", "student001@example.com");
+        var byName = Person("p2", "학생002", "student002@example.com");
+        var roster = new[] { byEmail, byName };
+
+        var result = CreateMatcher().Match(roster, NoAliases, "학생002", "student001@example.com");
+
+        Assert.Equal(MatchConfidence.Verified, result.Confidence);
+        Assert.Same(byEmail, result.Person);
+        Assert.True(result.NeedsReview);
+        Assert.Equal(MatchReviewReasons.IdentifierConflict, result.ReviewReasonCode);
+    }
+
+    [Fact]
+    public void Match_EmailMatchingOnePersonAndNonRosterDisplayName_DoesNotRequireReview()
+    {
+        var byEmail = Person("p1", "학생001", "student001@example.com");
+        var roster = new[] { byEmail, Person("p2", "학생002", "student002@example.com") };
+
+        var result = CreateMatcher().Match(roster, NoAliases, "iPhone 15", "student001@example.com");
+
+        Assert.Equal(MatchConfidence.Verified, result.Confidence);
+        Assert.Same(byEmail, result.Person);
+        Assert.False(result.NeedsReview);
+        Assert.Equal(MatchReviewReasons.None, result.ReviewReasonCode);
+    }
+
+    [Fact]
+    public void Match_DuplicateEmailOnRoster_RequiresReviewAndPrefersMatchingName()
+    {
+        var first = Person("p1", "학생001", "shared@example.com", sequence: "1");
+        var second = Person("p2", "학생002", "shared@example.com", sequence: "2");
+        var roster = new[] { first, second };
+
+        var disambiguated = CreateMatcher().Match(roster, NoAliases, "학생002", "shared@example.com");
+        var unclear = CreateMatcher().Match(roster, NoAliases, "iPad", "shared@example.com");
+
+        Assert.Equal(MatchConfidence.Verified, disambiguated.Confidence);
+        Assert.Same(second, disambiguated.Person);
+        Assert.True(disambiguated.NeedsReview);
+        Assert.Equal(MatchReviewReasons.DuplicateRosterEmail, disambiguated.ReviewReasonCode);
+
+        Assert.Equal(MatchConfidence.Verified, unclear.Confidence);
+        Assert.Same(first, unclear.Person);
+        Assert.True(unclear.NeedsReview);
+        Assert.Equal(MatchReviewReasons.DuplicateRosterEmail, unclear.ReviewReasonCode);
+    }
+
+    [Fact]
+    public void Match_TiedPossibleCandidates_FlagsAmbiguousPossibleMatch()
+    {
+        var roster = new[]
+        {
+            Person("p120", "학생120", sequence: "120"),
+            Person("p121", "학생121", sequence: "121")
+        };
+
+        var result = CreateMatcher().Match(roster, NoAliases, "학생12", null);
+
+        Assert.Equal(MatchConfidence.Possible, result.Confidence);
+        Assert.True(result.NeedsReview);
+        Assert.Equal(MatchReviewReasons.AmbiguousPossibleMatch, result.ReviewReasonCode);
+        Assert.Contains("2 roster candidates", result.Reason);
+    }
+
+    [Fact]
+    public void Match_IndexedOverloadMatchesDirectOverloadAcrossReviewCases()
+    {
+        var roster = new[]
+        {
+            Person("p1", "학생001", "student001@example.com", "1"),
+            Person("p2", "학생002", "student002@example.com", "2"),
+            Person("p3a", "학생003", "student003a@example.com", "3"),
+            Person("p3b", "학생003", "student003b@example.com", "4"),
+            Person("p5a", "학생005", "shared@example.com", "5"),
+            Person("p5b", "학생006", "shared@example.com", "6")
+        };
+        var index = new AttendanceMatchIndex(roster, NoAliases);
+        var matcher = CreateMatcher();
+        var cases = new (string Name, string? Email)[]
+        {
+            ("학생001", null),
+            ("학생001", "other@example.com"),
+            ("학생002", "student001@example.com"),
+            ("학생003", null),
+            ("학생006", "shared@example.com"),
+            ("학생001 (태블릿)", null),
+            ("Guest 12", null)
+        };
+
+        foreach (var (name, email) in cases)
+        {
+            var direct = matcher.Match(roster, NoAliases, name, email);
+            var indexed = index.Match(name, email);
+            Assert.Equal(direct, indexed);
+        }
+    }
 }

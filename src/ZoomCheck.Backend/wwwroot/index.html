@@ -116,11 +116,11 @@
           <div><strong id="readiness-title"></strong><p id="readiness-note"></p></div>
           <button type="button" class="btn primary" id="btn-next-step">명단 올리기</button>
         </div>
-        <div class="scope-note"><span id="scope-note" data-i18n="scope_note_unmatched">미매칭은 그룹과 관계없이 표시됩니다.</span><span id="export-scope" data-i18n="scope_note_csv">CSV는 명단 전체 기준이며 검색·상태 필터를 적용하지 않습니다.</span></div>
+        <div class="scope-note"><span id="scope-note" data-i18n="scope_note_unmatched">전체·참석·미참석 탭은 명단 기준입니다.</span><span id="export-scope" data-i18n="scope_note_csv">CSV는 명단 전체 기준이며 검색·상태 필터를 적용하지 않습니다.</span></div>
         <div class="participant-toolbar">
           <div class="filter-tabs" role="group" aria-label="참가자 상태 필터" data-i18n-aria="filter_aria_label">
             <button type="button" aria-pressed="true" data-filter="all"><span data-i18n="filter_all">전체</span> <span id="count-all">0</span></button>
-            <button type="button" aria-pressed="false" data-filter="present"><span data-i18n="filter_present">참석 항목</span> <span id="count-present">0</span></button>
+            <button type="button" aria-pressed="false" data-filter="present"><span data-i18n="filter_present">참석</span> <span id="count-present">0</span></button>
             <button type="button" aria-pressed="false" data-filter="absent"><span data-i18n="filter_absent">미참석</span> <span id="count-absent">0</span></button>
             <button type="button" aria-pressed="false" data-filter="review"><span data-i18n="filter_review">검토</span> <span id="count-review">0</span></button>
             <button type="button" aria-pressed="false" data-filter="unmatched"><span data-i18n="filter_unmatched">미매칭</span> <span id="count-unmatched">0</span></button>
@@ -429,7 +429,7 @@
           <div class="tutorial-copy">
             <span class="tutorial-kicker" data-i18n="tutorial_s5_kicker">조별 확인 · CSV · 업데이트</span>
             <h2 data-i18n="tutorial_s5_title">필요한 범위만 확인하고 저장하세요</h2>
-            <p data-i18n="tutorial_s5_p">그룹 선택 시 미매칭은 함께 표시됩니다. CSV에는 제외되지 않은 해당 그룹 명단만 포함되며 검색·상태 필터는 적용되지 않습니다. 회의가 끝나면 <strong>CSV 내보내기</strong>로 결과를 저장하세요.</p>
+            <p data-i18n="tutorial_s5_p">그룹 선택 시 해당 그룹 명단만 집계되며, 미매칭은 전체 그룹에서 확인합니다. CSV에는 제외되지 않은 해당 그룹 명단만 포함되며 검색·상태 필터는 적용되지 않습니다. 회의가 끝나면 <strong>CSV 내보내기</strong>로 결과를 저장하세요.</p>
             <ul><li data-i18n="tutorial_s5_li1">출석 DB는 이 PC의 로컬 폴더에 저장됩니다.</li><li data-i18n="tutorial_s5_li2">새 버전은 자동으로 확인·검증하며, 설치는 직접 누를 때만 진행됩니다.</li><li data-i18n="tutorial_s5_li3">이 안내는 상단 <strong>사용법</strong> 또는 설정에서 언제든 다시 열 수 있습니다.</li></ul>
           </div>
         </section>

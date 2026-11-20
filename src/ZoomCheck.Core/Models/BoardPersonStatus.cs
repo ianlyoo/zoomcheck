@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using ZoomCheck.Core.Enums;
 
 namespace ZoomCheck.Core.Models;
@@ -24,4 +25,5 @@ public sealed record BoardPersonStatus(
     string DuplicateReviewStatus = "none",
     bool ReviewRequired = false,
     string IdentityEvidenceToken = "",
-    string DuplicateEvidenceToken = "");
+    string DuplicateEvidenceToken = "",
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string IdentityReviewReason = "");

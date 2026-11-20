@@ -6,16 +6,15 @@ namespace ZoomCheck.Core.Services;
 /// <summary>
 /// Pre-indexed view of a roster and alias map for repeated matching and canonicalization
 /// within a snapshot or board projection. Preserves exact <see cref="AttendanceMatcher"/>
-/// and <see cref="KoreanNameCanonicalizer"/> precedence and first-match semantics.
+/// and <see cref="KoreanNameCanonicalizer"/> precedence, ambiguity detection, and review signals.
 /// </summary>
 public sealed class AttendanceMatchIndex
 {
     private readonly IReadOnlyList<RosterPerson> _roster;
     private readonly IReadOnlyDictionary<string, string> _aliasMap;
-    private readonly Dictionary<string, RosterPerson> _byEmail;
+    private readonly Dictionary<string, List<RosterPerson>> _byEmail;
     private readonly Dictionary<string, RosterPerson> _byId;
-    private readonly Dictionary<string, RosterPerson> _byNormalizedName;
-    private readonly Dictionary<string, RosterPerson?> _uniqueByNormalizedName;
+    private readonly Dictionary<string, List<RosterPerson>> _byNormalizedName;
 
     public AttendanceMatchIndex(
         IReadOnlyList<RosterPerson> roster,
@@ -23,28 +22,31 @@ public sealed class AttendanceMatchIndex
     {
         _roster = roster;
         _aliasMap = aliasMap;
-        _byEmail = new Dictionary<string, RosterPerson>(roster.Count, StringComparer.OrdinalIgnoreCase);
+        _byEmail = new Dictionary<string, List<RosterPerson>>(StringComparer.OrdinalIgnoreCase);
         _byId = new Dictionary<string, RosterPerson>(roster.Count, StringComparer.Ordinal);
-        _byNormalizedName = new Dictionary<string, RosterPerson>(roster.Count, StringComparer.Ordinal);
-        _uniqueByNormalizedName = new Dictionary<string, RosterPerson?>(roster.Count, StringComparer.Ordinal);
+        _byNormalizedName = new Dictionary<string, List<RosterPerson>>(roster.Count, StringComparer.Ordinal);
 
         foreach (var person in roster)
         {
-            if (!string.IsNullOrWhiteSpace(person.Email))
+            var trimmedEmail = person.Email?.Trim();
+            if (!string.IsNullOrWhiteSpace(trimmedEmail))
             {
-                _byEmail.TryAdd(person.Email, person);
+                if (!_byEmail.TryGetValue(trimmedEmail, out var emailMatches))
+                {
+                    emailMatches = new List<RosterPerson>(1);
+                    _byEmail[trimmedEmail] = emailMatches;
+                }
+                emailMatches.Add(person);
             }
 
             _byId.TryAdd(person.Id, person);
 
-            if (!string.IsNullOrEmpty(person.NormalizedName))
+            if (!_byNormalizedName.TryGetValue(person.NormalizedName, out var nameMatches))
             {
-                _byNormalizedName.TryAdd(person.NormalizedName, person);
-                if (!_uniqueByNormalizedName.TryAdd(person.NormalizedName, person))
-                {
-                    _uniqueByNormalizedName[person.NormalizedName] = null;
-                }
+                nameMatches = new List<RosterPerson>(1);
+                _byNormalizedName[person.NormalizedName] = nameMatches;
             }
+            nameMatches.Add(person);
         }
     }
 
@@ -55,29 +57,40 @@ public sealed class AttendanceMatchIndex
     public bool TryGetPersonById(string personId, out RosterPerson? person)
         => _byId.TryGetValue(personId, out person);
 
+    public bool HasDuplicateRosterName(string normalizedName)
+        => !string.IsNullOrEmpty(normalizedName)
+            && _byNormalizedName.TryGetValue(normalizedName, out var matches)
+            && matches.Count > 1;
+
     public MatchCandidate Match(string participantName, string? participantEmail)
     {
         var normalizedName = NameNormalizer.Normalize(participantName);
         var normalizedEmail = participantEmail?.Trim().ToLowerInvariant();
 
+        IReadOnlyList<RosterPerson>? emailMatches = null;
         if (!string.IsNullOrWhiteSpace(normalizedEmail)
-            && _byEmail.TryGetValue(normalizedEmail, out var emailMatch))
+            && _byEmail.TryGetValue(normalizedEmail, out var emailList))
         {
-            return new MatchCandidate(emailMatch, MatchConfidence.Verified, 1.0, "Email exact match");
+            emailMatches = emailList;
         }
 
-        if (_aliasMap.TryGetValue(normalizedName, out var aliasPersonId)
-            && _byId.TryGetValue(aliasPersonId, out var aliasMatch))
+        RosterPerson? aliasPerson = null;
+        if (_aliasMap.TryGetValue(normalizedName, out var aliasPersonId))
         {
-            return new MatchCandidate(aliasMatch, MatchConfidence.AliasVerified, 0.98, "Saved alias match");
+            _byId.TryGetValue(aliasPersonId, out aliasPerson);
         }
 
-        if (_byNormalizedName.TryGetValue(normalizedName, out var nameMatch))
-        {
-            return new MatchCandidate(nameMatch, MatchConfidence.NameOnly, 0.9, "Normalized name exact match");
-        }
+        IReadOnlyList<RosterPerson> exactNameMatches = _byNormalizedName.TryGetValue(normalizedName, out var nameList)
+            ? nameList
+            : Array.Empty<RosterPerson>();
 
-        return AttendanceMatcher.FindBestPossibleMatch(_roster, normalizedName);
+        return AttendanceMatcher.MatchResolved(
+            _roster,
+            normalizedName,
+            normalizedEmail,
+            emailMatches,
+            aliasPerson,
+            exactNameMatches);
     }
 
     public MatchCandidate MatchParticipant(string rawName, string displayName, string? participantEmail)
@@ -142,13 +155,13 @@ public sealed class AttendanceMatchIndex
         var reversed = surname + givenName;
         var normalizedReversed = NameNormalizer.Normalize(reversed);
         if (string.IsNullOrEmpty(normalizedReversed)
-            || !_uniqueByNormalizedName.TryGetValue(normalizedReversed, out var uniquePerson)
-            || uniquePerson is null)
+            || !_byNormalizedName.TryGetValue(normalizedReversed, out var matches)
+            || matches.Count != 1)
         {
             return false;
         }
 
-        matchedPerson = uniquePerson;
+        matchedPerson = matches[0];
         canonicalName = string.IsNullOrWhiteSpace(matchedPerson.Name) ? reversed : matchedPerson.Name;
         return true;
     }

@@ -79,7 +79,9 @@ internal static class AttendanceBoardProjector
                 Confidence: candidate.Confidence,
                 MatchScore: candidate.Score,
                 MatchReason: candidate.Reason,
-                ManualMatch: manualMatch);
+                ManualMatch: manualMatch,
+                NeedsReview: candidate.NeedsReview,
+                ReviewReasonCode: candidate.ReviewReasonCode);
             currentConnections[i] = ApplyConnectionReview(connection, reviewsByKey);
         }
 
@@ -120,7 +122,8 @@ internal static class AttendanceBoardProjector
                 ?? Array.Empty<CurrentParticipantConnection>();
 
             var status = BuildPersonStatus(person, summary, observations, liveConnections, hasSnapshots);
-            people[i] = ApplyPersonReview(status, liveConnections, reviewsByKey, data.Exclusions);
+            var (identityRequired, identityReviewReason) = ResolveIdentityReview(person, status, summary, liveConnections, index);
+            people[i] = ApplyPersonReview(status, liveConnections, reviewsByKey, data.Exclusions, identityRequired, identityReviewReason);
         }
 
         people = people.OrderBy(item => ParseSequence(item.Sequence)).ToArray();
@@ -324,7 +327,7 @@ internal static class AttendanceBoardProjector
         {
             if (mergedPersonEvents.TryGetValue(personId, out var events) && events.Count > 0)
             {
-                updatedPersonSummaries[personId] = SummarizePersonEvents(personId, events);
+                updatedPersonSummaries[personId] = SummarizePersonEvents(personId, events, rewrittenByEventId, index);
             }
             else
             {
@@ -372,7 +375,11 @@ internal static class AttendanceBoardProjector
         }
     }
 
-    private static PersonEventSummary SummarizePersonEvents(string personId, List<ParticipantEvent> events)
+    private static PersonEventSummary SummarizePersonEvents(
+        string personId,
+        List<ParticipantEvent> events,
+        IReadOnlyDictionary<string, ParticipantEvent> rewrittenByEventId,
+        AttendanceMatchIndex index)
     {
         var ordered = events.OrderBy(evt => evt.OccurredAt).ToList();
         var joinCount = 0;
@@ -381,6 +388,9 @@ internal static class AttendanceBoardProjector
         ParticipantEventType? lastNonRename = null;
         var maxConfidence = MatchConfidence.Unmatched;
         var seenConfidences = new List<MatchConfidence>();
+        var needsIdentityReview = false;
+        var worstReviewConfidence = MatchConfidence.Verified;
+        var identityReviewReason = MatchReviewReasons.None;
 
         foreach (var evt in ordered)
         {
@@ -414,6 +424,31 @@ internal static class AttendanceBoardProjector
             {
                 seenConfidences.Add(evt.Confidence);
             }
+
+            if (!rewrittenByEventId.ContainsKey(evt.Id))
+            {
+                var candidate = index.MatchParticipant(evt.EffectiveRawParticipantName, evt.ParticipantName, evt.ParticipantEmail);
+                if (candidate.NeedsReview)
+                {
+                    if (!needsIdentityReview || candidate.Confidence >= worstReviewConfidence)
+                    {
+                        needsIdentityReview = true;
+                        worstReviewConfidence = candidate.Confidence;
+                        identityReviewReason = candidate.ReviewReasonCode;
+                    }
+                }
+                else if (evt.Confidence is MatchConfidence.Possible or MatchConfidence.Unmatched)
+                {
+                    if (!needsIdentityReview || evt.Confidence >= worstReviewConfidence)
+                    {
+                        needsIdentityReview = true;
+                        worstReviewConfidence = evt.Confidence;
+                        identityReviewReason = evt.Confidence == MatchConfidence.Possible
+                            ? MatchReviewReasons.PossibleMatch
+                            : MatchReviewReasons.Unmatched;
+                    }
+                }
+            }
         }
 
         return new PersonEventSummary(
@@ -424,7 +459,9 @@ internal static class AttendanceBoardProjector
             LastLeftAt: lastLeftAt,
             LastNonRenameEventType: lastNonRename,
             MaxConfidence: maxConfidence,
-            ConfidenceOrder: string.Join(", ", seenConfidences));
+            ConfidenceOrder: string.Join(", ", seenConfidences),
+            NeedsIdentityReview: needsIdentityReview,
+            IdentityReviewReason: identityReviewReason);
     }
 
     private static NameEventSummary SummarizeNameEvents(string normalizedName, List<ParticipantEvent> events)
@@ -607,7 +644,9 @@ internal static class AttendanceBoardProjector
             connection.FirstSeenAt,
             connection.MatchedRosterPersonId,
             connection.Confidence,
-            connection.ManualMatch
+            connection.ManualMatch,
+            connection.NeedsReview,
+            connection.ReviewReasonCode
         });
         return connection with
         {
@@ -621,43 +660,103 @@ internal static class AttendanceBoardProjector
         };
     }
 
+    private static (bool Required, string ReasonCode) ResolveIdentityReview(
+        RosterPerson rosterPerson,
+        BoardPersonStatus status,
+        PersonEventSummary? summary,
+        CurrentParticipantConnection[] connections,
+        AttendanceMatchIndex index)
+    {
+        if (status.AttendanceState == AttendanceState.NotJoined)
+        {
+            return (false, MatchReviewReasons.None);
+        }
+
+        if (connections.Length > 0)
+        {
+            CurrentParticipantConnection? flagged = null;
+            for (var i = 0; i < connections.Length; i++)
+            {
+                var connection = connections[i];
+                if (connection.NeedsReview && (flagged is null || connection.Confidence > flagged.Confidence))
+                {
+                    flagged = connection;
+                }
+            }
+
+            return flagged is not null
+                ? (true, flagged.ReviewReasonCode)
+                : (false, MatchReviewReasons.None);
+        }
+
+        if (summary is { NeedsIdentityReview: true })
+        {
+            return (true, summary.IdentityReviewReason);
+        }
+
+        if (status.Confidence is MatchConfidence.Possible or MatchConfidence.Unmatched)
+        {
+            return (true, status.Confidence == MatchConfidence.Possible
+                ? MatchReviewReasons.PossibleMatch
+                : MatchReviewReasons.Unmatched);
+        }
+
+        if (status.Confidence == MatchConfidence.NameOnly && index.HasDuplicateRosterName(rosterPerson.NormalizedName))
+        {
+            return (true, MatchReviewReasons.DuplicateRosterName);
+        }
+
+        return (false, MatchReviewReasons.None);
+    }
+
     private static BoardPersonStatus ApplyPersonReview(
         BoardPersonStatus person,
         CurrentParticipantConnection[] connections,
         IReadOnlyDictionary<(string SubjectKey, string Kind), MeetingReviewDecision> decisions,
-        IReadOnlySet<string> excluded)
+        IReadOnlySet<string> excluded,
+        bool identityRequired,
+        string identityReviewReason)
     {
-        var connectionEvidence = connections.Length == 0
-            ? Array.Empty<string>()
-            : connections.Length == 1
-                ? new[] { connections[0].EvidenceToken }
-                : connections.Select(connection => connection.EvidenceToken).OrderBy(token => token, StringComparer.Ordinal).ToArray();
-        var identityToken = Evidence(new
+        var duplicateRequired = connections.Length > 1;
+        string[]? connectionEvidence = null;
+        if (identityRequired || duplicateRequired)
         {
-            person.RosterPersonId,
-            person.Confidence,
-            person.LastJoinedAt,
-            person.LastLeftAt,
-            Connections = connectionEvidence
-        });
-        var duplicateToken = Evidence(new
-        {
-            person.RosterPersonId,
-            Connections = connectionEvidence
-        });
+            connectionEvidence = connections.Length == 0
+                ? Array.Empty<string>()
+                : connections.Length == 1
+                    ? new[] { connections[0].EvidenceToken }
+                    : connections.Select(connection => connection.EvidenceToken).OrderBy(token => token, StringComparer.Ordinal).ToArray();
+        }
+        var identityToken = identityRequired
+            ? Evidence(new
+            {
+                person.RosterPersonId,
+                person.Confidence,
+                IdentityReviewReason = identityReviewReason,
+                person.LastJoinedAt,
+                person.LastLeftAt,
+                Connections = connectionEvidence!
+            })
+            : string.Empty;
+        var duplicateToken = duplicateRequired
+            ? Evidence(new
+            {
+                person.RosterPersonId,
+                Connections = connectionEvidence!
+            })
+            : string.Empty;
         var identity = ReviewStatus(
             decisions,
             person.RosterPersonId,
             "identity",
             identityToken,
-            person.AttendanceState != AttendanceState.NotJoined
-                && person.Confidence is MatchConfidence.NameOnly or MatchConfidence.Possible or MatchConfidence.Unmatched);
+            identityRequired);
         var duplicate = ReviewStatus(
             decisions,
             person.RosterPersonId,
             "duplicate",
             duplicateToken,
-            connections.Length > 1);
+            duplicateRequired);
         var isExcluded = excluded.Contains(person.RosterPersonId);
         return person with
         {
@@ -666,7 +765,8 @@ internal static class AttendanceBoardProjector
             DuplicateReviewStatus = duplicate,
             ReviewRequired = !isExcluded && (identity is "pending" or "deferred" || duplicate is "pending" or "deferred"),
             IdentityEvidenceToken = identityToken,
-            DuplicateEvidenceToken = duplicateToken
+            DuplicateEvidenceToken = duplicateToken,
+            IdentityReviewReason = identityReviewReason
         };
     }
 

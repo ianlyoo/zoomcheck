@@ -13,7 +13,9 @@ internal sealed record PersonEventSummary(
     DateTimeOffset? LastLeftAt,
     ParticipantEventType? LastNonRenameEventType,
     MatchConfidence MaxConfidence,
-    string ConfidenceOrder);
+    string ConfidenceOrder,
+    bool NeedsIdentityReview = false,
+    string IdentityReviewReason = "");
 
 internal sealed record NameEventSummary(
     string NormalizedParticipantName,
@@ -81,6 +83,8 @@ public sealed partial class SqliteAttendanceRepository
                     last_non_rename_rowid INTEGER NOT NULL DEFAULT 0,
                     max_confidence INTEGER NOT NULL,
                     confidence_order TEXT NOT NULL,
+                    needs_identity_review INTEGER NOT NULL DEFAULT 0,
+                    identity_review_reason TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (meeting_id, roster_person_id)
                 );
                 CREATE TABLE IF NOT EXISTS meeting_name_event_summary (
@@ -100,6 +104,19 @@ public sealed partial class SqliteAttendanceRepository
                 """;
             await createObjects.ExecuteNonQueryAsync(cancellationToken);
         }
+
+        await EnsureColumnExistsAsync(
+            connection,
+            tableName: "meeting_person_event_summary",
+            columnName: "needs_identity_review",
+            definition: "INTEGER NOT NULL DEFAULT 0",
+            cancellationToken);
+        await EnsureColumnExistsAsync(
+            connection,
+            tableName: "meeting_person_event_summary",
+            columnName: "identity_review_reason",
+            definition: "TEXT NOT NULL DEFAULT ''",
+            cancellationToken);
 
         await using (var alreadyApplied = connection.CreateCommand())
         {
@@ -688,7 +705,7 @@ public sealed partial class SqliteAttendanceRepository
     {
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT roster_person_id, event_count, join_count, last_joined_at, last_left_at, last_non_rename_event_type, max_confidence, confidence_order FROM meeting_person_event_summary WHERE meeting_id = $meetingId;";
+            "SELECT roster_person_id, event_count, join_count, last_joined_at, last_left_at, last_non_rename_event_type, max_confidence, confidence_order, needs_identity_review, identity_review_reason FROM meeting_person_event_summary WHERE meeting_id = $meetingId;";
         command.Parameters.AddWithValue("$meetingId", meetingId);
 
         var result = new Dictionary<string, PersonEventSummary>(StringComparer.Ordinal);
@@ -704,7 +721,9 @@ public sealed partial class SqliteAttendanceRepository
                 LastLeftAt: reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4)),
                 LastNonRenameEventType: reader.IsDBNull(5) ? null : Enum.Parse<ParticipantEventType>(reader.GetString(5)),
                 MaxConfidence: (MatchConfidence)reader.GetInt32(6),
-                ConfidenceOrder: reader.GetString(7));
+                ConfidenceOrder: reader.GetString(7),
+                NeedsIdentityReview: reader.GetInt32(8) != 0,
+                IdentityReviewReason: reader.IsDBNull(9) ? string.Empty : reader.GetString(9));
         }
 
         return result;
@@ -982,6 +1001,8 @@ public sealed partial class SqliteAttendanceRepository
         private readonly SqliteParameter _pLastNonRenameRowId;
         private readonly SqliteParameter _pMaxConfidence;
         private readonly SqliteParameter _pConfidenceName;
+        private readonly SqliteParameter _pNeedsIdentityReview;
+        private readonly SqliteParameter _pIdentityReviewReason;
 
         private readonly SqliteCommand _nameCommand;
         private readonly SqliteParameter _nMeetingId;
@@ -1002,12 +1023,12 @@ public sealed partial class SqliteAttendanceRepository
                     meeting_id, roster_person_id, event_count, join_count,
                     last_joined_at, last_joined_ticks, last_left_at, last_left_ticks,
                     last_non_rename_event_type, last_non_rename_ticks, last_non_rename_rowid,
-                    max_confidence, confidence_order
+                    max_confidence, confidence_order, needs_identity_review, identity_review_reason
                 ) VALUES (
                     $meetingId, $personId, 1, $joinCount,
                     $lastJoinedAt, $lastJoinedTicks, $lastLeftAt, $lastLeftTicks,
                     $lastNonRenameType, $lastNonRenameTicks, $lastNonRenameRowId,
-                    $maxConfidence, $confidenceName
+                    $maxConfidence, $confidenceName, $needsIdentityReview, $identityReviewReason
                 )
                 ON CONFLICT(meeting_id, roster_person_id) DO UPDATE SET
                     event_count = meeting_person_event_summary.event_count + 1,
@@ -1053,7 +1074,15 @@ public sealed partial class SqliteAttendanceRepository
                     confidence_order = CASE
                         WHEN instr(', ' || meeting_person_event_summary.confidence_order || ', ', ', ' || excluded.confidence_order || ', ') > 0
                         THEN meeting_person_event_summary.confidence_order
-                        ELSE meeting_person_event_summary.confidence_order || ', ' || excluded.confidence_order END;
+                        ELSE meeting_person_event_summary.confidence_order || ', ' || excluded.confidence_order END,
+                    needs_identity_review = MAX(meeting_person_event_summary.needs_identity_review, excluded.needs_identity_review),
+                    identity_review_reason = CASE
+                        WHEN excluded.needs_identity_review = 1 AND (
+                            meeting_person_event_summary.needs_identity_review = 0
+                            OR excluded.max_confidence >= meeting_person_event_summary.max_confidence
+                            OR meeting_person_event_summary.identity_review_reason = ''
+                        ) THEN excluded.identity_review_reason
+                        ELSE meeting_person_event_summary.identity_review_reason END;
                 """;
             _pMeetingId = _personCommand.Parameters.Add("$meetingId", SqliteType.Text);
             _pPersonId = _personCommand.Parameters.Add("$personId", SqliteType.Text);
@@ -1067,6 +1096,8 @@ public sealed partial class SqliteAttendanceRepository
             _pLastNonRenameRowId = _personCommand.Parameters.Add("$lastNonRenameRowId", SqliteType.Integer);
             _pMaxConfidence = _personCommand.Parameters.Add("$maxConfidence", SqliteType.Integer);
             _pConfidenceName = _personCommand.Parameters.Add("$confidenceName", SqliteType.Text);
+            _pNeedsIdentityReview = _personCommand.Parameters.Add("$needsIdentityReview", SqliteType.Integer);
+            _pIdentityReviewReason = _personCommand.Parameters.Add("$identityReviewReason", SqliteType.Text);
             _personCommand.Prepare();
 
             _nameCommand = connection.CreateCommand();
@@ -1152,6 +1183,16 @@ public sealed partial class SqliteAttendanceRepository
                 _pLastNonRenameRowId.Value = isNonRename ? rowId : 0L;
                 _pMaxConfidence.Value = (int)evt.Confidence;
                 _pConfidenceName.Value = evt.Confidence.ToString();
+                var needsIdentityReview = evt.NeedsReview || evt.Confidence is MatchConfidence.Possible or MatchConfidence.Unmatched;
+                var identityReviewReason = !string.IsNullOrEmpty(evt.ReviewReasonCode)
+                    ? evt.ReviewReasonCode
+                    : evt.Confidence == MatchConfidence.Possible
+                        ? MatchReviewReasons.PossibleMatch
+                        : evt.Confidence == MatchConfidence.Unmatched
+                            ? MatchReviewReasons.Unmatched
+                            : MatchReviewReasons.None;
+                _pNeedsIdentityReview.Value = needsIdentityReview ? 1 : 0;
+                _pIdentityReviewReason.Value = identityReviewReason;
                 await _personCommand.ExecuteNonQueryAsync(cancellationToken);
             }
 
