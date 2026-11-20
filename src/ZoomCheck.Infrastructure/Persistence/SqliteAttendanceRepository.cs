@@ -270,8 +270,8 @@ public sealed partial class SqliteAttendanceRepository
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         using var eventInsert = new ParticipantEventInsertCommand(connection, transaction);
         using var summaryWriter = new EventSummaryUpsertCommands(connection, transaction);
-        var rowId = await eventInsert.InsertAsync(participantEvent, cancellationToken);
-        await summaryWriter.ApplyEventAsync(participantEvent, rowId, cancellationToken);
+        await eventInsert.InsertAsync(participantEvent, cancellationToken);
+        await summaryWriter.ApplyEventAsync(participantEvent, 1, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -350,10 +350,11 @@ public sealed partial class SqliteAttendanceRepository
         {
             using var eventInsert = new ParticipantEventInsertCommand(connection, transaction);
             using var summaryWriter = new EventSummaryUpsertCommands(connection, transaction);
+            long sequence = 0;
             foreach (var derivedEvent in derivedEvents)
             {
-                var rowId = await eventInsert.InsertAsync(derivedEvent, cancellationToken);
-                await summaryWriter.ApplyEventAsync(derivedEvent, rowId, cancellationToken);
+                await eventInsert.InsertAsync(derivedEvent, cancellationToken);
+                await summaryWriter.ApplyEventAsync(derivedEvent, ++sequence, cancellationToken);
             }
         }
 

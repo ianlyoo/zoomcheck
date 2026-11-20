@@ -97,12 +97,6 @@ public sealed partial class SqliteAttendanceRepository
                 );
                 CREATE INDEX IF NOT EXISTS ix_participant_events_meeting_ticks
                     ON participant_events (meeting_id, occurred_at_ticks DESC);
-                CREATE INDEX IF NOT EXISTS ix_participant_events_meeting_person
-                    ON participant_events (meeting_id, matched_roster_person_id, occurred_at_ticks ASC);
-                CREATE INDEX IF NOT EXISTS ix_participant_events_meeting_source_key
-                    ON participant_events (meeting_id, source, presence_key, occurred_at_ticks ASC);
-                CREATE INDEX IF NOT EXISTS ix_participant_events_meeting_norm_name
-                    ON participant_events (meeting_id, normalized_participant_name, occurred_at_ticks ASC);
                 """;
             await createObjects.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -190,6 +184,7 @@ public sealed partial class SqliteAttendanceRepository
         string source,
         DateTimeOffset capturedAt,
         int presentCount,
+        bool hasPreviousPresence,
         SnapshotDelta delta,
         IReadOnlyList<ParticipantEvent> derivedEvents,
         CancellationToken cancellationToken = default)
@@ -201,6 +196,7 @@ public sealed partial class SqliteAttendanceRepository
             source,
             capturedAt,
             presentCount,
+            hasPreviousPresence,
             delta,
             derivedEvents,
             cancellationToken);
@@ -211,6 +207,7 @@ public sealed partial class SqliteAttendanceRepository
         string source,
         DateTimeOffset capturedAt,
         IReadOnlyList<ParticipantSnapshotEntry> presentEntries,
+        bool hasPreviousPresence,
         SnapshotDelta delta,
         IReadOnlyList<ParticipantEvent> derivedEvents,
         IReadOnlyList<RosterPerson> roster,
@@ -225,6 +222,7 @@ public sealed partial class SqliteAttendanceRepository
             source,
             capturedAt,
             presentEntries.Count,
+            hasPreviousPresence,
             delta,
             derivedEvents,
             cancellationToken);
@@ -265,6 +263,7 @@ public sealed partial class SqliteAttendanceRepository
         string source,
         DateTimeOffset capturedAt,
         int presentCount,
+        bool hasPreviousPresence,
         SnapshotDelta delta,
         IReadOnlyList<ParticipantEvent> derivedEvents,
         CancellationToken cancellationToken)
@@ -276,10 +275,11 @@ public sealed partial class SqliteAttendanceRepository
         {
             using var eventInsert = new ParticipantEventInsertCommand(connection, transaction);
             using var summaryWriter = new EventSummaryUpsertCommands(connection, transaction);
+            long sequence = 0;
             foreach (var derivedEvent in derivedEvents)
             {
-                var rowId = await eventInsert.InsertAsync(derivedEvent, cancellationToken);
-                await summaryWriter.ApplyEventAsync(derivedEvent, rowId, cancellationToken);
+                await eventInsert.InsertAsync(derivedEvent, cancellationToken);
+                await summaryWriter.ApplyEventAsync(derivedEvent, ++sequence, cancellationToken);
             }
         }
 
@@ -301,9 +301,10 @@ public sealed partial class SqliteAttendanceRepository
             }
         }
 
-        // Update last_seen_at for all continuing rows in one statement rather than deleting and re-inserting them.
-        await using (var touchPresence = connection.CreateCommand())
+        if (hasPreviousPresence)
         {
+            // Update last_seen_at for all continuing rows in one statement rather than deleting and re-inserting them.
+            await using var touchPresence = connection.CreateCommand();
             touchPresence.Transaction = transaction;
             touchPresence.CommandText =
                 "UPDATE participant_presence_v2 SET last_seen_at = $capturedAt WHERE meeting_id = $meetingId AND source = $source;";
@@ -920,7 +921,7 @@ public sealed partial class SqliteAttendanceRepository
             _command = connection.CreateCommand();
             _command.Transaction = transaction;
             _command.CommandText =
-                "INSERT INTO participant_events (id, meeting_id, occurred_at, occurred_at_ticks, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload, presence_key, raw_participant_name, canonical_participant_name, previous_participant_name, previous_raw_participant_name) VALUES ($id, $meetingId, $occurredAt, $occurredAtTicks, $eventType, $participantName, $normalizedParticipantName, $participantEmail, $confidence, $matchedRosterPersonId, $source, $rawPayload, $presenceKey, $rawParticipantName, $canonicalParticipantName, $previousParticipantName, $previousRawParticipantName); SELECT last_insert_rowid();";
+                "INSERT INTO participant_events (id, meeting_id, occurred_at, occurred_at_ticks, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload, presence_key, raw_participant_name, canonical_participant_name, previous_participant_name, previous_raw_participant_name) VALUES ($id, $meetingId, $occurredAt, $occurredAtTicks, $eventType, $participantName, $normalizedParticipantName, $participantEmail, $confidence, $matchedRosterPersonId, $source, $rawPayload, $presenceKey, $rawParticipantName, $canonicalParticipantName, $previousParticipantName, $previousRawParticipantName);";
             _id = _command.Parameters.Add("$id", SqliteType.Text);
             _meetingId = _command.Parameters.Add("$meetingId", SqliteType.Text);
             _occurredAt = _command.Parameters.Add("$occurredAt", SqliteType.Text);
@@ -941,7 +942,7 @@ public sealed partial class SqliteAttendanceRepository
             _command.Prepare();
         }
 
-        public async Task<long> InsertAsync(ParticipantEvent evt, CancellationToken cancellationToken)
+        public Task InsertAsync(ParticipantEvent evt, CancellationToken cancellationToken)
         {
             _id.Value = evt.Id;
             _meetingId.Value = evt.MeetingId;
@@ -960,8 +961,7 @@ public sealed partial class SqliteAttendanceRepository
             _canonicalParticipantName.Value = (object?)evt.CanonicalParticipantName ?? DBNull.Value;
             _previousParticipantName.Value = (object?)evt.PreviousParticipantName ?? DBNull.Value;
             _previousRawParticipantName.Value = (object?)evt.PreviousRawParticipantName ?? DBNull.Value;
-            var scalar = await _command.ExecuteScalarAsync(cancellationToken);
-            return Convert.ToInt64(scalar);
+            return _command.ExecuteNonQueryAsync(cancellationToken);
         }
 
         public void Dispose() => _command.Dispose();
@@ -1155,15 +1155,18 @@ public sealed partial class SqliteAttendanceRepository
                 await _personCommand.ExecuteNonQueryAsync(cancellationToken);
             }
 
-            _nMeetingId.Value = evt.MeetingId;
-            _nNormalizedName.Value = evt.NormalizedParticipantName;
-            _nUnmatchedCount.Value = isUnmatched ? 1 : 0;
-            _nLatestName.Value = isUnmatched ? evt.ParticipantName : DBNull.Value;
-            _nLatestEventType.Value = isUnmatched ? evt.EventType.ToString() : DBNull.Value;
-            _nLatestOccurredAt.Value = isUnmatched ? occurredAtIso : DBNull.Value;
-            _nLatestTicks.Value = isUnmatched ? ticks : DBNull.Value;
-            _nLatestRowId.Value = isUnmatched ? rowId : 0L;
-            await _nameCommand.ExecuteNonQueryAsync(cancellationToken);
+            if (isUnmatched)
+            {
+                _nMeetingId.Value = evt.MeetingId;
+                _nNormalizedName.Value = evt.NormalizedParticipantName;
+                _nUnmatchedCount.Value = 1;
+                _nLatestName.Value = evt.ParticipantName;
+                _nLatestEventType.Value = evt.EventType.ToString();
+                _nLatestOccurredAt.Value = occurredAtIso;
+                _nLatestTicks.Value = ticks;
+                _nLatestRowId.Value = rowId;
+                await _nameCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
         }
 
         public void Dispose()

@@ -25,6 +25,7 @@ public sealed partial class AttendanceApplicationService
                 source,
                 capturedAt,
                 processed.PresentEntries.Count,
+                processed.HasPreviousPresence,
                 processed.Delta,
                 processed.DerivedEvents,
                 cancellationToken);
@@ -61,6 +62,7 @@ public sealed partial class AttendanceApplicationService
                 source,
                 capturedAt,
                 processed.PresentEntries,
+                processed.HasPreviousPresence,
                 processed.Delta,
                 processed.DerivedEvents,
                 processed.MatchIndex.Roster,
@@ -239,6 +241,7 @@ public sealed partial class AttendanceApplicationService
 
         return new ProcessedSnapshot(
             MatchIndex: matchIndex,
+            HasPreviousPresence: previous.Count > 0,
             PresentEntries: presentEntries,
             Delta: new SnapshotDelta(removedKeys, addedEntries, updatedEntries),
             DerivedEvents: derivedEvents,
@@ -476,6 +479,7 @@ public sealed partial class AttendanceApplicationService
 
     private sealed record ProcessedSnapshot(
         AttendanceMatchIndex MatchIndex,
+        bool HasPreviousPresence,
         List<ParticipantSnapshotEntry> PresentEntries,
         SnapshotDelta Delta,
         List<ParticipantEvent> DerivedEvents,
