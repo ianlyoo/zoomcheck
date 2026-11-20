@@ -20,7 +20,9 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\ZoomCheck
 DefaultGroupName=ZoomCheck
+DisableDirPage=yes
 DisableProgramGroupPage=yes
+DisableReadyPage=yes
 OutputDir=..\..\dist\installer
 OutputBaseFilename=ZoomCheck-Setup-x64
 Compression=lzma
@@ -51,3 +53,12 @@ Name: "{autodesktop}\ZoomCheck"; Filename: "{app}\{#MyAppExeName}"; Tasks: deskt
 ; relaunch the dashboard without waiting on a checkbox that is not displayed.
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch ZoomCheck dashboard"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifnotsilent
+
+[Code]
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpSelectTasks) or (CurPageID = wpReady) then
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall)
+  else if CurPageID = wpFinished then
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonFinish);
+end;
