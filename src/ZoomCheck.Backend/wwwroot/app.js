@@ -26,6 +26,7 @@
   var MAX_ROSTER_BYTES = 20 * 1024 * 1024;
   var MAX_SNAPSHOT_NAMES = 2000;
   var MAX_SESSION_LOG = 60;
+  var CONNECTION_POLL_MS = 5000;
   var REVIEW_CONFIDENCE = ['NameOnly', 'Possible'];
   var CONFIDENCE_LABEL = {
     Verified: '확인됨',
@@ -95,6 +96,7 @@
     timerId: null,
     clockId: null,
     connectionPollId: null,
+    connectionPollInFlight: false,
     nextSyncAt: null,
     lastSyncAt: null,
     lastSyncOk: null,
@@ -692,6 +694,19 @@
       setText(el.zoomStatus, '확인 실패');
       setText(el.apiSettingsStatus, error.message);
       if (showToast) { toast('bad', 'Zoom API 상태 확인 실패', error.message); }
+    });
+  }
+
+  function pollConnectionStatus() {
+    if (document.hidden || state.connectionPollInFlight) { return null; }
+    state.connectionPollInFlight = true;
+    return checkZoomConnection(false).then(function () {
+      state.connectionPollInFlight = false;
+      if (state.pending === 0 && !document.hidden && state.zoomApp && (state.zoomApp.sessionActive || state.zoomApp.connected) && currentMeetingId()) {
+        refreshBoard({ silent: true });
+      }
+    }, function () {
+      state.connectionPollInFlight = false;
     });
   }
 
@@ -2715,17 +2730,13 @@
     updateParsedCount();
     applyAutoRefresh(el.chkAutoRefresh.checked);
     state.clockId = window.setInterval(updateClock, 1000);
-    state.connectionPollId = window.setInterval(function () {
-      checkZoomConnection(false).then(function () {
-        if (state.pending === 0 && !document.hidden && state.zoomApp && (state.zoomApp.sessionActive || state.zoomApp.connected) && currentMeetingId()) { refreshBoard({ silent: true }); }
-      });
-    }, 5000);
+    state.connectionPollId = window.setInterval(pollConnectionStatus, CONNECTION_POLL_MS);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) { pollConnectionStatus(); }
+    });
     checkHealth();
     checkZoomConnection(false);
     loadRelaySettings();
-    state.statusPollId = window.setInterval(function () {
-      if (!document.hidden) { checkZoomConnection(false); }
-    }, 10000);
     loadRoster(false);
     /* 시작 시 상태만 읽는다. 실제 확인·다운로드는 백엔드가 자동으로 수행하므로 화면을 막지 않는다. */
     loadUpdateStatus({ silent: true });
