@@ -85,7 +85,7 @@ public static class KoreanNameCanonicalizer
     public static string? Canonicalize(string? rawName, IReadOnlyList<RosterPerson>? roster)
         => TryCanonicalize(rawName, roster, out var canonical, out _) ? canonical : null;
 
-    private static bool TrySplitReorderedTokens(string rawName, out string givenName, out string surname)
+    internal static bool TrySplitReorderedTokens(string rawName, out string givenName, out string surname)
     {
         givenName = string.Empty;
         surname = string.Empty;

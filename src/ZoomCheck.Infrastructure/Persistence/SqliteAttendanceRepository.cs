@@ -69,6 +69,7 @@ public sealed partial class SqliteAttendanceRepository
                 id TEXT PRIMARY KEY,
                 meeting_id TEXT NOT NULL,
                 occurred_at TEXT NOT NULL,
+                occurred_at_ticks INTEGER NOT NULL DEFAULT 0,
                 event_type TEXT NOT NULL,
                 participant_name TEXT NOT NULL,
                 normalized_participant_name TEXT NOT NULL,
@@ -168,6 +169,7 @@ public sealed partial class SqliteAttendanceRepository
 
         await NormalizeLegacyMeetingIdsAsync(connection, cancellationToken);
         await InitializeMeetingDecisionsAsync(connection, cancellationToken);
+        await InitializeEventProjectionAsync(connection, cancellationToken);
     }
 
     public async Task ReplaceRosterAsync(RosterImportResult roster, CancellationToken cancellationToken = default)
@@ -240,43 +242,13 @@ public sealed partial class SqliteAttendanceRepository
     public async Task<IReadOnlyList<RosterPerson>> GetRosterPeopleAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id, sequence, name, normalized_name, email, phone, organization, aliases_json, group_name FROM roster_people ORDER BY CAST(sequence AS INTEGER);";
-
-        var people = new List<RosterPerson>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var aliases = JsonSerializer.Deserialize<string[]>(reader.GetString(7)) ?? Array.Empty<string>();
-            people.Add(new RosterPerson(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                reader.GetString(4),
-                reader.GetString(5),
-                reader.GetString(6),
-                aliases,
-                reader.IsDBNull(8) ? string.Empty : reader.GetString(8)));
-        }
-
-        return people;
+        return await ReadRosterPeopleOnConnectionAsync(connection, cancellationToken);
     }
 
     public async Task<IReadOnlyDictionary<string, string>> GetAliasMapAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT alias_key, roster_person_id FROM manual_aliases;";
-
-        var aliases = new Dictionary<string, string>(StringComparer.Ordinal);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            aliases[reader.GetString(0)] = reader.GetString(1);
-        }
-
-        return aliases;
+        return await ReadAliasMapOnConnectionAsync(connection, cancellationToken);
     }
 
     public async Task UpsertAliasAsync(string aliasKey, string rosterPersonId, string note, CancellationToken cancellationToken = default)
@@ -295,9 +267,12 @@ public sealed partial class SqliteAttendanceRepository
     public async Task AppendParticipantEventAsync(ParticipantEvent participantEvent, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        BindParticipantEvent(command, participantEvent);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        using var eventInsert = new ParticipantEventInsertCommand(connection, transaction);
+        using var summaryWriter = new EventSummaryUpsertCommands(connection, transaction);
+        var rowId = await eventInsert.InsertAsync(participantEvent, cancellationToken);
+        await summaryWriter.ApplyEventAsync(participantEvent, rowId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     /// <summary>
@@ -371,12 +346,15 @@ public sealed partial class SqliteAttendanceRepository
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
 
-        foreach (var derivedEvent in derivedEvents)
+        if (derivedEvents.Count > 0)
         {
-            await using var insertEvent = connection.CreateCommand();
-            insertEvent.Transaction = transaction;
-            BindParticipantEvent(insertEvent, derivedEvent);
-            await insertEvent.ExecuteNonQueryAsync(cancellationToken);
+            using var eventInsert = new ParticipantEventInsertCommand(connection, transaction);
+            using var summaryWriter = new EventSummaryUpsertCommands(connection, transaction);
+            foreach (var derivedEvent in derivedEvents)
+            {
+                var rowId = await eventInsert.InsertAsync(derivedEvent, cancellationToken);
+                await summaryWriter.ApplyEventAsync(derivedEvent, rowId, cancellationToken);
+            }
         }
 
         await using (var clearPresence = connection.CreateCommand())
@@ -388,7 +366,7 @@ public sealed partial class SqliteAttendanceRepository
             await clearPresence.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        foreach (var entry in presentEntries)
+        if (presentEntries.Count > 0)
         {
             await using var insertPresence = connection.CreateCommand();
             insertPresence.Transaction = transaction;
@@ -396,15 +374,28 @@ public sealed partial class SqliteAttendanceRepository
                 "INSERT INTO participant_presence_v2 (meeting_id, source, presence_key, normalized_name, display_name, first_seen_at, last_seen_at, participant_email, raw_display_name, canonical_name) VALUES ($meetingId, $source, $presenceKey, $normalizedName, $displayName, $firstSeenAt, $lastSeenAt, $participantEmail, $rawDisplayName, $canonicalName);";
             insertPresence.Parameters.AddWithValue("$meetingId", meetingId);
             insertPresence.Parameters.AddWithValue("$source", source);
-            insertPresence.Parameters.AddWithValue("$presenceKey", entry.PresenceKey ?? entry.NormalizedName);
-            insertPresence.Parameters.AddWithValue("$normalizedName", entry.NormalizedName);
-            insertPresence.Parameters.AddWithValue("$displayName", entry.DisplayName);
-            insertPresence.Parameters.AddWithValue("$firstSeenAt", entry.FirstSeenAt.ToString("O"));
-            insertPresence.Parameters.AddWithValue("$lastSeenAt", entry.LastSeenAt.ToString("O"));
-            insertPresence.Parameters.AddWithValue("$participantEmail", (object?)entry.ParticipantEmail ?? DBNull.Value);
-            insertPresence.Parameters.AddWithValue("$rawDisplayName", (object?)entry.RawDisplayName ?? DBNull.Value);
-            insertPresence.Parameters.AddWithValue("$canonicalName", (object?)entry.CanonicalName ?? DBNull.Value);
-            await insertPresence.ExecuteNonQueryAsync(cancellationToken);
+            var keyParam = insertPresence.Parameters.Add("$presenceKey", SqliteType.Text);
+            var normParam = insertPresence.Parameters.Add("$normalizedName", SqliteType.Text);
+            var displayParam = insertPresence.Parameters.Add("$displayName", SqliteType.Text);
+            var firstSeenParam = insertPresence.Parameters.Add("$firstSeenAt", SqliteType.Text);
+            var lastSeenParam = insertPresence.Parameters.Add("$lastSeenAt", SqliteType.Text);
+            var emailParam = insertPresence.Parameters.Add("$participantEmail", SqliteType.Text);
+            var rawParam = insertPresence.Parameters.Add("$rawDisplayName", SqliteType.Text);
+            var canonicalParam = insertPresence.Parameters.Add("$canonicalName", SqliteType.Text);
+            insertPresence.Prepare();
+
+            foreach (var entry in presentEntries)
+            {
+                keyParam.Value = entry.PresenceKey ?? entry.NormalizedName;
+                normParam.Value = entry.NormalizedName;
+                displayParam.Value = entry.DisplayName;
+                firstSeenParam.Value = entry.FirstSeenAt.ToString("O");
+                lastSeenParam.Value = entry.LastSeenAt.ToString("O");
+                emailParam.Value = (object?)entry.ParticipantEmail ?? DBNull.Value;
+                rawParam.Value = (object?)entry.RawDisplayName ?? DBNull.Value;
+                canonicalParam.Value = (object?)entry.CanonicalName ?? DBNull.Value;
+                await insertPresence.ExecuteNonQueryAsync(cancellationToken);
+            }
         }
 
         await using (var upsertSnapshot = connection.CreateCommand())
@@ -686,28 +677,6 @@ public sealed partial class SqliteAttendanceRepository
         command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $tableName LIMIT 1;";
         command.Parameters.AddWithValue("$tableName", tableName);
         return await command.ExecuteScalarAsync(cancellationToken) is not null;
-    }
-
-    private static void BindParticipantEvent(SqliteCommand command, ParticipantEvent participantEvent)
-    {
-        command.CommandText =
-            "INSERT INTO participant_events (id, meeting_id, occurred_at, event_type, participant_name, normalized_participant_name, participant_email, confidence, matched_roster_person_id, source, raw_payload, presence_key, raw_participant_name, canonical_participant_name, previous_participant_name, previous_raw_participant_name) VALUES ($id, $meetingId, $occurredAt, $eventType, $participantName, $normalizedParticipantName, $participantEmail, $confidence, $matchedRosterPersonId, $source, $rawPayload, $presenceKey, $rawParticipantName, $canonicalParticipantName, $previousParticipantName, $previousRawParticipantName);";
-        command.Parameters.AddWithValue("$id", participantEvent.Id);
-        command.Parameters.AddWithValue("$meetingId", participantEvent.MeetingId);
-        command.Parameters.AddWithValue("$occurredAt", participantEvent.OccurredAt.ToString("O"));
-        command.Parameters.AddWithValue("$eventType", participantEvent.EventType.ToString());
-        command.Parameters.AddWithValue("$participantName", participantEvent.ParticipantName);
-        command.Parameters.AddWithValue("$normalizedParticipantName", participantEvent.NormalizedParticipantName);
-        command.Parameters.AddWithValue("$participantEmail", (object?)participantEvent.ParticipantEmail ?? DBNull.Value);
-        command.Parameters.AddWithValue("$confidence", participantEvent.Confidence.ToString());
-        command.Parameters.AddWithValue("$matchedRosterPersonId", (object?)participantEvent.MatchedRosterPersonId ?? DBNull.Value);
-        command.Parameters.AddWithValue("$source", participantEvent.Source);
-        command.Parameters.AddWithValue("$rawPayload", participantEvent.RawPayload);
-        command.Parameters.AddWithValue("$presenceKey", (object?)participantEvent.PresenceKey ?? DBNull.Value);
-        command.Parameters.AddWithValue("$rawParticipantName", (object?)participantEvent.RawParticipantName ?? DBNull.Value);
-        command.Parameters.AddWithValue("$canonicalParticipantName", (object?)participantEvent.CanonicalParticipantName ?? DBNull.Value);
-        command.Parameters.AddWithValue("$previousParticipantName", (object?)participantEvent.PreviousParticipantName ?? DBNull.Value);
-        command.Parameters.AddWithValue("$previousRawParticipantName", (object?)participantEvent.PreviousRawParticipantName ?? DBNull.Value);
     }
 
     private static async Task<List<StoredRosterIdentity>> ReadRosterIdentitiesAsync(

@@ -245,14 +245,14 @@ public sealed class ZoomRelayService : IDisposable
                     // business payload is rejected. Otherwise one malformed/first-empty message can
                     // poison the queue and be replayed forever instead of waiting for a new snapshot.
                     session.LastReceivedSequence = envelope.Sequence;
-                    var result = await _bridge.ApplyRelaySnapshotAsync(payload, cancellationToken);
+                    var result = await _bridge.IngestRelaySnapshotAsync(payload, cancellationToken);
                     session.LastSeenAt = _timeProvider.GetUtcNow();
-                    session.MeetingId = result.Snapshot.Board.MeetingId;
+                    session.MeetingId = result.MeetingId;
                     session.MeetingUuid = payload.MeetingUuid;
                     session.Role = NormalizeRole(payload.Role);
                     session.SetSupportedApis(payload.SupportedApis);
                     session.LastSnapshotAt = payload.CapturedAt ?? _timeProvider.GetUtcNow();
-                    session.ActiveParticipants = result.ActiveParticipants;
+                    session.ActiveParticipants = result.PresentCount;
                 }
                 else if (string.Equals(envelope.MessageType, "heartbeat", StringComparison.Ordinal))
                 {

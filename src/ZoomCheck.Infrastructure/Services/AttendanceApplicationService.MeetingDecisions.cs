@@ -1,7 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
-using ZoomCheck.Core.Enums;
 using ZoomCheck.Core.Models;
 using ZoomCheck.Core.Services;
 
@@ -9,14 +5,6 @@ namespace ZoomCheck.Infrastructure.Services;
 
 public sealed partial class AttendanceApplicationService
 {
-    private async Task<T> WithMeetingLockAsync<T>(string meetingId, Func<Task<T>> action, CancellationToken cancellationToken)
-    {
-        var gate = _snapshotLocks.GetOrAdd(meetingId, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken);
-        try { return await action(); }
-        finally { gate.Release(); }
-    }
-
     private string CurrentAttendanceDate() => _timeProvider.GetLocalNow().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
     public Task<AttendanceBoard> SetMeetingExclusionAsync(string meetingId, string personId, bool excluded, CancellationToken cancellationToken = default, string? attendanceDate = null)
@@ -70,7 +58,7 @@ public sealed partial class AttendanceApplicationService
                 }
             }
             var match = new MeetingConnectionMatch(source, presenceKey, personId ?? "", connection.RawName,
-                NormalizeEmail(connection.Email), connection.FirstSeenAt, connection.LastSeenAt);
+                AttendanceBoardProjector.NormalizeEmail(connection.Email), connection.FirstSeenAt, connection.LastSeenAt);
             await _repository.SaveMeetingConnectionMatchAsync(meetingId, match, remove: personId is null, cancellationToken);
             return await BuildBoardAsync(meetingId, cancellationToken);
         }, cancellationToken);
@@ -88,7 +76,7 @@ public sealed partial class AttendanceApplicationService
             RequireEvidence(evidenceToken, connection.EvidenceToken);
             if (connection.MatchedRosterPersonId is not null) { throw new InvalidOperationException("명단에 연결된 참가자는 명단의 검토 항목을 사용하세요."); }
             await _repository.SaveMeetingReviewAsync(meetingId,
-                new(ConnectionSubject(source, presenceKey), "connection", status, evidenceToken, DateTimeOffset.UtcNow), cancellationToken);
+                new(AttendanceBoardProjector.ConnectionSubject(source, presenceKey), "connection", status, evidenceToken, DateTimeOffset.UtcNow), cancellationToken);
             return await BuildBoardAsync(meetingId, cancellationToken);
         }, cancellationToken);
     }
@@ -124,94 +112,5 @@ public sealed partial class AttendanceApplicationService
         {
             throw new InvalidOperationException("참가자 정보가 변경되었습니다. 현황을 다시 읽고 확인하세요.");
         }
-    }
-
-    private static string NormalizeEmail(string? email) => (email ?? string.Empty).Trim().ToLowerInvariant();
-    private static string Evidence(object value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value))));
-    private static string ConnectionSubject(string source, string presenceKey) => JsonSerializer.Serialize(new[] { source, presenceKey });
-
-    private static bool MatchesObservation(MeetingConnectionMatch match, string rawName, string? email, DateTimeOffset firstSeenAt)
-        => match.FirstSeenAt == firstSeenAt && match.ObservedName == rawName && match.ObservedEmail == NormalizeEmail(email);
-
-    private MatchCandidate MatchCurrentConnection(string source, ParticipantSnapshotEntry entry,
-        IReadOnlyList<RosterPerson> roster, IReadOnlyDictionary<string, string> aliases, IReadOnlyList<MeetingConnectionMatch> matches,
-        out bool manuallyMatched)
-    {
-        var manual = matches.FirstOrDefault(match => match.Source == source && match.PresenceKey == (entry.PresenceKey ?? entry.NormalizedName)
-            && MatchesObservation(match, entry.EffectiveRawDisplayName, entry.ParticipantEmail, entry.FirstSeenAt));
-        var person = manual is null ? null : roster.FirstOrDefault(person => person.Id == manual.RosterPersonId);
-        manuallyMatched = person is not null;
-        return person is null
-            ? MatchParticipant(roster, aliases, entry.EffectiveRawDisplayName, entry.DisplayName, entry.ParticipantEmail)
-            : new(person, MatchConfidence.Verified, 1, "이번 회의에서 운영자가 연결했습니다.");
-    }
-
-    // Project decisions onto the board; the original captured events are never rewritten.
-    private sealed record ManualAttendanceEvidence(string PersonId, DateTimeOffset ObservedAt, DateTimeOffset? LeftAt, bool HasRecordedJoin);
-
-    private static IReadOnlyList<ParticipantEvent> ApplyMeetingMatchesToEvents(IReadOnlyList<ParticipantEvent> events,
-        IReadOnlyList<MeetingConnectionMatch> matches, IReadOnlyList<RosterPerson> roster, out IReadOnlyList<ManualAttendanceEvidence> attendanceEvidence)
-    {
-        var sessions = new Dictionary<(string Source, string Key), DateTimeOffset>();
-        var projected = new List<ParticipantEvent>();
-        var attributedJoins = new HashSet<(string Source, string Key, DateTimeOffset Start, string PersonId)>();
-        var departures = new Dictionary<(string Source, string Key, DateTimeOffset Start), DateTimeOffset>();
-        foreach (var evt in events.OrderBy(evt => evt.OccurredAt).ThenBy(evt => evt.EventType))
-        {
-            var key = (evt.Source, evt.PresenceKey ?? evt.NormalizedParticipantName);
-            if (evt.EventType == ParticipantEventType.Joined) { sessions.TryAdd(key, evt.OccurredAt); }
-            var match = matches.FirstOrDefault(match => match.Source == key.Source && match.PresenceKey == key.Item2
-                && sessions.TryGetValue(key, out var firstSeen) && MatchesObservation(match, evt.EffectiveRawParticipantName, evt.ParticipantEmail, firstSeen));
-            var person = match is null ? null : roster.FirstOrDefault(person => person.Id == match.RosterPersonId);
-            var projectedEvent = person is null ? evt : evt with { MatchedRosterPersonId = person.Id, Confidence = MatchConfidence.Verified };
-            projected.Add(projectedEvent);
-            if (projectedEvent.MatchedRosterPersonId is { } joinedPersonId && evt.EventType == ParticipantEventType.Joined)
-            {
-                attributedJoins.Add((key.Source, key.Item2, sessions[key], joinedPersonId));
-            }
-            if (evt.EventType == ParticipantEventType.Left)
-            {
-                if (sessions.TryGetValue(key, out var start)) { departures[(key.Source, key.Item2, start)] = evt.OccurredAt; }
-                sessions.Remove(key);
-            }
-        }
-        // An accepted live observation proves attendance even if its original Join carried
-        // a different name/email. Keep that evidence separate from the captured event log.
-        attendanceEvidence = matches.Where(match => roster.Any(person => person.Id == match.RosterPersonId))
-            .GroupBy(match => (match.Source, match.PresenceKey, match.FirstSeenAt, match.RosterPersonId))
-            .Select(group => new ManualAttendanceEvidence(group.Key.RosterPersonId, group.Min(match => match.ObservedAt),
-                departures.TryGetValue((group.Key.Source, group.Key.PresenceKey, group.Key.FirstSeenAt), out var leftAt) ? leftAt : null,
-                attributedJoins.Contains((group.Key.Source, group.Key.PresenceKey, group.Key.FirstSeenAt, group.Key.RosterPersonId))))
-            .ToArray();
-        return projected;
-    }
-
-    private static string ReviewStatus(IReadOnlyList<MeetingReviewDecision> decisions, string subject, string kind, string token, bool required)
-    {
-        if (!required) { return "none"; }
-        return decisions.FirstOrDefault(decision => decision.SubjectKey == subject && decision.Kind == kind && decision.EvidenceToken == token)?.Status ?? "pending";
-    }
-
-    private static CurrentParticipantConnection ApplyConnectionReview(CurrentParticipantConnection connection, IReadOnlyList<MeetingReviewDecision> decisions)
-    {
-        var token = Evidence(new { connection.Source, connection.PresenceKey, connection.RawName, Email = NormalizeEmail(connection.Email),
-            connection.FirstSeenAt, connection.MatchedRosterPersonId, connection.Confidence, connection.ManualMatch });
-        return connection with { EvidenceToken = token, ReviewStatus = ReviewStatus(decisions,
-            ConnectionSubject(connection.Source, connection.PresenceKey), "connection", token, connection.MatchedRosterPersonId is null) };
-    }
-
-    private static BoardPersonStatus ApplyPersonReview(BoardPersonStatus person, CurrentParticipantConnection[] connections,
-        IReadOnlyList<MeetingReviewDecision> decisions, IReadOnlySet<string> excluded)
-    {
-        var connectionEvidence = connections.Select(connection => connection.EvidenceToken).OrderBy(token => token, StringComparer.Ordinal).ToArray();
-        var identityToken = Evidence(new { person.RosterPersonId, person.Confidence, person.LastJoinedAt, person.LastLeftAt, Connections = connectionEvidence });
-        var duplicateToken = Evidence(new { person.RosterPersonId, Connections = connectionEvidence });
-        var identity = ReviewStatus(decisions, person.RosterPersonId, "identity", identityToken,
-            person.AttendanceState != AttendanceState.NotJoined && person.Confidence is MatchConfidence.NameOnly or MatchConfidence.Possible or MatchConfidence.Unmatched);
-        var duplicate = ReviewStatus(decisions, person.RosterPersonId, "duplicate", duplicateToken, connections.Length > 1);
-        var isExcluded = excluded.Contains(person.RosterPersonId);
-        return person with { IsExcluded = isExcluded, IdentityReviewStatus = identity, DuplicateReviewStatus = duplicate,
-            ReviewRequired = !isExcluded && (identity is "pending" or "deferred" || duplicate is "pending" or "deferred"),
-            IdentityEvidenceToken = identityToken, DuplicateEvidenceToken = duplicateToken };
     }
 }

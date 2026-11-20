@@ -206,6 +206,50 @@ public sealed class ZoomAppBridgeService
         return new ZoomAppSnapshotResponse(connections.Length, snapshot);
     }
 
+    /// <summary>
+    /// Ingests an encrypted relay snapshot without projecting a full board, since background
+    /// relay polling only records session metadata and the dashboard queries the board separately.
+    /// </summary>
+    public async Task<ParticipantSnapshotIngestionResult> IngestRelaySnapshotAsync(
+        ZoomRelaySnapshotPayload request,
+        CancellationToken cancellationToken = default)
+    {
+        var now = _timeProvider.GetUtcNow();
+        var meetingId = NormalizeMeetingId(request.MeetingId);
+        _ = NormalizeRole(request.Role);
+        ValidateSupportedApis(request.SupportedApis);
+
+        var participants = request.Participants
+            ?? throw new ZoomAppBridgeException(ZoomAppBridgeError.InvalidRequest, "participants is required.");
+        if (participants.Count > MaxParticipants)
+        {
+            throw new ZoomAppBridgeException(
+                ZoomAppBridgeError.InvalidRequest,
+                $"A snapshot cannot contain more than {MaxParticipants} participants.");
+        }
+
+        var connections = ToConnections(participants);
+        ConfirmRelayEmptySnapshot(connections.Length, now);
+        var capturedAt = request.CapturedAt ?? now;
+        var ingestion = await _attendance.IngestParticipantSnapshotAsync(
+            new ParticipantSnapshotInput(
+                meetingId,
+                connections.Select(item => item.DisplayName).ToArray(),
+                SnapshotSource,
+                capturedAt,
+                ParticipantEmails: null,
+                Participants: connections),
+            cancellationToken);
+
+        lock (_gate)
+        {
+            _relayActiveParticipants = connections.Length;
+            _relayEmptySnapshotObservedAt = null;
+        }
+
+        return ingestion;
+    }
+
     public (string MeetingId, string Role) ValidateRelayHeartbeat(ZoomRelayHeartbeatPayload request)
     {
         var meetingId = NormalizeMeetingId(request.MeetingId);
