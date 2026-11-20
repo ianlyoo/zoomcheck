@@ -23,7 +23,7 @@
 <meta name="author" content="ianlyoo">
 <meta name="robots" content="index, follow">
 <link rel="stylesheet" href="./styles.css">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareSourceCode","name":"zoomcheck","description":"Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.","version":"0.1.0","codeRepository":"https://github.com/ianlyoo/zoomcheck","url":"https://ianlyoo.github.io/zoomcheck/","programmingLanguage":"C#","license":"https://spdx.org/licenses/MIT","keywords":["attendance","avalonia","csharp","dashboard","developer-tools","dotnet","education-tools","meeting-automation","roster-matching","webhook","workflow-automation","zoom"],"author":{"@type":"Person","name":"ianlyoo"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareSourceCode","name":"zoomcheck","description":"Zoom attendance dashboard — match rosters with review queue and webhook-ready backend for large meeting automation.","version":"0.1.0","codeRepository":"https://github.com/ianlyoo/zoomcheck","url":"https://ianlyoo.github.io/zoomcheck/","programmingLanguage":"C#","license":"https://spdx.org/licenses/MIT","keywords":["attendance","csharp","dashboard","developer-tools","dotnet","education-tools","meeting-automation","roster-matching","webhook","workflow-automation","zoom"],"author":{"@type":"Person","name":"ianlyoo"}}</script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -52,7 +52,7 @@
 <h2 id="overview-heading">Overview</h2>
 <p>Load a roster from Excel, capture Zoom join/leave events via webhook, and match participants against the roster to compute attendance. In classes where names, nicknames, and device names are mixed, checking every attendee by hand is not practical — confident matches are handled automatically and only ambiguous ones go to a review queue.</p>
 <ul>
-<li>.NET 8 + Avalonia desktop, ASP.NET Core backend, SQLite</li>
+<li>.NET 8 ASP.NET Core backend + local web dashboard, SQLite</li>
 <li>Installer: <code>ZoomCheck-Setup-x64.exe</code> under <code>deploy/windows/</code></li>
 <li>Backend at <code>http://127.0.0.1:5078</code> — CSV export from the dashboard</li>
 </ul>
@@ -68,19 +68,17 @@
 <li>Enter the meeting ID — load the roster — refresh during class — review flagged people — export at the end</li>
 </ol>
 <pre><code>dotnet build ZoomCheck.sln
-dotnet run --project src/ZoomCheck.Backend
-dotnet run --project src/ZoomCheck.App</code></pre>
+dotnet run --project src/ZoomCheck.Backend</code></pre>
 </section>
 
 <section aria-labelledby="architecture-heading">
-<h2 id="architecture-heading">Architecture — 4 projects</h2>
+<h2 id="architecture-heading">Architecture — 3 projects</h2>
 <table>
 <thead><tr><th>Project</th><th>Responsibility</th></tr></thead>
 <tbody>
 <tr><td><code>ZoomCheck.Core</code></td><td>Domain models and matching logic</td></tr>
 <tr><td><code>ZoomCheck.Infrastructure</code></td><td>Excel parsing and SQLite access</td></tr>
-<tr><td><code>ZoomCheck.Backend</code></td><td>Roster distribution, Zoom webhooks, board operations, export API</td></tr>
-<tr><td><code>ZoomCheck.App</code></td><td>Operator review dashboard (Avalonia desktop)</td></tr>
+<tr><td><code>ZoomCheck.Backend</code></td><td>Web dashboard, roster upload, Zoom sync, board operations, export API</td></tr>
 </tbody>
 </table>
 </section>

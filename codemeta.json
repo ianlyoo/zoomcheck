@@ -27,7 +27,6 @@
   "runtimePlatform": ".NET 8",
   "keywords": [
     "attendance",
-    "avalonia",
     "csharp",
     "dashboard",
     "developer-tools",

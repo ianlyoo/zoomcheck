@@ -5,8 +5,7 @@
 .DESCRIPTION
     ZoomCheck ships as a single self-contained ASP.NET Core executable
     (ZoomCheck.Backend.exe) that serves the web dashboard and opens the browser
-    on start. The Avalonia desktop shell (ZoomCheck.App) is intentionally NOT
-    part of the package anymore.
+    on start.
 
     Outputs:
       dist/windows/package                            publish root (installer payload)
