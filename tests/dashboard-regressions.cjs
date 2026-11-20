@@ -11,6 +11,7 @@ const { test } = require('node:test');
 const source = fs.readFileSync(path.join(__dirname, '../src/ZoomCheck.Backend/wwwroot/app.js'), 'utf8');
 const localesSource = fs.readFileSync(path.join(__dirname, '../src/ZoomCheck.Backend/wwwroot/locales.js'), 'utf8');
 const markup = fs.readFileSync(path.join(__dirname, '../src/ZoomCheck.Backend/wwwroot/index.html'), 'utf8');
+const stylesSource = fs.readFileSync(path.join(__dirname, '../src/ZoomCheck.Backend/wwwroot/styles.css'), 'utf8');
 
 class Element {
   constructor(tag = 'div', document = null) {
@@ -90,7 +91,9 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
     createElement: tag => new Element(tag, document),
     querySelectorAll: selector => selector === '[data-filter]' ? filters : selector === '[data-sort]' ? sortButtons : [],
     addEventListener(name, handler) { (docListeners[name] ||= []).push(handler); },
-    dispatch(name, event = {}) { for (const handler of docListeners[name] || []) handler(event); }
+    dispatch(name, event = {}) {
+      for (const handler of docListeners[name] || []) handler({ preventDefault() {}, ...event });
+    }
   };
   const filters = ['all', 'present', 'absent', 'review', 'unmatched', 'excluded'].map(filter => {
     const node = new Element('button', document); node.dataset.filter = filter; return node;
@@ -1132,4 +1135,139 @@ test('connection status polls on one 5s schedule, skips hidden/overlapping ticks
     await respond(pollRequests().at(-1), { zoomApp: { sessionActive: false, connected: false } });
   }
   assert.equal(pollRequests().length, 13, '12 polls across 60s plus visibility resume');
+});
+
+test('phone search matches phone numbers typed with or without hyphens', () => {
+  const h = harness();
+  h.state.roster = [
+    { id: 'p1', name: '학생001', phone: '01000000123' },
+    { id: 'p2', name: '학생002', phone: '010-1234-5678' },
+    { id: 'p3', name: '학생003', phone: '' }
+  ];
+  h.renderBoard({
+    ...board('111'),
+    people: [
+      { rosterPersonId: 'p1', sequence: '1', name: '학생001', attendanceState: 'Present', confidence: 'Verified' },
+      { rosterPersonId: 'p2', sequence: '2', name: '학생002', attendanceState: 'NotJoined', confidence: 'Unmatched' },
+      { rosterPersonId: 'p3', sequence: '3', name: '학생003', attendanceState: 'NotJoined', confidence: 'Unmatched' }
+    ]
+  });
+
+  h.el.participantSearch.value = '010-0000-0123';
+  h.el.participantSearch.dispatch('input');
+  assert.deepEqual(rowKeys(h), ['roster:p1']);
+
+  h.el.participantSearch.value = '01000000123';
+  h.el.participantSearch.dispatch('input');
+  assert.deepEqual(rowKeys(h), ['roster:p1']);
+
+  h.el.participantSearch.value = '0000-0123';
+  h.el.participantSearch.dispatch('input');
+  assert.deepEqual(rowKeys(h), ['roster:p1']);
+
+  h.el.participantSearch.value = '010 1234 5678';
+  h.el.participantSearch.dispatch('input');
+  assert.deepEqual(rowKeys(h), ['roster:p2']);
+
+  h.el.participantSearch.value = '01012345678';
+  h.el.participantSearch.dispatch('input');
+  assert.deepEqual(rowKeys(h), ['roster:p2']);
+
+  h.el.participantSearch.value = '010-9999-9999';
+  h.el.participantSearch.dispatch('input');
+  assert.deepEqual(rowKeys(h), []);
+
+  // Mixed text and digits should not falsely match another person's phone digits.
+  h.el.participantSearch.value = '학생0123';
+  h.el.participantSearch.dispatch('input');
+  assert.deepEqual(rowKeys(h), []);
+});
+
+test('phone summary line shows present/total and absent counts across scopes and languages', () => {
+  const h = harness();
+  h.applyLanguage('ko');
+  assert.equal(h.el.phoneSummary.textContent, '출석 0/0 · 미참석 0');
+
+  h.renderBoard(rosterBoard());
+  assert.equal(h.el.phoneSummary.textContent, '출석 1/5 · 미참석 4');
+
+  h.applyGroup('A');
+  assert.equal(h.el.phoneSummary.textContent, '출석 1/4 · 미참석 3');
+
+  h.applyLanguage('en');
+  assert.equal(h.el.phoneSummary.textContent, 'Present 1/4 · Absent 3');
+
+  h.applyLanguage('es');
+  assert.equal(h.el.phoneSummary.textContent, 'Presentes 1/4 · Ausentes 3');
+});
+
+test('first-run guidance order and empty states match roster -> meeting ID -> connection order', async () => {
+  const h = harness();
+  assert.match(h.t('tutorial_s0_title'), /명단/);
+  assert.match(h.t('tutorial_s1_title'), /회의 ID/);
+  assert.match(h.t('summary_empty_prompt'), /명단.*회의 ID/);
+  assert.match(markup, /id="btn-export"[^>]*disabled/);
+  assert.match(markup, /id="btn-review"[^>]*disabled/);
+
+  h.applyLanguage('ko');
+  assert.equal(h.el.btnExport.disabled, true);
+  assert.equal(h.el.btnReview.disabled, true);
+
+  // Empty roster guides uploading Excel roster in step 1.
+  h.state.rosterLoaded = true;
+  h.state.roster = [];
+  h.renderParticipants();
+  assert.equal(h.el.emptyTitle.textContent, '아직 등록된 명단이 없습니다.');
+  assert.match(h.el.emptyNote.textContent, /1단계.*Excel 명단/);
+
+  // Loaded roster without a meeting ID guides entering the meeting ID.
+  h.state.roster = [{ id: 'a', name: '학생001' }, { id: 'b', name: '학생002' }];
+  select(h, '');
+  h.renderParticipants();
+  assert.equal(h.el.emptyTitle.textContent, '회의 ID를 입력하면 명단이 표시됩니다.');
+  assert.match(h.el.emptyNote.textContent, /2명/);
+
+  // Unconfigured Zoom API uses a neutral dot unless Business API mode is chosen.
+  const conn = h.checkZoomConnection(false);
+  await respond(h.requests.at(-1), { configured: false, recommendedMode: 'manual' });
+  await conn;
+  assert.equal(h.el.zoomDot.classList.contains('is-bad'), false);
+  assert.equal(h.el.zoomDot.classList.contains('warn'), false);
+  h.applyConnectionMode('business');
+  assert.equal(h.el.zoomDot.classList.contains('warn'), true);
+});
+
+test('screen-reader, keyboard and Korean line-break guards stay intact', () => {
+  assert.doesNotMatch(markup, /class="sync-clock"[^>]*aria-live/);
+  assert.match(markup, /href="#activity-panel"[^>]*data-i18n="skip_to_activity"/);
+  assert.match(markup, /id="tutorial-tab-0"[^>]*aria-controls="tutorial-panel-0"/);
+  assert.match(markup, /id="tutorial-panel-0"[^>]*role="tabpanel"[^>]*aria-labelledby="tutorial-tab-0"/);
+  assert.match(stylesSource, /:lang\(ko\)\s*\{[^}]*word-break:\s*keep-all/);
+
+  const h = harness();
+  h.applyConnectionMode('business');
+  h.document.activeElement = { tagName: 'SELECT' };
+  h.document.dispatch('keydown', { key: 'r' });
+  assert.equal(h.requests.length, 0, 'r inside a select must not trigger sync');
+
+  h.document.activeElement = { tagName: 'BODY' };
+  h.el.tutorialDialog.open = true;
+  h.document.dispatch('keydown', { key: 'r' });
+  assert.equal(h.requests.length, 0, 'r while tutorial is open must not trigger sync');
+});
+
+test('Korean 로/으로 particles choose the grammatically right suffix', () => {
+  const h = harness();
+  assert.equal(h.t('mode_sync_with', { mode: 'Business API' }), 'Business API로 동기화합니다.');
+  assert.equal(h.t('mode_sync_with', { mode: 'Zoom 앱 (Pro)' }), 'Zoom 앱 (Pro)로 동기화합니다.');
+  assert.equal(h.t('mode_sync_with', { mode: '자동' }), '자동으로 동기화합니다.');
+  assert.equal(h.t('mode_sync_with', { mode: '직접 입력' }), '직접 입력으로 동기화합니다.');
+  assert.equal(h.t('connection_rename', { name: '김민수' }), 'Zoom 이름을 김민수로 변경');
+  assert.equal(h.t('connection_rename', { name: '이서연' }), 'Zoom 이름을 이서연으로 변경');
+  assert.equal(h.t('connection_rename', { name: '한길' }), 'Zoom 이름을 한길로 변경');
+  assert.equal(h.t('connection_rename', { name: '학생001' }), 'Zoom 이름을 학생001로 변경');
+  assert.equal(h.t('connection_rename', { name: '학생003' }), 'Zoom 이름을 학생003으로 변경');
+
+  h.applyConnectionMode('business', { notify: true });
+  assert.match(h.el.toastRegion.textContent, /Business API로 동기화합니다\./);
 });

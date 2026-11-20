@@ -47,6 +47,29 @@
            (typeof window !== 'undefined' && window.ZOOMCHECK_LOCALES) || null;
   }
 
+  function koreanEuro(word) {
+    var trimmed = String(word || '').replace(/[\s)\]}"'.,!?]+$/g, '');
+    if (!trimmed) { return '으로'; }
+    var last = trimmed.charAt(trimmed.length - 1);
+    var code = last.charCodeAt(0);
+    if (code >= 0xAC00 && code <= 0xD7A3) {
+      var jong = (code - 0xAC00) % 28;
+      return (jong === 0 || jong === 8) ? '로' : '으로';
+    }
+    if (code >= 48 && code <= 57) {
+      return (last === '0' || last === '3' || last === '6') ? '으로' : '로';
+    }
+    var tokenMatch = trimmed.match(/([A-Za-z]+)$/);
+    if (tokenMatch) {
+      var token = tokenMatch[1];
+      if (token.length >= 2 && token === token.toUpperCase()) {
+        return (last === 'M' || last === 'N') ? '으로' : '로';
+      }
+      return /[mnpbkgc]/.test(last.toLowerCase()) ? '으로' : '로';
+    }
+    return '로';
+  }
+
   function t(key, params) {
     var locales = getLocales();
     if (!locales) {
@@ -55,8 +78,10 @@
     var currentLang = (state && state.lang) || 'ko';
     var dict = locales[currentLang] || locales.ko || {};
     var text = dict[key] !== undefined ? dict[key] : ((locales.ko && locales.ko[key]) !== undefined ? locales.ko[key] : key);
-    return params ? text.replace(/\{(\w+)\}/g, function (placeholder, name) {
-      return Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : placeholder;
+    return params ? text.replace(/\{(\w+)(?:\|(으로))?\}/g, function (placeholder, name, particle) {
+      if (!Object.prototype.hasOwnProperty.call(params, name)) { return placeholder; }
+      var value = String(params[name]);
+      return particle === '으로' ? value + koreanEuro(value) : value;
     }) : text;
   }
 
@@ -126,7 +151,12 @@
   var el = {};
 
   function $(id) { return document.getElementById(id); }
-  function setText(node, value) { if (node) { node.textContent = value; } }
+  function setText(node, value) {
+    if (!node) { return; }
+    var next = value === null || value === undefined ? '' : String(value);
+    if (node.children && node.children.length === 0 && node.textContent === next) { return; }
+    node.textContent = next;
+  }
   function asArray(value) { return Array.isArray(value) ? value : []; }
   function readStore(key, fallback) {
     try { var value = localStorage.getItem(key); return value === null ? fallback : value; }
@@ -422,12 +452,18 @@
     return 'business';
   }
 
+  function renderZoomApiDot() {
+    if (!el.zoomDot) { return; }
+    setDot(el.zoomDot, state.zoomConfigured ? true : (state.connectionMode === 'business' ? 'warn' : null));
+  }
+
   function applyConnectionMode(mode, options) {
     var opts = options || {};
     state.connectionMode = normalizeMode(mode);
     writeStore(STORAGE.connectionMode, state.connectionMode);
     el.modeRadios.forEach(function (radio) { radio.checked = radio.value === state.connectionMode; });
     renderModeNote();
+    renderZoomApiDot();
     renderZoomAppStrip();
     if (opts.notify) {
       toast('ok', t('mode_changed'), t('mode_sync_with', { mode: getModeLabel(state.connectionMode) }));
@@ -676,7 +712,7 @@
       } else if (canCreatePairingCode() && state.zoomApp.pairingCodeExpiresAt && !state.pairing) {
         state.pairing = { code: null, expiresAt: state.zoomApp.pairingCodeExpiresAt };
       }
-      setDot(el.zoomDot, state.zoomConfigured);
+      renderZoomApiDot();
       setText(el.zoomStatus, state.zoomConfigured ? '설정됨' : '미설정');
       setText(el.apiSettingsStatus, state.zoomConfigured
         ? 'OAuth 자격증명이 설정되어 있습니다. 실제 권한은 지금 동기화에서 확인됩니다.'
@@ -814,7 +850,7 @@
       renderRosterNote();
       if (showToast) { toast('ok', t('roster_checked'), state.roster.length + '명'); }
       if (state.board) { renderBoard(state.board); }
-      else { state.groups = collectGroups(null); renderGroupOptions(); }
+      else { state.groups = collectGroups(null); renderGroupOptions(); renderParticipants(); }
       renderReadiness();
       return state.roster;
     }, function (error) {
@@ -1233,11 +1269,13 @@
 
     setText(el.summaryTotal, total);
     setText(el.summaryPresent, present.length);
+    setText(el.phoneSummary, t('phone_summary', { present: present.length, total: total, absent: absent.length }));
     setText(el.summaryRate, total ? rate + '%' : '–');
     el.rateRing.style.setProperty('--rate', total ? rate : 0);
     setText(el.metricPresent, t('count_people', { count: present.length }));
     setText(el.metricAbsent, t('count_people', { count: absent.length }));
     setText(el.metricReview, t('count_items', { count: review.length }));
+    if (el.btnReview) { el.btnReview.disabled = review.length === 0; }
     setText(el.metricDuplicate, t('count_people', { count: duplicates.length }));
     renderFreshness();
     renderReadiness();
@@ -1275,8 +1313,11 @@
     var query = normalizeSearch(el.participantSearch.value);
     if (!query) { return true; }
     var connectionNames = row.connections.map(function (item) { return item.rawName + ' ' + item.canonicalName + ' ' + (item.email || ''); }).join(' ');
-    var haystack = [row.name, row.email, row.organization, row.group, row.phone, digitsOnly(row.phone), connectionNames].join(' ');
-    return normalizeSearch(haystack).indexOf(query) >= 0;
+    var phoneDigits = digitsOnly(row.phone);
+    var haystack = [row.name, row.email, row.organization, row.group, row.phone, phoneDigits, connectionNames].join(' ');
+    if (normalizeSearch(haystack).indexOf(query) >= 0) { return true; }
+    var queryDigits = digitsOnly(query);
+    return queryDigits.length >= 3 && /^[0-9\s\-().+]+$/.test(query) && phoneDigits.indexOf(queryDigits) >= 0;
   }
 
   /* 번호는 숫자 순서(2 다음 10), 번호가 없는 행(미매칭 등)은 기존 순서대로 맨 뒤에 둔다. */
@@ -1349,8 +1390,26 @@
     el.participantRows.textContent = '';
     el.participantsEmpty.hidden = rows.length > 0;
     setText(el.visibleCount, t('visible_count', { count: rows.length }));
-    setText(el.emptyTitle, state.filter === 'excluded' ? t('empty_excluded_title') : state.filter === 'review' ? t('empty_review_title') : t('empty_participants_title'));
-    setText(el.emptyNote, state.filter === 'excluded' ? t('empty_excluded_note') : t('empty_filtered_note'));
+    var emptyTitleKey = 'empty_participants_title';
+    var emptyNoteText = t('empty_filtered_note');
+    if (state.filter === 'excluded') {
+      emptyTitleKey = 'empty_excluded_title';
+      emptyNoteText = t('empty_excluded_note');
+    } else if (state.filter === 'review') {
+      emptyTitleKey = 'empty_review_title';
+    } else if (!state.rows.length) {
+      if (state.rosterLoaded && !state.roster.length) {
+        emptyTitleKey = 'empty_no_roster_title';
+        emptyNoteText = t('empty_no_roster_note');
+      } else if (state.roster.length && !currentMeetingId()) {
+        emptyTitleKey = 'empty_no_meeting_title';
+        emptyNoteText = t('empty_no_meeting_note', { count: state.roster.length });
+      } else {
+        emptyNoteText = t('empty_participants_note');
+      }
+    }
+    setText(el.emptyTitle, t(emptyTitleKey));
+    setText(el.emptyNote, emptyNoteText);
     if (el.btnResetFilters) { el.btnResetFilters.hidden = !state.group && !el.participantSearch.value && state.filter === 'all'; }
 
     rows.forEach(function (row) {
@@ -2526,9 +2585,12 @@
       renderActivity([], []);
       setText(el.rosterSummary, t('roster_count', { count: state.roster.length }));
       var zeroPeople = t('count_people', { count: 0 });
+      setText(el.phoneSummary, t('phone_summary', { present: 0, total: 0, absent: 0 }));
       setText(el.metricPresent, zeroPeople);
       setText(el.metricAbsent, zeroPeople);
       setText(el.metricReview, t('count_items', { count: 0 }));
+      if (el.btnReview) { el.btnReview.disabled = true; }
+      if (el.btnExport) { el.btnExport.disabled = true; }
       setText(el.metricDuplicate, zeroPeople);
     }
 
@@ -2551,7 +2613,7 @@
       'snapshot-result','snapshot-result-summary','snapshot-result-details',
       'action-confirm','action-confirm-message','btn-confirm-cancel','btn-confirm-apply',
       'btn-sync-zoom','btn-toggle-lang','btn-toggle-theme','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
-      'summary-total','summary-present','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
+      'summary-total','summary-present','phone-summary','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
       'participants-meta','btn-refresh','btn-export','btn-copy-status','status-text-dialog','status-text-title','status-text-note','status-text','btn-status-download','btn-status-close','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
       'count-all','count-present','count-absent','count-review','count-unmatched','activity-feed','activity-empty','activity-count',
       'duplicate-list','duplicate-empty','duplicate-count','sync-summary','roster-summary','settings-dialog','roster-file','btn-upload-roster',
@@ -2692,11 +2754,16 @@
     el.btnDismissAlert.addEventListener('click', hideAlert);
     document.addEventListener('keydown', function (event) {
       if (el.actionConfirm.open || el.statusTextDialog.open) { return; }
-      if (el.tutorialDialog.open && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
-        event.preventDefault(); moveTutorial(event.key === 'ArrowRight' ? 1 : -1); return;
+      if (el.tutorialDialog.open) {
+        if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+          event.preventDefault(); moveTutorial(event.key === 'ArrowRight' ? 1 : -1);
+        }
+        return;
       }
-      if (event.key === '/' && !el.settingsDialog.open && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) { event.preventDefault(); el.participantSearch.focus(); }
-      if ((event.key === 'r' || event.key === 'R') && !event.metaKey && !event.ctrlKey && !event.altKey && !el.settingsDialog.open && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+      var active = document.activeElement;
+      var inField = active && (/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) || active.isContentEditable);
+      if (event.key === '/' && !el.settingsDialog.open && !inField) { event.preventDefault(); el.participantSearch.focus(); }
+      if ((event.key === 'r' || event.key === 'R') && !event.metaKey && !event.ctrlKey && !event.altKey && !el.settingsDialog.open && !inField) {
         event.preventDefault(); syncNow({ silent: false });
       }
     });
