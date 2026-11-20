@@ -2,7 +2,7 @@
 
 Windows web dashboard that compares an Excel roster with a live Zoom meeting through either the Business Dashboard API or an in-meeting Zoom App bridge suitable for Pro accounts.
 
-[한국어](README.ko.md) · [Español](README.es.md) · [Operator guide](docs/windows-operator-guide.md) · [MIT License](LICENSE)
+[한국어](README.ko.md) · [Español](README.es.md) · [Operator guide](docs/windows-operator-guide.md) · [Code signing policy](CODE_SIGNING.md) · [MIT License](LICENSE)
 
 [![CI](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml)
 [![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)
@@ -128,6 +128,14 @@ Update assets contain no operator-specific Render URL, Zoom app ID, OAuth URL, o
 ## Responsible use
 
 Attendance data is sensitive. Verify ambiguous matches and the exported CSV before using it as an official record. ZoomCheck stores its database locally and does not guarantee attendance accuracy.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+- **Committers and reviewers**: [ianlyoo](https://github.com/ianlyoo)
+- **Approvers**: [ianlyoo](https://github.com/ianlyoo)
+- **Privacy policy**: This program does not transfer attendance or personal user data to other networked systems unless specifically requested by the user or operator (aside from read-only release update checks against GitHub Releases). See the full [Code signing policy](CODE_SIGNING.md) for details, third-party privacy statements, and uninstallation instructions.
 
 ## License
 

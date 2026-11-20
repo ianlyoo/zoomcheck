@@ -2,7 +2,7 @@
 
 Panel web para Windows que coteja un padrón en Excel con los participantes de una reunión de Zoom en vivo, ya sea a través de la API Business Dashboard o mediante un puente complementario de Zoom App adecuado para cuentas Pro.
 
-[English](README.md) · [한국어](README.ko.md) · [Guía de operador](docs/windows-operator-guide.md) · [Licencia MIT](LICENSE)
+[English](README.md) · [한국어](README.ko.md) · [Guía de operador](docs/windows-operator-guide.md) · [Code signing policy](CODE_SIGNING.md) · [Licencia MIT](LICENSE)
 
 [![CI](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml)
 [![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)
@@ -47,3 +47,9 @@ node --test tests/dashboard-regressions.cjs
 # Pruebas de la solución .NET (requiere SDK 8.0)
 dotnet test ZoomCheck.sln -c Release
 ```
+
+## Política de firma de código (Code signing policy)
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+Consulta [CODE_SIGNING.md](CODE_SIGNING.md) para ver los roles del equipo ([ianlyoo](https://github.com/ianlyoo)), la política de privacidad y las instrucciones de desinstalación.

@@ -12,6 +12,7 @@ on:
       - main
 
 permissions:
+  actions: read
   contents: write
 
 env:
@@ -170,6 +171,83 @@ jobs:
           }
 
           Write-Host "Portable ZIP audit passed ($($entries.Count) entries)."
+
+      # SignPath Foundation code signing runs on workflow_dispatch builds only when the
+      # repository secret and variables are configured, keeping unsigned builds green beforehand.
+      - name: Check SignPath configuration
+        id: signpath-config
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: |
+          $hasConfig = -not [string]::IsNullOrWhiteSpace($env:SIGNPATH_API_TOKEN) -and
+            -not [string]::IsNullOrWhiteSpace($env:SIGNPATH_ORGANIZATION_ID) -and
+            -not [string]::IsNullOrWhiteSpace($env:SIGNPATH_PROJECT_SLUG) -and
+            -not [string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)
+          $isDispatch = "${{ github.event_name }}" -eq "workflow_dispatch"
+          $enabled = $hasConfig -and $isDispatch
+          "enabled=$($enabled.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          if ($enabled) {
+            Write-Host "SignPath signing enabled for workflow_dispatch run."
+          }
+          elseif (-not $hasConfig) {
+            Write-Host "SignPath secrets/variables are not configured; skipping code signing."
+          }
+          else {
+            Write-Host "SignPath signing runs only on workflow_dispatch builds; skipping code signing."
+          }
+
+      - name: Upload unsigned installer for SignPath
+        id: upload-unsigned-installer
+        if: steps.signpath-config.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ZoomCheck-Setup-x64-unsigned
+          path: ${{ env.INSTALLER_PATH }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign installer with SignPath
+        id: signpath
+        if: steps.signpath-config.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: dist/installer-signed
+
+      - name: Apply signed installer and refresh SHA256SUMS.txt
+        if: steps.signpath-config.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $signedInstaller = Get-ChildItem -Path "dist/installer-signed" -Filter "ZoomCheck-Setup-x64.exe" -Recurse -File | Select-Object -First 1
+          if (-not $signedInstaller) {
+            Write-Error "Signed installer ZoomCheck-Setup-x64.exe was not found in dist/installer-signed."
+            exit 1
+          }
+          $sig = Get-AuthenticodeSignature -FilePath $signedInstaller.FullName
+          if ($sig.Status -ne 'Valid') {
+            Write-Error "Signed installer Authenticode signature is not valid: $($sig.Status) ($($sig.StatusMessage))"
+            exit 1
+          }
+          Copy-Item -LiteralPath $signedInstaller.FullName -Destination "${{ env.INSTALLER_PATH }}" -Force
+          $installerHash = (Get-FileHash -LiteralPath "${{ env.INSTALLER_PATH }}" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $portableHash = (Get-FileHash -LiteralPath "${{ env.PORTABLE_PATH }}" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksumLines = @(
+            "$installerHash  ZoomCheck-Setup-x64.exe",
+            "$portableHash  ZoomCheck-portable-win-x64.zip"
+          ) -join "`n"
+          [IO.File]::WriteAllText("${{ env.CHECKSUM_PATH }}", $checksumLines + "`n", [Text.Encoding]::ASCII)
+          Write-Host "Applied signed installer (Subject: $($sig.SignerCertificate.Subject)) and refreshed ${{ env.CHECKSUM_PATH }}."
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4.6.2
