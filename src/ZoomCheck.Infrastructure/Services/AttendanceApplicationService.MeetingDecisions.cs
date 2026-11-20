@@ -9,14 +9,6 @@ namespace ZoomCheck.Infrastructure.Services;
 
 public sealed partial class AttendanceApplicationService
 {
-    private async Task<T> WithMeetingLockAsync<T>(string meetingId, Func<Task<T>> action, CancellationToken cancellationToken)
-    {
-        var gate = _snapshotLocks.GetOrAdd(meetingId, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken);
-        try { return await action(); }
-        finally { gate.Release(); }
-    }
-
     private string CurrentAttendanceDate() => _timeProvider.GetLocalNow().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
     public Task<AttendanceBoard> SetMeetingExclusionAsync(string meetingId, string personId, bool excluded, CancellationToken cancellationToken = default, string? attendanceDate = null)
