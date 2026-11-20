@@ -132,7 +132,7 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
       createPairingCode, checkHealth, checkZoomConnection, renderZoomAppStrip, renderUpdate, applyUpdateStatus,
       applyLanguage, toggleLanguage, restoreState, t,
       uploadRoster, renderRosterFeedback,
-      applySort, buildStatusText, copyMeetingStatus, downloadStatusText };
+      applySort, sortRows, getSortedRows, buildStatusText, copyMeetingStatus, downloadStatusText };
   })();`);
   vm.runInContext(instrumented, context, { filename: 'app.js' });
   const dashboard = context.dashboard;
@@ -1698,4 +1698,91 @@ test('roster upload clean success renders inline confirmation without warnings',
   assert.match(h.el.rosterFeedbackTitle.textContent, /명단을 불러왔습니다/);
   assert.match(h.el.rosterFeedbackMessage.textContent, /roster-valid\.xlsx에서 30명을 등록했습니다/);
   assert.equal(h.el.rosterFeedbackList.hidden, true);
+});
+
+test('sorted row order is cached across filter/search renders and handles alphanumeric sequences', () => {
+  const h = harness();
+  const payload = rosterBoard();
+  h.renderBoard(payload);
+  const firstSorted = h.getSortedRows();
+  assert.deepEqual(firstSorted.map(r => r.key).filter(k => k.startsWith('roster:') && k !== 'roster:p4'), ['roster:p1', 'roster:p2', 'roster:p3', 'roster:p10', 'roster:px']);
+
+  // Filter, search and row expand reuse the same cached sorted array without re-sorting.
+  h.state.filter = 'absent'; h.renderParticipants();
+  assert.equal(h.getSortedRows(), firstSorted);
+  h.el.participantSearch.value = '학생002'; h.renderParticipants();
+  assert.equal(h.getSortedRows(), firstSorted);
+  h.state.selectedKey = 'roster:p2'; h.renderParticipants();
+  assert.equal(h.getSortedRows(), firstSorted);
+
+  // Changing sort key or reloading board invalidates the cache.
+  h.applySort('name');
+  const byName = h.getSortedRows();
+  assert.notEqual(byName, firstSorted);
+  h.applySort('number');
+  h.renderBoard(payload);
+  assert.notEqual(h.getSortedRows(), firstSorted);
+
+  // Alphanumeric sequences still sort naturally via Intl.Collator.
+  h.state.filter = 'all';
+  h.el.participantSearch.value = '';
+  const mixed = {
+    ...board('111'),
+    people: [
+      { rosterPersonId: 'a10', sequence: 'A-10', name: 'Ten', attendanceState: 'Present', confidence: 'Verified' },
+      { rosterPersonId: 'a2', sequence: 'A-2', name: 'Two', attendanceState: 'Present', confidence: 'Verified' },
+      { rosterPersonId: 'b1', sequence: 'B-1', name: 'B1', attendanceState: 'Present', confidence: 'Verified' },
+      { rosterPersonId: 'none', sequence: '', name: 'None', attendanceState: 'Present', confidence: 'Verified' }
+    ]
+  };
+  h.renderBoard(mixed);
+  assert.deepEqual(rowKeys(h), ['roster:a2', 'roster:a10', 'roster:b1', 'roster:none']);
+});
+
+test('initial load waits for in-flight roster before painting board so emails render once', async () => {
+  const storage = new Map([['zoomcheck.tutorialSeen.v1', 'seen'], ['zoomcheck.meetingId', '111']]);
+  const h = harness({ storage });
+  h.init();
+  const rosterReq = h.requests.find(r => r.url === '/api/roster');
+  const boardReq = h.requests.find(r => r.url === '/api/meetings/111/board');
+
+  // Board resolves BEFORE roster finishes: table waits for roster so emails appear on first render.
+  await respond(boardReq, rosterBoard());
+  assert.equal(h.el.participantRows.children.length, 0);
+
+  await respond(rosterReq, [{ id: 'p1', name: '학생001', email: 'student001@example.com' }]);
+  assert.deepEqual(rowKeys(h), ['roster:p1', 'roster:p2', 'roster:p3', 'roster:p10', 'roster:px']);
+  assert.match(h.el.participantRows.children[0].textContent, /student001@example\.com/);
+});
+
+test('initial load still renders board if in-flight roster fails', async () => {
+  const storage = new Map([['zoomcheck.tutorialSeen.v1', 'seen'], ['zoomcheck.meetingId', '111']]);
+  const h = harness({ storage });
+  h.init();
+  const rosterReq = h.requests.find(r => r.url === '/api/roster');
+  const boardReq = h.requests.find(r => r.url === '/api/meetings/111/board');
+  await respond(boardReq, rosterBoard());
+  assert.equal(h.el.participantRows.children.length, 0);
+  rosterReq.reject(new Error('offline'));
+  await drain();
+  assert.deepEqual(rowKeys(h), ['roster:p1', 'roster:p2', 'roster:p3', 'roster:p10', 'roster:px']);
+});
+
+test('empty initial render skips scrollTop read and row click delegation toggles selection', () => {
+  const h = harness();
+  let scrollReads = 0;
+  let scrollValue = 0;
+  Object.defineProperty(h.el.participantTableWrap, 'scrollTop', {
+    get() { scrollReads += 1; return scrollValue; },
+    set(v) { scrollValue = v; }
+  });
+  h.renderParticipants();
+  assert.equal(scrollReads, 0, 'empty table render must not force layout via scrollTop');
+
+  h.renderBoard(decisionBoard());
+  assert.equal(scrollReads, 0, 'first populated render from empty table does not read scrollTop');
+  const row = h.el.participantRows.children[0];
+  h.el.participantRows.dispatch('click', { target: row.children[0] });
+  assert.equal(h.state.selectedKey, row.dataset.key);
+  assert.ok(scrollReads > 0, 'subsequent re-render with existing rows preserves scrollTop');
 });

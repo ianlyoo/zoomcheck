@@ -106,6 +106,7 @@
     board: null,
     roster: [],
     rows: [],
+    rowsVersion: 0,
     connections: [],
     duplicates: [],
     filter: 'all',
@@ -1289,10 +1290,16 @@
     if (!meetingId) { return Promise.resolve(null); }
     var context = beginMeetingRequest(opts.silent ? null : t('board_loading'));
     return request('/api/meetings/' + encodeURIComponent(meetingId) + '/board').then(function (board) {
-      if (!finishMeetingRequest(context)) { return null; }
-      renderBoard(board);
-      if (opts.notify) { toast('ok', t('board_refreshed'), t('board_refreshed_note')); }
-      return board;
+      function applyLoadedBoard() {
+        if (!finishMeetingRequest(context)) { return null; }
+        renderBoard(board);
+        if (opts.notify) { toast('ok', t('board_refreshed'), t('board_refreshed_note')); }
+        return board;
+      }
+      if (opts.waitFor) {
+        return Promise.resolve(opts.waitFor).then(applyLoadedBoard, applyLoadedBoard);
+      }
+      return applyLoadedBoard();
     }, function (error) {
       if (!finishMeetingRequest(context)) { return null; }
       if (!opts.silent) { toast('bad', t('board_refresh_failed'), error.message); }
@@ -1390,11 +1397,15 @@
       var roster = rosterMap[person.rosterPersonId] || {};
       var personConnections = connectionsByPerson[person.rosterPersonId] || [];
       var duplicate = duplicateByPerson[person.rosterPersonId] || null;
+      var sequenceText = String(person.sequence === null || person.sequence === undefined ? '' : person.sequence).trim();
+      var sequenceNum = sequenceText.length > 0 && sequenceText.length <= 15 && /^\d+$/.test(sequenceText) ? Number(sequenceText) : null;
       return {
         key: 'roster:' + person.rosterPersonId,
         kind: 'roster',
         rosterPersonId: person.rosterPersonId,
         sequence: person.sequence,
+        sequenceText: sequenceText,
+        sequenceNum: sequenceNum,
         name: person.name,
         email: roster.email || '',
         phone: roster.phone || person.phone || '',
@@ -1432,6 +1443,8 @@
         key: 'unmatched:' + normalizeSearch(item.participantName),
         kind: 'unmatched',
         rosterPersonId: null,
+        sequenceText: '',
+        sequenceNum: null,
         name: item.participantName,
         email: matching[0] ? matching[0].email || '' : '',
         phone: '',
@@ -1555,16 +1568,44 @@
 
   /* 지표, 표 머리글, 현황 복사 글이 같은 집계를 쓰도록 한 곳에서 계산한다. */
   function scopedSummary() {
-    var allScoped = scopedRows();
-    var scoped = allScoped.filter(function (row) { return !row.isExcluded; });
-    var rosterScoped = scoped.filter(function (row) { return row.kind === 'roster'; });
+    var allScoped = [];
+    var excluded = [];
+    var scoped = [];
+    var rosterScoped = [];
+    var present = [];
+    var absent = [];
+    var review = [];
+    var unmatched = [];
+    var globalUnmatchedCount = 0;
+    for (var i = 0; i < state.rows.length; i++) {
+      var row = state.rows[i];
+      if (!row.isExcluded && row.kind === 'unmatched') { globalUnmatchedCount += 1; }
+      if (!rowInSelectedGroup(row)) { continue; }
+      allScoped.push(row);
+      if (row.isExcluded) {
+        excluded.push(row);
+        continue;
+      }
+      scoped.push(row);
+      if (row.review) { review.push(row); }
+      if (row.kind === 'roster') {
+        rosterScoped.push(row);
+        if (row.attendanceState === 'Present') { present.push(row); }
+        else { absent.push(row); }
+      } else if (row.kind === 'unmatched') {
+        unmatched.push(row);
+      }
+    }
     return {
       allScoped: allScoped,
       scoped: scoped,
-      excluded: allScoped.filter(function (row) { return row.isExcluded; }),
+      excluded: excluded,
       rosterScoped: rosterScoped,
-      present: rosterScoped.filter(function (row) { return row.attendanceState === 'Present'; }),
-      absent: rosterScoped.filter(function (row) { return row.attendanceState !== 'Present'; }),
+      present: present,
+      absent: absent,
+      review: review,
+      unmatched: unmatched,
+      globalUnmatchedCount: globalUnmatchedCount,
       duplicates: scopedDuplicates(rosterScoped)
     };
   }
@@ -1597,6 +1638,7 @@
     state.connections = extractConnections(board);
     state.duplicates = deriveDuplicateGroups(board, state.connections, rosterMap);
     state.rows = buildRows(board, state.connections, state.duplicates, rosterMap);
+    state.rowsVersion += 1;
     state.groups = collectGroups(board);
     renderGroupOptions();
 
@@ -1607,9 +1649,9 @@
     var rosterScoped = summary.rosterScoped;
     var present = summary.present;
     var absent = summary.absent;
-    var review = scoped.filter(function (row) { return row.review; });
-    var unmatched = scoped.filter(function (row) { return row.kind === 'unmatched'; });
-    var globalUnmatchedCount = state.rows.filter(function (row) { return !row.isExcluded && row.kind === 'unmatched'; }).length;
+    var review = summary.review;
+    var unmatched = summary.unmatched;
+    var globalUnmatchedCount = summary.globalUnmatchedCount;
     var duplicates = summary.duplicates;
     var connectionCount = scopedConnectionCount(rosterScoped);
     var total = rosterScoped.length;
@@ -1664,31 +1706,71 @@
     if (state.filter === 'unmatched') { return row.kind === 'unmatched'; }
     return true;
   }
-  function rowMatchesSearch(row) {
-    var query = normalizeSearch(el.participantSearch.value);
-    if (!query) { return true; }
+  function rowMatchesSearch(row, query, queryDigits, isPhoneQuery) {
+    var normalizedQuery = query !== undefined ? query : normalizeSearch(el.participantSearch.value);
+    if (!normalizedQuery) { return true; }
     var connectionNames = row.connections.map(function (item) { return item.rawName + ' ' + item.canonicalName + ' ' + (item.email || ''); }).join(' ');
     var phoneDigits = digitsOnly(row.phone);
     var haystack = [row.name, row.email, row.organization, row.group, row.phone, phoneDigits, connectionNames].join(' ');
-    if (normalizeSearch(haystack).indexOf(query) >= 0) { return true; }
-    var queryDigits = digitsOnly(query);
-    return queryDigits.length >= 3 && /^[0-9\s\-().+]+$/.test(query) && phoneDigits.indexOf(queryDigits) >= 0;
+    if (normalizeSearch(haystack).indexOf(normalizedQuery) >= 0) { return true; }
+    var digits = queryDigits !== undefined ? queryDigits : digitsOnly(normalizedQuery);
+    var phoneLike = isPhoneQuery !== undefined ? isPhoneQuery : (digits.length >= 3 && /^[0-9\s\-().+]+$/.test(normalizedQuery));
+    return phoneLike && phoneDigits.indexOf(digits) >= 0;
   }
 
+  var collatorCache = Object.create(null);
+  var sortedRowsCache = { source: null, length: -1, version: -1, sort: '', lang: '', rows: [] };
+  function getCollator(lang) {
+    var key = lang || 'ko';
+    if (!collatorCache[key]) {
+      collatorCache[key] = new Intl.Collator(key, { numeric: true, sensitivity: 'base' });
+    }
+    return collatorCache[key];
+  }
   /* 번호는 숫자 순서(2 다음 10), 번호가 없는 행(미매칭 등)은 기존 순서대로 맨 뒤에 둔다. */
   function sortRows(rows, key) {
-    var collator = new Intl.Collator(state.lang, { numeric: true, sensitivity: 'base' });
-    function bySequence(left, right) {
-      var a = String(left.sequence || '').trim();
-      var b = String(right.sequence || '').trim();
-      if (!a || !b) { return (a ? 0 : 1) - (b ? 0 : 1); }
+    if (!rows || rows.length <= 1) { return rows ? rows.slice() : []; }
+    var lang = state.lang || 'ko';
+    var sortKey = key || state.sort;
+    var collator = null;
+    function compareLocale(a, b) {
+      if (!collator) { collator = getCollator(lang); }
       return collator.compare(a, b);
     }
-    function byName(left, right) { return collator.compare(left.name || '', right.name || ''); }
-    var compare = (key || state.sort) === 'name'
+    function bySequence(left, right) {
+      var a = left.sequenceText !== undefined ? left.sequenceText : String(left.sequence || '').trim();
+      var b = right.sequenceText !== undefined ? right.sequenceText : String(right.sequence || '').trim();
+      if (!a || !b) { return (a ? 0 : 1) - (b ? 0 : 1); }
+      var aNum = left.sequenceNum !== undefined ? left.sequenceNum : (a.length <= 15 && /^\d+$/.test(a) ? Number(a) : null);
+      var bNum = right.sequenceNum !== undefined ? right.sequenceNum : (b.length <= 15 && /^\d+$/.test(b) ? Number(b) : null);
+      if (aNum !== null && bNum !== null) { return aNum - bNum; }
+      return compareLocale(a, b);
+    }
+    function byName(left, right) { return compareLocale(left.name || '', right.name || ''); }
+    var compare = sortKey === 'name'
       ? function (left, right) { return byName(left, right) || bySequence(left, right); }
       : bySequence;
     return rows.slice().sort(compare);
+  }
+  function getSortedRows() {
+    var rows = state.rows;
+    if (sortedRowsCache.source === rows
+      && sortedRowsCache.length === rows.length
+      && sortedRowsCache.version === state.rowsVersion
+      && sortedRowsCache.sort === state.sort
+      && sortedRowsCache.lang === state.lang) {
+      return sortedRowsCache.rows;
+    }
+    var sorted = sortRows(rows, state.sort);
+    sortedRowsCache = {
+      source: rows,
+      length: rows.length,
+      version: state.rowsVersion,
+      sort: state.sort,
+      lang: state.lang,
+      rows: sorted
+    };
+    return sorted;
   }
   function applySort(key) {
     state.sort = SORT_KEYS.indexOf(key) >= 0 ? key : 'number';
@@ -1744,91 +1826,186 @@
     tr.appendChild(td);
   }
 
+  function onRowToggleClick(event) {
+    event.stopPropagation();
+    var target = event.currentTarget || event.target;
+    var key = target && target.dataset && target.dataset.rowKey;
+    if (key) { toggleParticipant(key); }
+  }
+  function onParticipantRowsClick(event) {
+    var target = event.target;
+    if (!target || !target.closest || target.closest('button, input, select, a')) { return; }
+    var rowEl = target.closest('.participant-row');
+    if (rowEl && rowEl.dataset && rowEl.dataset.key) { toggleParticipant(rowEl.dataset.key); }
+  }
+
   function renderParticipants() {
-    var scrollTop = el.participantTableWrap.scrollTop;
-    var focus = captureParticipantFocus();
-    var rows = sortRows(scopedRows().filter(rowMatchesFilter).filter(rowMatchesSearch));
-    el.participantRows.textContent = '';
+    var hadRows = el.participantRows.children.length > 0;
+    var scrollTop = hadRows ? el.participantTableWrap.scrollTop : 0;
+    var focus = hadRows ? captureParticipantFocus() : null;
+    var rawSearch = el.participantSearch.value;
+    var searchQuery = rawSearch ? normalizeSearch(rawSearch) : '';
+    var searchDigits = searchQuery ? digitsOnly(searchQuery) : '';
+    var isPhoneSearch = searchDigits.length >= 3 && /^[0-9\s\-().+]+$/.test(searchQuery);
+    var sortedRows = getSortedRows();
+    var rows = [];
+    for (var i = 0; i < sortedRows.length; i++) {
+      var candidate = sortedRows[i];
+      if (!rowInSelectedGroup(candidate) || !rowMatchesFilter(candidate)) { continue; }
+      if (searchQuery && !rowMatchesSearch(candidate, searchQuery, searchDigits, isPhoneSearch)) { continue; }
+      rows.push(candidate);
+    }
+    if (hadRows) { el.participantRows.textContent = ''; }
     el.participantsEmpty.hidden = rows.length > 0;
     setText(el.visibleCount, t('visible_count', { count: rows.length }));
-    var globalUnmatchedCount = state.rows.filter(function (row) { return !row.isExcluded && row.kind === 'unmatched'; }).length;
-    var unmatchedHiddenByGroup = state.filter === 'unmatched' && !!state.group && globalUnmatchedCount > 0;
-    var emptyTitleKey = 'empty_participants_title';
-    var emptyNoteText = t('empty_filtered_note');
-    if (state.filter === 'excluded') {
-      emptyTitleKey = 'empty_excluded_title';
-      emptyNoteText = t('empty_excluded_note');
-    } else if (unmatchedHiddenByGroup) {
-      emptyTitleKey = 'empty_unmatched_group_title';
-      emptyNoteText = t('empty_unmatched_group_note', { count: globalUnmatchedCount });
-    } else if (state.filter === 'review') {
-      emptyTitleKey = 'empty_review_title';
-    } else if (!state.rows.length) {
-      if (state.rosterLoaded && !state.roster.length) {
-        emptyTitleKey = 'empty_no_roster_title';
-        emptyNoteText = t('empty_no_roster_note');
-      } else if (state.roster.length && !currentMeetingId()) {
-        emptyTitleKey = 'empty_no_meeting_title';
-        emptyNoteText = t('empty_no_meeting_note', { count: state.roster.length });
-      } else {
-        emptyNoteText = t('empty_participants_note');
+    if (rows.length === 0) {
+      var globalUnmatchedCount = 0;
+      if (state.filter === 'unmatched' && !!state.group) {
+        for (var u = 0; u < state.rows.length; u++) {
+          if (!state.rows[u].isExcluded && state.rows[u].kind === 'unmatched') { globalUnmatchedCount += 1; }
+        }
       }
+      var unmatchedHiddenByGroup = state.filter === 'unmatched' && !!state.group && globalUnmatchedCount > 0;
+      var emptyTitleKey = 'empty_participants_title';
+      var emptyNoteText = t('empty_filtered_note');
+      if (state.filter === 'excluded') {
+        emptyTitleKey = 'empty_excluded_title';
+        emptyNoteText = t('empty_excluded_note');
+      } else if (unmatchedHiddenByGroup) {
+        emptyTitleKey = 'empty_unmatched_group_title';
+        emptyNoteText = t('empty_unmatched_group_note', { count: globalUnmatchedCount });
+      } else if (state.filter === 'review') {
+        emptyTitleKey = 'empty_review_title';
+      } else if (!state.rows.length) {
+        if (state.rosterLoaded && !state.roster.length) {
+          emptyTitleKey = 'empty_no_roster_title';
+          emptyNoteText = t('empty_no_roster_note');
+        } else if (state.roster.length && !currentMeetingId()) {
+          emptyTitleKey = 'empty_no_meeting_title';
+          emptyNoteText = t('empty_no_meeting_note', { count: state.roster.length });
+        } else {
+          emptyNoteText = t('empty_participants_note');
+        }
+      }
+      setText(el.emptyTitle, t(emptyTitleKey));
+      setText(el.emptyNote, emptyNoteText);
     }
-    setText(el.emptyTitle, t(emptyTitleKey));
-    setText(el.emptyNote, emptyNoteText);
-    if (el.btnResetFilters) { el.btnResetFilters.hidden = !state.group && !el.participantSearch.value && state.filter === 'all'; }
+    if (el.btnResetFilters) { el.btnResetFilters.hidden = !state.group && !rawSearch && state.filter === 'all'; }
 
-    rows.forEach(function (row) {
-      var tr = document.createElement('tr');
-      tr.className = 'participant-row' + (row.key === state.selectedKey ? ' is-selected' : '') + (row.kind === 'unmatched' ? ' is-unmatched' : '');
-      tr.dataset.key = row.key;
-      appendTextCell(tr, row.sequence, 'participant-number');
-      appendPillCell(tr, statusInfo(row));
-      var nameCell = document.createElement('td');
-      var name = document.createElement('button');
-      name.type = 'button';
-      name.className = 'participant-name row-toggle';
-      name.textContent = (row.key === state.selectedKey ? '− ' : '+ ') + row.name;
-      name.dataset.focusKey = 'row:' + row.key;
-      name.setAttribute('aria-expanded', row.key === state.selectedKey ? 'true' : 'false');
-      name.setAttribute('aria-label', t('participant_row_details', { name: row.name, action: t(row.key === state.selectedKey ? 'collapse' : 'expand') }));
-      name.addEventListener('click', function (event) { event.stopPropagation(); toggleParticipant(row.key); });
-      var secondary = document.createElement('span');
-      secondary.className = 'participant-secondary';
-      secondary.textContent = row.email || (row.kind === 'unmatched' ? t('participant_display_name') : t('participant_no_email'));
-      nameCell.appendChild(name);
-      nameCell.appendChild(secondary);
-      tr.appendChild(nameCell);
-      var orgCell = document.createElement('td');
-      var orgPrimary = document.createElement('span');
-      orgPrimary.className = 'participant-name';
-      orgPrimary.textContent = row.organization || '–';
-      orgCell.appendChild(orgPrimary);
-      if (row.group) {
-        var groupTag = document.createElement('span');
-        groupTag.className = 'group-tag';
-        groupTag.textContent = row.group;
-        orgCell.appendChild(groupTag);
+    if (rows.length > 0) {
+      var statusExcluded = { label: t('status_Excluded') !== 'status_Excluded' ? t('status_Excluded') : '오늘 제외', className: 'neutral' };
+      var statusUnmatched = { label: t('status_Unmatched') !== 'status_Unmatched' ? t('status_Unmatched') : '미매칭', className: 'unmatched' };
+      var statusPresent = { label: t('status_Present') !== 'status_Present' ? t('status_Present') : '참석 중', className: 'present' };
+      var statusLeft = { label: t('status_Left') !== 'status_Left' ? t('status_Left') : '퇴장', className: 'left' };
+      var statusAbsent = { label: t('status_Absent') !== 'status_Absent' ? t('status_Absent') : '미참석', className: 'absent' };
+      var confNotJoined = { label: t('status_NotJoined') !== 'status_NotJoined' ? t('status_NotJoined') : '입장 전', className: 'neutral' };
+      var confLabels = {
+        Verified: getConfidenceLabel('Verified'),
+        AliasVerified: getConfidenceLabel('AliasVerified'),
+        NameOnly: getConfidenceLabel('NameOnly'),
+        Possible: getConfidenceLabel('Possible'),
+        Unmatched: getConfidenceLabel('Unmatched')
+      };
+      var expandAction = t('expand');
+      var collapseAction = t('collapse');
+      var rowDetailsTpl = t('participant_row_details');
+      var displayNameLabel = t('participant_display_name');
+      var noEmailLabel = t('participant_no_email');
+      var joinedAtTpl = t('participant_joined_at');
+      var leftAtTpl = t('participant_left_at');
+      var connCountTpl = t('connection_count');
+      var timeCache = Object.create(null);
+      function cachedTime(value) {
+        if (!value) { return '–'; }
+        if (typeof value === 'string') {
+          var cached = timeCache[value];
+          if (cached !== undefined) { return cached; }
+          cached = formatTime(value);
+          timeCache[value] = cached;
+          return cached;
+        }
+        return formatTime(value);
       }
-      tr.appendChild(orgCell);
-      appendPillCell(tr, confidenceInfo(row), 'match-pill');
-      appendTextCell(tr, formatTime(row.lastJoinedAt));
-      appendTextCell(tr, row.attendanceState === 'Left' ? t('participant_left_at', { time: formatTime(row.lastLeftAt) }) : (row.lastJoinedAt ? t('participant_joined_at', { time: formatTime(row.lastJoinedAt) }) : '–'));
-      var connectionCell = document.createElement('td');
-      var connectionPill = document.createElement('span');
-      connectionPill.className = 'connection-pill' + (row.duplicate ? ' duplicate' : '');
-      connectionPill.textContent = row.connections.length ? t('connection_count', { count: row.connections.length }) : '–';
-      connectionCell.appendChild(connectionPill);
-      tr.appendChild(connectionCell);
-      tr.addEventListener('click', function (event) {
-        if (event.target && event.target.closest && event.target.closest('button, input, select, a')) { return; }
-        toggleParticipant(row.key);
-      });
-      el.participantRows.appendChild(tr);
-      if (row.key === state.selectedKey) { el.participantRows.appendChild(buildDetailRow(row)); }
-    });
-    restoreParticipantFocus(focus);
-    window.requestAnimationFrame(function () { el.participantTableWrap.scrollTop = scrollTop; });
+
+      var container = typeof document.createDocumentFragment === 'function'
+        ? document.createDocumentFragment()
+        : el.participantRows;
+
+      for (var r = 0; r < rows.length; r++) {
+        var row = rows[r];
+        var isSelected = row.key === state.selectedKey;
+        var tr = document.createElement('tr');
+        tr.className = 'participant-row' + (isSelected ? ' is-selected' : '') + (row.kind === 'unmatched' ? ' is-unmatched' : '');
+        tr.dataset.key = row.key;
+        appendTextCell(tr, row.sequence, 'participant-number');
+        var rowStatus = row.isExcluded ? statusExcluded
+          : row.kind === 'unmatched' ? statusUnmatched
+          : row.attendanceState === 'Present' ? statusPresent
+          : row.attendanceState === 'Left' ? statusLeft
+          : statusAbsent;
+        appendPillCell(tr, rowStatus);
+        var nameCell = document.createElement('td');
+        var name = document.createElement('button');
+        name.type = 'button';
+        name.className = 'participant-name row-toggle';
+        name.textContent = (isSelected ? '− ' : '+ ') + row.name;
+        name.dataset.focusKey = 'row:' + row.key;
+        name.dataset.rowKey = row.key;
+        name.setAttribute('aria-expanded', isSelected ? 'true' : 'false');
+        name.setAttribute('aria-label', rowDetailsTpl.replace('{name}', row.name).replace('{action}', isSelected ? collapseAction : expandAction));
+        name.addEventListener('click', onRowToggleClick);
+        var secondary = document.createElement('span');
+        secondary.className = 'participant-secondary';
+        secondary.textContent = row.email || (row.kind === 'unmatched' ? displayNameLabel : noEmailLabel);
+        nameCell.appendChild(name);
+        nameCell.appendChild(secondary);
+        tr.appendChild(nameCell);
+        var orgCell = document.createElement('td');
+        var orgPrimary = document.createElement('span');
+        orgPrimary.className = 'participant-name';
+        orgPrimary.textContent = row.organization || '–';
+        orgCell.appendChild(orgPrimary);
+        if (row.group) {
+          var groupTag = document.createElement('span');
+          groupTag.className = 'group-tag';
+          groupTag.textContent = row.group;
+          orgCell.appendChild(groupTag);
+        }
+        tr.appendChild(orgCell);
+        var rowConf;
+        if (row.kind === 'roster' && row.attendanceState === 'NotJoined') {
+          rowConf = confNotJoined;
+        } else if (row.kind === 'unmatched') {
+          rowConf = statusUnmatched;
+        } else {
+          var needsIdentityAttention = row.identityReviewStatus && row.identityReviewStatus !== 'none';
+          var confLabel = confLabels[row.confidence] || getConfidenceLabel(row.confidence);
+          var confClass = (row.confidence === 'Verified' || row.confidence === 'AliasVerified')
+            ? (needsIdentityAttention ? 'review' : 'verified')
+            : row.confidence === 'NameOnly'
+              ? (needsIdentityAttention ? 'review' : 'neutral')
+              : (row.confidence === 'Unmatched' ? 'neutral' : 'review');
+          rowConf = { label: confLabel, className: confClass };
+        }
+        appendPillCell(tr, rowConf, 'match-pill');
+        var joinedTime = cachedTime(row.lastJoinedAt);
+        appendTextCell(tr, joinedTime);
+        appendTextCell(tr, row.attendanceState === 'Left'
+          ? leftAtTpl.replace('{time}', cachedTime(row.lastLeftAt))
+          : (row.lastJoinedAt ? joinedAtTpl.replace('{time}', joinedTime) : '–'));
+        var connectionCell = document.createElement('td');
+        var connectionPill = document.createElement('span');
+        connectionPill.className = 'connection-pill' + (row.duplicate ? ' duplicate' : '');
+        connectionPill.textContent = row.connections.length ? connCountTpl.replace('{count}', row.connections.length) : '–';
+        connectionCell.appendChild(connectionPill);
+        tr.appendChild(connectionCell);
+        container.appendChild(tr);
+        if (isSelected) { container.appendChild(buildDetailRow(row)); }
+      }
+      if (container !== el.participantRows) { el.participantRows.appendChild(container); }
+    }
+    if (focus) { restoreParticipantFocus(focus); }
+    if (scrollTop) { window.requestAnimationFrame(function () { el.participantTableWrap.scrollTop = scrollTop; }); }
   }
 
   function toggleParticipant(key) {
@@ -2905,8 +3082,8 @@
       });
     }
 
-    // Translate elements with data-i18n
-    if (typeof document !== 'undefined') {
+    // Translate elements with data-i18n (skip redundant scan when default Korean markup is already loaded)
+    if (typeof document !== 'undefined' && !(opts.initial && target === 'ko')) {
       var i18nNodes = document.querySelectorAll('[data-i18n]');
       for (var i = 0; i < i18nNodes.length; i++) {
         var node = i18nNodes[i];
@@ -2921,7 +3098,7 @@
             var original = originalRichLabels.get(node);
             if (target === 'ko' && original) {
               node.replaceChildren.apply(node, original);
-            } else {
+            } else if (node.children.length > 0 || node.textContent !== translated) {
               node.textContent = translated;
             }
           }
@@ -2934,7 +3111,7 @@
         var pKey = pNode.getAttribute('data-i18n-placeholder');
         if (pKey) {
           var pText = t(pKey);
-          if (pText && pText !== pKey) {
+          if (pText && pText !== pKey && pNode.placeholder !== pText) {
             pNode.placeholder = pText;
           }
         }
@@ -2946,7 +3123,7 @@
         var aKey = aNode.getAttribute('data-i18n-aria');
         if (aKey) {
           var aText = t(aKey);
-          if (aText && aText !== aKey) {
+          if (aText && aText !== aKey && aNode.getAttribute('aria-label') !== aText) {
             aNode.setAttribute('aria-label', aText);
           }
         }
@@ -3067,6 +3244,9 @@
     el.sortButtons.forEach(function (button) {
       button.addEventListener('click', function () { applySort(button.dataset.sort); });
     });
+    if (el.participantRows) {
+      el.participantRows.addEventListener('click', onParticipantRowsClick);
+    }
     el.btnToggleTheme.addEventListener('click', toggleTheme);
     if (el.btnToggleLang) { el.btnToggleLang.addEventListener('click', toggleLanguage); }
     el.btnOpenSettings.addEventListener('click', openSettings);
@@ -3176,20 +3356,19 @@
   }
 
   function restoreState() {
-    var savedLang = readStore(STORAGE.lang, 'ko');
-    applyLanguage(savedLang, { persist: false, notify: false });
-    applyTheme(readStore(STORAGE.theme, 'system'), { persist: false, notify: false });
     el.meetingId.value = normalizeMeetingId(readStore(STORAGE.meetingId, ''));
     var savedInterval = parseInt(readStore(STORAGE.interval, '10'), 10);
     el.intervalInput.value = isNaN(savedInterval) ? '10' : String(Math.min(600, Math.max(5, savedInterval)));
     var auto = readStore(STORAGE.autoRefresh, '0') === '1';
     el.chkAutoRefresh.checked = auto;
     el.settingsAutoRefresh.checked = auto;
-    applyConnectionMode(readStore(STORAGE.connectionMode, 'auto'), { notify: false });
     state.group = normalizeGroupName(readStore(STORAGE.group, ''));
-    renderGroupOptions();
     var savedSort = readStore(STORAGE.sort, 'number');
     state.sort = SORT_KEYS.indexOf(savedSort) >= 0 ? savedSort : 'number';
+    var savedLang = readStore(STORAGE.lang, 'ko');
+    applyLanguage(savedLang, { persist: false, notify: false, initial: savedLang === 'ko' });
+    applyTheme(readStore(STORAGE.theme, 'system'), { persist: false, notify: false });
+    applyConnectionMode(readStore(STORAGE.connectionMode, 'auto'), { notify: false });
     syncSortButtons();
   }
 
@@ -3210,7 +3389,7 @@
     checkHealth();
     checkZoomConnection(false);
     loadRelaySettings();
-    loadRoster(false);
+    var initialRoster = loadRoster(false);
     /* 시작 시 상태만 읽는다. 실제 확인·다운로드는 백엔드가 자동으로 수행하므로 화면을 막지 않는다. */
     loadUpdateStatus({ silent: true });
     state.updatePollId = window.setInterval(function () {
@@ -3219,7 +3398,7 @@
       if (phase === 'unavailable' || phase === 'unsupported') { return; }
       loadUpdateStatus({ silent: true });
     }, 15000);
-    if (currentMeetingId()) { refreshBoard({ silent: true }); }
+    if (currentMeetingId()) { refreshBoard({ silent: true, waitFor: initialRoster }); }
     if (autoOpenTutorial) { window.setTimeout(function () { showTutorial(0); }, 250); }
   }
 
