@@ -1,0 +1,27 @@
+name: Spike - Zoom Plugin Probe (Windows)
+
+on:
+  push:
+    branches:
+      - spike/zoom-plugin
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-self-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Configure CMake (x64, contract stub)
+        run: cmake -S spikes/zoom-plugin -B build-spike -A x64
+
+      - name: Build Release
+        run: cmake --build build-spike --config Release
+
+      - name: Run self-test
+        run: .\build-spike\Release\zoomcheck-plugin-probe.exe --self-test
