@@ -22,6 +22,7 @@ ZoomCheck no realiza scraping de la ventana ni automatiza la interfaz gráfica d
 - **Detección de conexiones duplicadas**: Alerta cuando un mismo participante se conecta desde múltiples dispositivos.
 - **Exclusiones reversibles y revisión en reunión**: Exclusión diaria de ausentes justificados y asociación manual de conexiones desconocidas.
 - **Exportación a CSV**: Descarga rápida del estado final de asistencia con soporte de comisiones.
+- **Orden por número y copia del estado**: Columna de número de la lista con orden numérico, y copia en texto plano (o .txt) del estado de la reunión: conectados, ausentes por número y conexiones múltiples.
 - **Instalador autónomo para Windows**: No requiere instalación previa de .NET.
 - **Tema claro y oscuro**: Sincronización con las preferencias de Windows y personalización manual guardada en el equipo.
 - **Seguridad y privacidad local**: Servidor local exclusivo en `http://127.0.0.1:5078`; base de datos bajo `%LOCALAPPDATA%\ZoomCheck`.
