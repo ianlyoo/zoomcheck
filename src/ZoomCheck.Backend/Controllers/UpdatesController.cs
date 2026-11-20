@@ -19,6 +19,8 @@ public sealed class UpdatesController : ControllerBase
         _updateService = updateService;
     }
 
+    internal UpdateService UpdateService => _updateService;
+
     [HttpGet("status")]
     public ActionResult<UpdateStatusResponse> GetStatus()
         => Ok(_updateService.GetStatus());

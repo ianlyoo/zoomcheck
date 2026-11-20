@@ -23,6 +23,8 @@ public sealed class UpdateBackgroundService : BackgroundService
         _logger = logger;
     }
 
+    internal UpdateService UpdateService => _updateService;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!_options.Enabled || !_options.CheckOnStartup)

@@ -19,83 +19,70 @@ namespace ZoomCheck.Backend.Services;
 /// </summary>
 public sealed class UpdateService
 {
+    public const string HttpClientName = "UpdateService";
+
     // GitHub's REST payloads are snake_case (tag_name, browser_download_url, published_at).
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
     };
 
-    private readonly HttpClient _http;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly UpdateOptions _options;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<UpdateService> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string _downloadDirectory;
+    private readonly bool _supportedPlatform;
     private readonly object _stateLock = new();
 
     private UpdateState _state = UpdateState.Initial;
 
     public UpdateService(
-        HttpClient http,
+        IHttpClientFactory httpClientFactory,
         IOptions<UpdateOptions> options,
         IHostApplicationLifetime lifetime,
         TimeProvider timeProvider,
         ILogger<UpdateService> logger)
-        : this(http, options, lifetime, timeProvider, logger, downloadDirectory: null)
+        : this(httpClientFactory, options, lifetime, timeProvider, logger, downloadDirectory: null, supportedPlatform: null)
     {
     }
 
     internal UpdateService(
-        HttpClient http,
+        IHttpClientFactory httpClientFactory,
         IOptions<UpdateOptions> options,
         IHostApplicationLifetime lifetime,
         TimeProvider timeProvider,
         ILogger<UpdateService> logger,
-        string? downloadDirectory)
+        string? downloadDirectory,
+        bool? supportedPlatform = null)
     {
-        _http = http;
+        _httpClientFactory = httpClientFactory;
         _options = options.Value;
         _lifetime = lifetime;
         _timeProvider = timeProvider;
         _logger = logger;
         _downloadDirectory = downloadDirectory ?? DefaultDownloadDirectory();
-
-        if (Uri.TryCreate(_options.ApiBaseUrl, UriKind.Absolute, out var apiBase)
-            && apiBase.Scheme == Uri.UriSchemeHttps)
-        {
-            _http.BaseAddress = apiBase;
-        }
-
-        _http.Timeout = TimeSpan.FromSeconds(Math.Clamp(_options.RequestTimeoutSeconds, 5, 300));
-        // GitHub rejects API calls without a User-Agent.
-        if (_http.DefaultRequestHeaders.UserAgent.Count == 0)
-        {
-            _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue(
-                SanitizeProduct(_options.UserAgent),
-                CurrentVersion.ToString()));
-        }
-
-        _http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
-        if (!_http.DefaultRequestHeaders.Contains("X-GitHub-Api-Version"))
-        {
-            _http.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-        }
+        _supportedPlatform = supportedPlatform ?? OperatingSystem.IsWindows();
     }
 
     /// <summary>Version of the running build, from AssemblyInformationalVersion.</summary>
     public SemanticVersion CurrentVersion => ResolveCurrentVersion();
 
-    public bool SupportedPlatform => OperatingSystem.IsWindows();
+    public bool SupportedPlatform => _supportedPlatform;
 
     internal string DownloadDirectory => _downloadDirectory;
 
     public UpdateStatusResponse GetStatus()
     {
+        UpdateState snapshot;
         lock (_stateLock)
         {
-            return BuildStatus(_state);
+            snapshot = _state;
         }
+
+        return BuildStatus(snapshot);
     }
 
     /// <summary>
@@ -124,8 +111,9 @@ public sealed class UpdateService
             {
                 release = await FetchLatestEligibleReleaseAsync(manual, cancellationToken);
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException
-                                       or IOException or InvalidOperationException)
+            catch (Exception ex) when (ex is HttpRequestException or JsonException
+                                       or IOException or InvalidOperationException
+                                       || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
             {
                 // Update checks are best effort: a flaky network must not disturb attendance work.
                 _logger.LogWarning(ex, "Update check could not reach GitHub Releases.");
@@ -444,7 +432,8 @@ public sealed class UpdateService
         var pageSize = Math.Clamp(_options.ReleasePageSize, 1, 100);
         // The releases list is used instead of /releases/latest because the latter
         // hides prereleases, which the current rc line still needs.
-        using var response = await _http.GetAsync(
+        using var http = CreateHttpClient();
+        using var response = await http.GetAsync(
             string.Create(CultureInfo.InvariantCulture, $"repos/{repository}/releases?per_page={pageSize}"),
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken);
@@ -623,10 +612,11 @@ public sealed class UpdateService
             throw new InvalidOperationException("Release asset exceeds the configured size limit.");
         }
 
+        using var http = CreateHttpClient();
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.Accept.Clear();
         request.Headers.Accept.ParseAdd("application/octet-stream");
-        using var response = await _http.SendAsync(
+        using var response = await http.SendAsync(
             request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
 
@@ -746,13 +736,48 @@ public sealed class UpdateService
             Message: state.Message);
     }
 
+    private HttpClient CreateHttpClient()
+    {
+        var http = _httpClientFactory.CreateClient(HttpClientName);
+        if (Uri.TryCreate(_options.ApiBaseUrl, UriKind.Absolute, out var apiBase)
+            && apiBase.Scheme == Uri.UriSchemeHttps)
+        {
+            http.BaseAddress = apiBase;
+        }
+
+        http.Timeout = TimeSpan.FromSeconds(Math.Clamp(_options.RequestTimeoutSeconds, 5, 300));
+        // GitHub rejects API calls without a User-Agent.
+        if (http.DefaultRequestHeaders.UserAgent.Count == 0)
+        {
+            http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue(
+                SanitizeProduct(_options.UserAgent),
+                CurrentVersion.ToString()));
+        }
+
+        if (!http.DefaultRequestHeaders.Accept.Any(header =>
+                string.Equals(header.MediaType, "application/vnd.github+json", StringComparison.OrdinalIgnoreCase)))
+        {
+            http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        }
+
+        if (!http.DefaultRequestHeaders.Contains("X-GitHub-Api-Version"))
+        {
+            http.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+        }
+
+        return http;
+    }
+
     private UpdateStatusResponse Mutate(Func<UpdateState, UpdateState> transform)
     {
+        UpdateState updated;
         lock (_stateLock)
         {
             _state = transform(_state);
-            return BuildStatus(_state);
+            updated = _state;
         }
+
+        return BuildStatus(updated);
     }
 
     private void TryDelete(string path)
