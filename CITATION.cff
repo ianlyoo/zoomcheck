@@ -16,7 +16,6 @@ url: "https://github.com/ianlyoo/zoomcheck"
 homepage: "https://ianlyoo.github.io/zoomcheck/"
 keywords:
   - attendance
-  - avalonia
   - csharp
   - dashboard
   - developer-tools
