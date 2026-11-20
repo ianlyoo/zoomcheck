@@ -135,6 +135,7 @@
     readinessAction: null,
     sessionLog: [],
     alertAction: null,
+    lastSyncError: null,
     healthStatus: null,
     zoomApiStatus: null,
     zoomApiError: '',
@@ -359,6 +360,7 @@
   }
 
   function showAlert(kind, title, message, actionLabel, action) {
+    state.lastSyncError = null;
     if (el.alertDetails) { el.alertDetails.hidden = true; el.alertDetails.open = false; }
     el.alertBar.hidden = false;
     el.alertDot.className = 'status-dot ' + (kind || 'warn');
@@ -371,6 +373,7 @@
   function hideAlert() {
     el.alertBar.hidden = true;
     state.alertAction = null;
+    state.lastSyncError = null;
     el.alertAction.hidden = true;
   }
 
@@ -991,8 +994,7 @@
       markSync(false, ' Zoom 앱 동기화 실패');
       scheduleNextSync();
       showSyncError(error, 'zoomApp');
-      logSession('bad', 'Zoom 앱 동기화 실패', error.message);
-      if (!opts.silent) { toast('bad', 'Zoom 앱 동기화 실패', error.message); }
+      logSession('bad', t('sync_zoom_failed'), error.message);
       return null;
     });
   }
@@ -1238,7 +1240,8 @@
       message = t('sync_error_api'); label = t('readiness_api_action'); action = function () { openSettingsSection('mode'); };
     }
     showAlert('warn', t('sync_receive_failed'), message, label, action);
-    if (el.alertDetails) { el.alertDetails.hidden = false; setText(el.alertTechnical, error.message); }
+    state.lastSyncError = { error: error, mode: mode };
+    if (el.alertDetails) { el.alertDetails.hidden = false; el.alertDetails.open = false; setText(el.alertTechnical, error.message); }
   }
 
   function syncZoomParticipants(options) {
@@ -1276,7 +1279,6 @@
         });
       } else { showSyncError(error, 'business'); }
       logSession('bad', t('sync_zoom_failed'), error.message);
-      if (!opts.silent) { toast('bad', t('sync_zoom_failed'), error.message); }
       return null;
     });
   }
@@ -2959,6 +2961,9 @@
     renderThemeControls();
     renderRosterNote();
     renderRosterFeedback();
+    if (el.alertBar && !el.alertBar.hidden && state.lastSyncError) {
+      showSyncError(state.lastSyncError.error, state.lastSyncError.mode);
+    }
     renderUpdate();
     if (el.snapshotNames) { updateParsedCount(); }
     if (el.tutorialSteps.length) { renderTutorial(); }
