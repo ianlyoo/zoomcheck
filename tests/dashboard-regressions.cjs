@@ -1039,7 +1039,7 @@ test('status text follows the group scope: count, absentees by number, duplicate
     '회의 현황 · 회의 ID 111', h.buildStatusText().split('\n')[1], '',
     '전체 5명 중 1명 접속', '오늘 제외 1명 (집계 미포함)', '',
     '미참석 4명', '2번 학생002 (퇴장)', '3번 학생003', '10번 학생010', '학생099', '',
-    '중복 접속 1명', '1번 학생001 · 2건 연결'
+    '중복 접속 1명', '1번 학생001 · 2회 접속'
   ].join('\n'));
   assert.match(h.buildStatusText().split('\n')[1], /^2026-09-05 \d\d:30 기준$/);
   h.applyGroup('B');

@@ -385,7 +385,7 @@
     status_text_left_suffix: ' (퇴장)',
     status_text_duplicates: '중복 접속 {count}명',
     status_text_duplicates_none: '중복 접속 없음',
-    status_text_duplicate_line: '{person} · {count}건 연결',
+    status_text_duplicate_line: '{person} · {count}회 접속',
     status_copied_title: '현황을 복사했습니다',
     status_copied_note: '카카오톡이나 메모에 붙여 넣으세요. 같은 내용을 .txt 파일로도 저장할 수 있습니다.',
     status_copy_manual_title: '직접 복사하세요',
