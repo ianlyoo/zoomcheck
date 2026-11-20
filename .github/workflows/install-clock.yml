@@ -2,6 +2,11 @@ name: Install clock
 on:
   workflow_dispatch:
     inputs:
+      manual_probe:
+        description: Check the v0.6.3 manual update button response
+        type: boolean
+        required: false
+        default: false
       update_probe:
         description: Check the v0.6.3 portable app for a newer release
         type: boolean
@@ -12,7 +17,7 @@ permissions:
   contents: read
 jobs:
   stage-baseline:
-    if: ${{ !inputs.update_probe }}
+    if: ${{ !inputs.update_probe && !inputs.manual_probe }}
     runs-on: windows-latest
     steps:
       - name: Fetch v0.6.3 release assets
@@ -170,13 +175,14 @@ jobs:
             }
           }
   update-probe:
-    if: ${{ inputs.update_probe }}
+    if: ${{ inputs.update_probe || inputs.manual_probe }}
     runs-on: windows-latest
     timeout-minutes: 6
     steps:
       - name: Check v0.6.3 portable update status
         shell: pwsh
         env:
+          MANUAL_PROBE: ${{ inputs.manual_probe }}
           ZOOMCHECK_Update__Enabled: 'true'
           ZOOMCHECK_Update__CheckOnStartup: 'true'
           ZOOMCHECK_Update__AutomaticDownload: 'false'
@@ -197,6 +203,26 @@ jobs:
           $backendOut = Join-Path $env:RUNNER_TEMP 'zoomcheck-update-output.log'
           $backendErr = Join-Path $env:RUNNER_TEMP 'zoomcheck-update-error.log'
           Start-Process $exe.FullName -WorkingDirectory $exe.DirectoryName -RedirectStandardOutput $backendOut -RedirectStandardError $backendErr
+          if ($env:MANUAL_PROBE -eq 'true') {
+            $deadline = (Get-Date).AddSeconds(90)
+            $ready = $false
+            do {
+              try {
+                $health = Invoke-WebRequest 'http://127.0.0.1:5078/health' -TimeoutSec 3
+                if ($health.StatusCode -eq 200) { $ready = $true; break }
+              } catch { Start-Sleep -Milliseconds 250 }
+            } while ((Get-Date) -lt $deadline)
+            if (-not $ready) { throw 'Backend did not start.' }
+            $manual = Invoke-WebRequest 'http://127.0.0.1:5078/api/update/check' -Method POST -Headers @{Origin='http://127.0.0.1:5078'} -ContentType 'application/json' -Body '{}' -TimeoutSec 90
+            Write-Host "MANUAL_POST_JSON=$($manual.Content)"
+            $after = Invoke-WebRequest 'http://127.0.0.1:5078/api/update/status' -TimeoutSec 10
+            Write-Host "FOLLOWUP_GET_JSON=$($after.Content)"
+            $result = $manual.Content | ConvertFrom-Json
+            if ($result.downloadState -ne 'None' -or $result.installerReady) { throw 'Unexpected installer download or staged installer.' }
+            if ($result.currentVersion -eq '0.6.3' -and $result.latestVersion -eq '0.7.0' -and $result.availability -eq 'UpdateAvailable') { Write-Host 'MANUAL_RESULT=expected' }
+            else { Write-Host 'MANUAL_RESULT=unexpected'; }
+            exit 0
+          }
           $deadline = (Get-Date).AddSeconds(65)
           $status = $null; $raw = $null
           do {
