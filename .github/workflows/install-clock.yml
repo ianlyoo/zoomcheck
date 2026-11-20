@@ -2,6 +2,11 @@ name: Install clock
 on:
   workflow_dispatch:
     inputs:
+      ui_probe:
+        description: Exercise installed v0.6.3 update UI
+        type: boolean
+        required: false
+        default: false
       manual_probe:
         description: Check the v0.6.3 manual update button response
         type: boolean
@@ -17,7 +22,7 @@ permissions:
   contents: read
 jobs:
   stage-baseline:
-    if: ${{ !inputs.update_probe && !inputs.manual_probe }}
+    if: ${{ !inputs.update_probe && !inputs.manual_probe && !inputs.ui_probe }}
     runs-on: windows-latest
     steps:
       - name: Fetch v0.6.3 release assets
@@ -175,7 +180,7 @@ jobs:
             }
           }
   update-probe:
-    if: ${{ inputs.update_probe || inputs.manual_probe }}
+    if: ${{ (inputs.update_probe || inputs.manual_probe) && !inputs.ui_probe }}
     runs-on: windows-latest
     timeout-minutes: 6
     steps:
@@ -242,3 +247,43 @@ jobs:
           if ($status.currentVersion -ne '0.6.3' -or $status.latestVersion -ne '0.7.0') { Write-Host 'UPDATE_RESULT=unexpected-version'; exit 0 }
           if ($status.downloadState -ne 'None' -or $status.installerReady) { throw 'Unexpected installer download or staged installer.' }
           Write-Host 'UPDATE_RESULT=expected'
+  installed-update-ui:
+    if: ${{ inputs.ui_probe }}
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install released v0.6.3 and run the browser probe
+        shell: pwsh
+        env:
+          ZOOMCHECK_Dashboard__OpenBrowserOnStart: 'false'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3'
+          $installer = 'ZoomCheck-Setup-x64.exe'
+          Invoke-WebRequest "$base/$installer" -OutFile $installer
+          Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+          $expected = ((Get-Content SHA256SUMS.txt | Where-Object { $_ -match [regex]::Escape($installer) }) -split '\s+')[0]
+          if (-not $expected -or (Get-FileHash $installer -Algorithm SHA256).Hash -ne $expected) { throw 'v0.6.3 setup checksum mismatch' }
+          $p = Start-Process -FilePath (Resolve-Path $installer) -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -PassThru
+          $p.WaitForExit()
+          if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
+          $deadline = (Get-Date).AddMinutes(2)
+          $ready = $false
+          do {
+            try {
+              $health = Invoke-WebRequest 'http://127.0.0.1:5078/health' -TimeoutSec 3
+              if ($health.StatusCode -eq 200) { $ready = $true; break }
+            } catch { Start-Sleep -Milliseconds 250 }
+          } while ((Get-Date) -lt $deadline)
+          if (-not $ready) { throw 'Installed backend did not start.' }
+          python -m pip install playwright psutil
+          if ($LASTEXITCODE -ne 0) { throw 'Python dependencies failed' }
+          python .github/scripts/installed_update_probe.py
+          if ($LASTEXITCODE -ne 0) { throw "Browser probe failed: $LASTEXITCODE" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installed-update-ui-screenshots
+          path: update-ui-shots/
+          if-no-files-found: warn
