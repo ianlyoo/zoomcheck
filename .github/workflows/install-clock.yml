@@ -109,3 +109,56 @@ jobs:
               }
             }
           }
+  startup-diagnostic:
+    needs: compare
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 6465016ae79be278e384da7a34f8fad1a8f7922a
+          path: base-source
+      - uses: actions/checkout@v4
+        with:
+          ref: 30307869c52ed537dbf5e22f28727a968b7510db
+          path: main-source
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.424'
+      - name: Measure fresh SQLite initialization at the repository boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $project = @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+            <ItemGroup><ProjectReference Include="$(RepoRoot)/src/ZoomCheck.Infrastructure/ZoomCheck.Infrastructure.csproj" /></ItemGroup>
+          </Project>
+          '@
+          $program = @'
+          using System.Diagnostics;
+          using ZoomCheck.Infrastructure.Persistence;
+          var repo = new SqliteAttendanceRepository(args[0]);
+          var sw = Stopwatch.StartNew();
+          await repo.InitializeAsync();
+          sw.Stop();
+          Console.WriteLine($"INIT version={args[1]} round={args[2]} milliseconds={sw.Elapsed.TotalMilliseconds:F3} db_bytes={new FileInfo(args[0]).Length}");
+          '@
+          foreach ($v in @('base','main')) {
+            $p = Join-Path $env:RUNNER_TEMP "harness-$v"
+            New-Item -ItemType Directory -Path $p | Out-Null
+            Set-Content -Encoding utf8 (Join-Path $p 'Measure.csproj') $project
+            Set-Content -Encoding utf8 (Join-Path $p 'Program.cs') $program
+            $repo = Join-Path $env:GITHUB_WORKSPACE "$v-source"
+            dotnet build (Join-Path $p 'Measure.csproj') -c Release "-p:RepoRoot=$repo" --nologo --verbosity quiet
+            if ($LASTEXITCODE -ne 0) { throw "build failed for $v" }
+          }
+          for ($i=1; $i -le 10; $i++) {
+            $order = if ($i % 2) { @('base','main') } else { @('main','base') }
+            foreach ($v in $order) {
+              $dll = Join-Path $env:RUNNER_TEMP "harness-$v/bin/Release/net8.0/Measure.dll"
+              $database = Join-Path $env:RUNNER_TEMP "fresh-init-$v-$i.sqlite"
+              dotnet $dll $database $v $i
+              if ($LASTEXITCODE -ne 0) { throw "initialization failed for $v round $i" }
+            }
+          }
