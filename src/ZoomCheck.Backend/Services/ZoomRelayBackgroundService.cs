@@ -21,15 +21,15 @@ public sealed class ZoomRelayBackgroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_relay.IsConfigured)
-        {
-            return;
-        }
-
         var delay = TimeSpan.FromMilliseconds(Math.Clamp(_options.PollIntervalMilliseconds, 500, 10_000));
         using var timer = new PeriodicTimer(delay);
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
+            if (!_relay.IsConfigured)
+            {
+                continue;
+            }
+
             try
             {
                 await _relay.PollOnceAsync(stoppingToken);

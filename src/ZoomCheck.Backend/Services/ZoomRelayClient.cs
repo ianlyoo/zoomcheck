@@ -1,6 +1,10 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Authentication;
+using System.Text.Json;
 using Microsoft.Extensions.Options;
+using ZoomCheck.Backend.Contracts;
 using ZoomCheck.Backend.Options;
 using ZoomCheck.Relay.Contracts;
 
@@ -9,19 +13,135 @@ namespace ZoomCheck.Backend.Services;
 public sealed class ZoomRelayClient
 {
     private readonly HttpClient _http;
-    private readonly ZoomRelayOptions _options;
+    private readonly ZoomRelaySettingsStore _settings;
 
-    public ZoomRelayClient(HttpClient http, IOptions<ZoomRelayOptions> options)
+    public ZoomRelayClient(
+        HttpClient http,
+        IOptions<ZoomRelayOptions> options,
+        ZoomRelaySettingsStore settings)
     {
         _http = http;
-        _options = options.Value;
-        _http.Timeout = TimeSpan.FromSeconds(Math.Clamp(_options.RequestTimeoutSeconds, 3, 60));
+        _settings = settings;
+        _http.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.Value.RequestTimeoutSeconds, 3, 60));
     }
 
-    public bool IsConfigured => _options.Enabled && BaseUri() is not null;
+    public bool IsConfigured => BaseUri() is not null;
 
     public Uri? CompanionUrl()
         => BaseUri() is { } baseUri ? new Uri(baseUri, "zoom-app/") : null;
+
+    public async Task<ZoomRelayHealthResponse> CheckHealthAsync(
+        string? candidateBaseUrl,
+        CancellationToken cancellationToken)
+    {
+        Uri? baseUri;
+        if (string.IsNullOrWhiteSpace(candidateBaseUrl))
+        {
+            baseUri = BaseUri();
+            if (baseUri is null)
+            {
+                return new ZoomRelayHealthResponse(
+                    false,
+                    string.Empty,
+                    null,
+                    0,
+                    "not_configured",
+                    "Relay URL is not configured.");
+            }
+        }
+        else if (ZoomRelayOptions.TryNormalizeBaseUrl(candidateBaseUrl, out var normalized))
+        {
+            baseUri = new Uri(normalized);
+        }
+        else
+        {
+            return new ZoomRelayHealthResponse(
+                false,
+                candidateBaseUrl.Trim(),
+                null,
+                0,
+                "invalid_url",
+                "A clean HTTPS relay root URL is required.");
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(baseUri, "health"));
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            using var response = await _http.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var statusCode = (int)response.StatusCode;
+            if (!response.IsSuccessStatusCode)
+            {
+                return new ZoomRelayHealthResponse(
+                    false,
+                    baseUri.AbsoluteUri,
+                    statusCode,
+                    stopwatch.ElapsedMilliseconds,
+                    "http_error",
+                    $"Relay /health returned HTTP {statusCode}.");
+            }
+
+            try
+            {
+                var health = await response.Content.ReadFromJsonAsync<RelayHealthResponse>(
+                    cancellationToken: cancellationToken);
+                if (health is null
+                    || !string.Equals(health.Status, "ok", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new ZoomRelayHealthResponse(
+                        false,
+                        baseUri.AbsoluteUri,
+                        statusCode,
+                        stopwatch.ElapsedMilliseconds,
+                        "invalid_response",
+                        "Endpoint responded, but did not return a valid ZoomCheck relay /health payload.");
+                }
+
+                return new ZoomRelayHealthResponse(
+                    true,
+                    baseUri.AbsoluteUri,
+                    statusCode,
+                    stopwatch.ElapsedMilliseconds,
+                    null,
+                    "Relay /health responded OK.",
+                    health.ActiveSessions,
+                    health.MaxSessions);
+            }
+            catch (Exception ex) when (ex is JsonException or NotSupportedException)
+            {
+                return new ZoomRelayHealthResponse(
+                    false,
+                    baseUri.AbsoluteUri,
+                    statusCode,
+                    stopwatch.ElapsedMilliseconds,
+                    "invalid_response",
+                    "Endpoint responded, but did not return JSON from /health.");
+            }
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new ZoomRelayHealthResponse(
+                false,
+                baseUri.AbsoluteUri,
+                null,
+                stopwatch.ElapsedMilliseconds,
+                "timeout",
+                "Timed out waiting for the relay /health endpoint.");
+        }
+        catch (HttpRequestException ex)
+        {
+            var errorCode = ClassifyHttpError(ex);
+            return new ZoomRelayHealthResponse(
+                false,
+                baseUri.AbsoluteUri,
+                ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
+                stopwatch.ElapsedMilliseconds,
+                errorCode,
+                ex.Message);
+        }
+    }
 
     public async Task<CreatePairingResponse> RegisterAsync(
         CreatePairingRequest request,
@@ -87,13 +207,35 @@ public sealed class ZoomRelayClient
             ?? throw new ZoomRelayException("The ZoomCheck relay returned an empty response.");
     }
 
-    private Uri? BaseUri()
+    private Uri? BaseUri() => _settings.GetActiveBaseUri();
+
+    private static string ClassifyHttpError(HttpRequestException ex)
     {
-        if (!ZoomRelayOptions.TryNormalizeBaseUrl(_options.BaseUrl, out var value))
+        if (ex.HttpRequestError == HttpRequestError.NameResolutionError)
         {
-            return null;
+            return "dns_error";
         }
-        return new Uri(value);
+
+        if (ex.HttpRequestError == HttpRequestError.SecureConnectionError
+            || HasInnerException<AuthenticationException>(ex))
+        {
+            return "tls_error";
+        }
+
+        return "network_error";
+    }
+
+    private static bool HasInnerException<TException>(Exception ex) where TException : Exception
+    {
+        for (var current = ex.InnerException; current is not null; current = current.InnerException)
+        {
+            if (current is TException)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 

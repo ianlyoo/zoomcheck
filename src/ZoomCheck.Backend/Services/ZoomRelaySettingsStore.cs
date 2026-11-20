@@ -8,11 +8,12 @@ public sealed class ZoomRelaySettingsStore
 {
     public const string FileName = "appsettings.User.json";
     private readonly string _path;
-    private readonly string _activeBaseUrl;
-    private readonly bool _activeEnabled;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _stateLock = new();
-    private SavedRelaySettings? _saved;
+    private string _activeBaseUrl;
+    private bool _activeEnabled;
+
+    public event Action? Changed;
 
     public ZoomRelaySettingsStore(IHostEnvironment environment, IConfiguration configuration)
         : this(
@@ -30,7 +31,6 @@ public sealed class ZoomRelaySettingsStore
             ? value
             : string.Empty;
         _activeEnabled = activeEnabled;
-        _saved = ReadSavedSettings(path);
     }
 
     // An explicit choice in this PC's settings wins over the emergency environment
@@ -62,9 +62,18 @@ public sealed class ZoomRelaySettingsStore
         lock (_stateLock)
         {
             return (_activeEnabled && !string.IsNullOrEmpty(_activeBaseUrl),
-                _saved?.BaseUrl ?? _activeBaseUrl,
-                _saved is { } saved && (saved.Enabled != _activeEnabled
-                    || !string.Equals(_activeBaseUrl, saved.BaseUrl, StringComparison.OrdinalIgnoreCase)));
+                _activeBaseUrl,
+                false);
+        }
+    }
+
+    public Uri? GetActiveBaseUri()
+    {
+        lock (_stateLock)
+        {
+            return _activeEnabled && !string.IsNullOrEmpty(_activeBaseUrl)
+                ? new Uri(_activeBaseUrl)
+                : null;
         }
     }
 
@@ -76,6 +85,9 @@ public sealed class ZoomRelaySettingsStore
         {
             throw new ArgumentException("A clean HTTPS relay root URL is required.", nameof(baseUrl));
         }
+
+        bool changed;
+        (bool Configured, string BaseUrl, bool RestartRequired) snapshot;
 
         await _gate.WaitAsync(cancellationToken);
         try
@@ -105,14 +117,24 @@ public sealed class ZoomRelaySettingsStore
             File.Move(temporaryPath, _path, overwrite: true);
             lock (_stateLock)
             {
-                _saved = new SavedRelaySettings(normalized, true);
+                changed = !_activeEnabled
+                    || !string.Equals(_activeBaseUrl, normalized, StringComparison.OrdinalIgnoreCase);
+                _activeBaseUrl = normalized;
+                _activeEnabled = true;
+                snapshot = (true, _activeBaseUrl, false);
             }
-            return Get();
         }
         finally
         {
             _gate.Release();
         }
+
+        if (changed)
+        {
+            Changed?.Invoke();
+        }
+
+        return snapshot;
     }
 
     private static SavedRelaySettings? ReadSavedSettings(string path)

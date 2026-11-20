@@ -31,7 +31,7 @@ public sealed class ZoomLiveController : ControllerBase
     {
         var relay = _zoomRelay.GetStatus();
         var direct = _zoomAppBridge.GetStatus();
-        var zoomApp = relay.SessionActive || (_zoomRelay.IsConfigured && direct.HomeUrl is null) ? relay : direct;
+        var zoomApp = relay.SessionActive || (_zoomRelay.IsConfigured && !direct.SessionActive) ? relay : direct;
         var recommendedMode = zoomApp.SessionActive || _zoomRelay.IsConfigured
             ? "zoomApp"
             : _tokenService.IsConfigured ? "business" : "manual";
