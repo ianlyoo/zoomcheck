@@ -112,6 +112,7 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
     document, window,
     URL: { createObjectURL: blob => { saved.push(blob); return 'blob:in-memory'; }, revokeObjectURL() {} },
     Blob: class { constructor(parts, options) { this.parts = parts; this.type = options.type; } },
+    FormData: class { constructor() { this.entries = []; } append(...args) { this.entries.push(args); } },
     navigator: { clipboard },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     clearInterval: id => intervals.delete(id), setTimeout: window.setTimeout,
@@ -128,6 +129,7 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
       updateParsedCount, confidenceInfo, exportCsv, renderGroupOptions, applyGroup, installUpdate,
       loadRelaySettings, saveRelaySettings, createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy,
       applyLanguage, toggleLanguage, restoreState, t,
+      uploadRoster, renderRosterFeedback,
       applySort, buildStatusText, copyMeetingStatus, downloadStatusText };
   })();`);
   vm.runInContext(instrumented, context, { filename: 'app.js' });
@@ -1092,6 +1094,51 @@ test('copy status writes to the clipboard, falls back to a selected text box, an
   assert.equal(empty.el.btnCopyStatus.disabled, true);
 });
 
+test('connection status polls on one 5s schedule, skips hidden/overlapping ticks, refreshes active Zoom App sessions, and resumes on visibility', async () => {
+  const h = harness({ storage: new Map([['zoomcheck.tutorialSeen.v1', 'seen'], ['zoomcheck.meetingId', '111']]) });
+  h.init();
+
+  const statusTimers = [...h.intervals.values()].filter(timer => timer.delay === 5000 || timer.delay === 10000);
+  assert.equal(statusTimers.length, 1, 'only one connection-status interval is registered');
+  assert.equal(statusTimers[0].delay, 5000);
+  assert.equal(h.state.statusPollId, undefined);
+
+  // Drain initial load requests.
+  const initialCount = h.requests.length;
+  const poll = statusTimers[0];
+
+  // Overlapping tick while a status request is still in flight does not stack a second request.
+  poll.fn();
+  poll.fn();
+  const pollRequests = () => h.requests.slice(initialCount).filter(r => r.url === '/api/zoom/connection-status');
+  const boardRequests = () => h.requests.slice(initialCount).filter(r => r.url === '/api/meetings/111/board');
+  assert.equal(pollRequests().length, 1);
+
+  // Active Zoom App session triggers a silent board refresh after status resolves.
+  await respond(pollRequests()[0], { zoomApp: { sessionActive: true, connected: true, meetingId: '111' } });
+  assert.equal(boardRequests().length, 1);
+  await respond(boardRequests()[0], board('111'));
+
+  // Hidden tab pauses connection-status polling completely.
+  h.document.hidden = true;
+  poll.fn();
+  poll.fn();
+  assert.equal(pollRequests().length, 1);
+
+  // Returning to visible triggers an immediate check and restores 5s cadence (12 polls/min).
+  h.document.hidden = false;
+  h.document.dispatch('visibilitychange');
+  assert.equal(pollRequests().length, 2);
+  await respond(pollRequests()[1], { zoomApp: { sessionActive: false, connected: false } });
+  assert.equal(boardRequests().length, 1, 'inactive Zoom App session does not trigger board refresh');
+
+  for (let tick = 0; tick < 11; tick++) {
+    poll.fn();
+    await respond(pollRequests().at(-1), { zoomApp: { sessionActive: false, connected: false } });
+  }
+  assert.equal(pollRequests().length, 13, '12 polls across 60s plus visibility resume');
+});
+
 test('phone search matches phone numbers typed with or without hyphens', () => {
   const h = harness();
   h.state.roster = [
@@ -1225,4 +1272,126 @@ test('Korean 로/으로 particles choose the grammatically right suffix', () => 
 
   h.applyConnectionMode('business', { notify: true });
   assert.match(h.el.toastRegion.textContent, /Business API로 동기화합니다\./);
+});
+
+test('roster upload validation errors render inline in the roster panel without hidden toasts', async () => {
+  const h = harness();
+  await h.uploadRoster();
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.el.rosterFeedback.hidden, false);
+  assert.equal(h.el.rosterFeedback.classList.contains('is-bad'), true);
+  assert.equal(h.el.rosterFeedback.getAttribute('role'), 'alert');
+  assert.match(h.el.rosterFeedbackTitle.textContent, /명단 파일이 필요합니다/);
+  assert.equal(h.el.toastRegion.children.length, 0);
+
+  h.el.rosterFile.files = [{ name: 'roster.csv', size: 120 }];
+  await h.uploadRoster();
+  assert.equal(h.requests.length, 0);
+  assert.match(h.el.rosterFeedbackTitle.textContent, /지원하지 않는 파일 형식/);
+  assert.match(h.el.rosterFeedbackHint.textContent, /\.xlsx/);
+  assert.equal(h.el.toastRegion.children.length, 0);
+
+  h.el.rosterFile.files = [{ name: 'huge.xlsx', size: 25 * 1024 * 1024 }];
+  await h.uploadRoster();
+  assert.equal(h.requests.length, 0);
+  assert.match(h.el.rosterFeedbackTitle.textContent, /너무 큽니다/);
+  assert.equal(h.el.toastRegion.children.length, 0);
+
+  h.el.rosterFile.files = [{ name: 'fixed.xlsx', size: 128 }];
+  h.el.rosterFile.dispatch('change');
+  assert.equal(h.el.rosterFeedback.hidden, true);
+});
+
+test('roster upload server errors display inline in Korean and follow UI language switching', async () => {
+  const h = harness();
+  h.el.rosterFile.files = [{ name: 'bad-headers.xlsx', size: 128 }];
+  const missingHeaders = h.uploadRoster();
+  await respond(h.requests.at(-1), {
+    status: 400,
+    errorCode: 'ROSTER_MISSING_HEADERS',
+    messageKey: 'roster_err_missing_headers',
+    foundHeaders: ['순번코드', '참가자명'],
+    missingColumns: ['name', 'sequence']
+  }, 400);
+  await missingHeaders;
+  assert.equal(h.el.rosterFeedback.hidden, false);
+  assert.equal(h.el.rosterFeedback.classList.contains('is-bad'), true);
+  assert.match(h.el.rosterFeedbackTitle.textContent, /필수 열 머리글/);
+  assert.match(h.el.rosterFeedbackList.textContent, /찾은 머리글: 순번코드, 참가자명/);
+  assert.match(h.el.rosterFeedbackHint.textContent, /필요한 머리글/);
+  assert.equal(h.el.toastRegion.children.length, 0);
+
+  h.applyLanguage('en');
+  assert.match(h.el.rosterFeedbackTitle.textContent, /Required column headers not found/);
+  assert.match(h.el.rosterFeedbackList.textContent, /Headers found: 순번코드, 참가자명/);
+
+  h.applyLanguage('es');
+  assert.match(h.el.rosterFeedbackTitle.textContent, /No se encontraron los encabezados obligatorios/);
+  assert.match(h.el.rosterFeedbackList.textContent, /Encabezados encontrados: 순번코드, 참가자명/);
+
+  h.applyLanguage('ko');
+  for (const [errorCode, messageKey, expected] of [
+    ['ROSTER_NOT_EXCEL', 'roster_err_not_excel', /Excel 파일이 아닙니다/],
+    ['ROSTER_EMPTY_SHEET', 'roster_err_empty_sheet', /시트가 비어 있습니다/],
+    ['ROSTER_NO_ROWS', 'roster_err_no_rows', /등록할 사람이 없습니다/]
+  ]) {
+    const attempt = h.uploadRoster();
+    await respond(h.requests.at(-1), { status: 400, errorCode, messageKey }, 400);
+    await attempt;
+    assert.match(h.el.rosterFeedbackTitle.textContent, expected);
+    assert.equal(h.el.toastRegion.children.length, 0);
+  }
+});
+
+test('roster upload reports duplicate numbers inline with row numbers and translates on language switch', async () => {
+  const h = harness();
+  h.el.rosterFile.files = [{ name: 'roster-duplicates.xlsx', size: 512 }];
+  const upload = h.uploadRoster();
+  await respond(h.requests.at(-1), {
+    displayName: 'roster-duplicates.xlsx',
+    count: 32,
+    warnings: {
+      duplicateNumbers: [
+        { sequence: '5', count: 2, names: ['학생005'], rowNumbers: [6, 32] }
+      ]
+    }
+  }, 200);
+  const followUps = h.requests.slice(1);
+  await respond(followUps.find(r => r.url === '/api/roster'), []);
+  await respond(followUps.find(r => r.url.includes('/board')), board('111'));
+  await upload;
+
+  assert.equal(h.el.rosterFeedback.hidden, false);
+  assert.equal(h.el.rosterFeedback.classList.contains('is-warn'), true);
+  assert.equal(h.el.rosterFeedback.getAttribute('role'), 'status');
+  assert.match(h.el.rosterFeedbackTitle.textContent, /32명 등록됨 · 같은 번호 1개/);
+  assert.match(h.el.rosterFeedbackList.textContent, /같은 번호 2건 \(5번 학생005\) · 6, 32행/);
+  assert.equal(h.el.toastRegion.children.length, 0);
+
+  h.applyLanguage('en');
+  assert.match(h.el.rosterFeedbackList.textContent, /2 rows with #5 \(학생005\) · rows 6, 32/);
+
+  h.applyLanguage('es');
+  assert.match(h.el.rosterFeedbackList.textContent, /2 filas con N\.º 5 \(학생005\) · filas 6, 32/);
+});
+
+test('roster upload clean success renders inline confirmation without warnings', async () => {
+  const h = harness();
+  h.el.rosterFile.files = [{ name: 'roster-valid.xlsx', size: 512 }];
+  const upload = h.uploadRoster();
+  await respond(h.requests.at(-1), {
+    displayName: 'roster-valid.xlsx',
+    count: 30,
+    warnings: { duplicateNumbers: [] }
+  }, 200);
+  const followUps = h.requests.slice(1);
+  await respond(followUps.find(r => r.url === '/api/roster'), []);
+  await respond(followUps.find(r => r.url.includes('/board')), board('111'));
+  await upload;
+
+  assert.equal(h.el.rosterFeedback.hidden, false);
+  assert.equal(h.el.rosterFeedback.classList.contains('is-ok'), true);
+  assert.match(h.el.rosterFeedbackTitle.textContent, /명단을 불러왔습니다/);
+  assert.match(h.el.rosterFeedbackMessage.textContent, /roster-valid\.xlsx에서 30명을 등록했습니다/);
+  assert.equal(h.el.rosterFeedbackList.hidden, true);
 });
