@@ -2,6 +2,11 @@ name: Install clock
 on:
   workflow_dispatch:
     inputs:
+      first_setup:
+        description: Measure v0.6.3 vs v0.7.0 end-to-end first setup
+        type: boolean
+        required: false
+        default: false
       ui_probe:
         description: Exercise installed v0.6.3 update UI
         type: boolean
@@ -22,7 +27,7 @@ permissions:
   contents: read
 jobs:
   stage-baseline:
-    if: ${{ !inputs.update_probe && !inputs.manual_probe && !inputs.ui_probe }}
+    if: ${{ !inputs.first_setup && !inputs.update_probe && !inputs.manual_probe && !inputs.ui_probe }}
     runs-on: windows-latest
     steps:
       - name: Fetch v0.6.3 release assets
@@ -286,4 +291,68 @@ jobs:
         with:
           name: installed-update-ui-screenshots
           path: update-ui-shots/
+          if-no-files-found: warn
+  first-setup-clock:
+    if: ${{ inputs.first_setup }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.6.3
+          path: relay-v0.6.3
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.7.0
+          path: relay-v0.7.0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build local relays, trust localhost dev cert, and stage release installers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($tag in @('v0.6.3', 'v0.7.0')) {
+            $csproj = Join-Path $env:GITHUB_WORKSPACE "relay-$tag/src/ZoomCheck.Relay/ZoomCheck.Relay.csproj"
+            dotnet build $csproj -c Release --nologo --verbosity quiet
+            if ($LASTEXITCODE -ne 0) { throw "Relay build failed for $tag" }
+          }
+          $cert = New-SelfSignedCertificate `
+            -DnsName 'localhost','127.0.0.1' `
+            -FriendlyName 'ZoomCheck Local Relay' `
+            -CertStoreLocation 'Cert:\LocalMachine\My' `
+            -NotAfter (Get-Date).AddDays(2) `
+            -KeyUsage DigitalSignature,KeyEncipherment `
+            -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1')
+          $cerPath = Join-Path $env:RUNNER_TEMP 'zoomcheck-relay-localhost.cer'
+          Export-Certificate -Cert $cert -FilePath $cerPath | Out-Null
+          Import-Certificate -FilePath $cerPath -CertStoreLocation 'Cert:\LocalMachine\Root' | Out-Null
+          Write-Host "DEV_CERT_THUMBPRINT=$($cert.Thumbprint)"
+          foreach ($tag in @('v0.6.3', 'v0.7.0')) {
+            $dir = Join-Path $env:RUNNER_TEMP "installers\$tag"
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            $base = "https://github.com/ianlyoo/zoomcheck/releases/download/$tag"
+            $exe = Join-Path $dir 'ZoomCheck-Setup-x64.exe'
+            $sums = Join-Path $dir 'SHA256SUMS.txt'
+            Invoke-WebRequest "$base/ZoomCheck-Setup-x64.exe" -OutFile $exe
+            Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile $sums
+            $expected = ((Get-Content $sums | Where-Object { $_ -match [regex]::Escape('ZoomCheck-Setup-x64.exe') }) -split '\s+')[0]
+            $actual = (Get-FileHash $exe -Algorithm SHA256).Hash
+            if (-not $expected -or $actual -ne $expected) { throw "Checksum mismatch for $tag" }
+            Write-Host "STAGED_INSTALLER version=$tag bytes=$((Get-Item $exe).Length) sha256=$actual"
+          }
+      - name: Run 5 alternating end-to-end first-setup rounds
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --quiet playwright psutil
+          if ($LASTEXITCODE -ne 0) { throw 'Python dependencies failed' }
+          python .github/scripts/first_setup_clock.py
+          if ($LASTEXITCODE -ne 0) { throw "First-setup clock failed: $LASTEXITCODE" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: first-setup-screenshots
+          path: first-setup-shots/
           if-no-files-found: warn
