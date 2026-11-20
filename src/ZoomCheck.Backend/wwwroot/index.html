@@ -106,6 +106,7 @@
           <div class="panel-actions">
             <button type="button" class="btn secondary compact" id="btn-refresh" data-i18n="reload_saved_state">저장된 현황 다시 읽기</button>
             <button type="button" class="btn secondary compact" id="btn-export" data-i18n="export_csv">CSV 내보내기</button>
+            <button type="button" class="btn secondary compact" id="btn-copy-status" data-i18n="btn_copy_status" disabled>현황 복사</button>
           </div>
         </div>
 
@@ -142,8 +143,9 @@
             <caption class="vh" data-i18n="table_caption">명단 및 Zoom 참가자 목록. 행을 선택하면 상세 연결 정보가 표시됩니다.</caption>
             <thead>
               <tr>
+                <th scope="col" aria-sort="ascending"><button type="button" class="sort-button" data-sort="number"><span data-i18n="th_number">번호</span></button></th>
                 <th scope="col" data-i18n="th_status">상태</th>
-                <th scope="col" data-i18n="th_name">이름</th>
+                <th scope="col"><button type="button" class="sort-button" data-sort="name"><span data-i18n="th_name">이름</span></button></th>
                 <th scope="col" data-i18n="th_organization">소속</th>
                 <th scope="col" data-i18n="th_match">매칭</th>
                 <th scope="col" data-i18n="th_joined">입장</th>
@@ -437,6 +439,15 @@
     <div class="button-row">
       <button type="button" class="btn secondary" id="btn-confirm-cancel" data-i18n="confirm_cancel">취소</button>
       <button type="button" class="btn primary" id="btn-confirm-apply" data-i18n="confirm_apply">확인하고 적용</button>
+    </div>
+  </dialog>
+  <dialog class="action-confirm status-text-dialog" id="status-text-dialog" aria-labelledby="status-text-title" aria-describedby="status-text-note">
+    <h2 id="status-text-title" data-i18n="status_copied_title">현황을 복사했습니다</h2>
+    <p id="status-text-note"></p>
+    <textarea id="status-text" readonly rows="14" spellcheck="false" aria-labelledby="status-text-title"></textarea>
+    <div class="button-row">
+      <button type="button" class="btn secondary" id="btn-status-download" data-i18n="status_download">.txt로 저장</button>
+      <button type="button" class="btn primary" id="btn-status-close" data-i18n="status_close">닫기</button>
     </div>
   </dialog>
   <div class="toast-region" id="toast-region" aria-live="polite"></div>

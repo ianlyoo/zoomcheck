@@ -56,12 +56,15 @@ class Element {
   focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
   setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   scrollIntoView() { this.scrolledIntoView = true; }
+  click() { this.clicked = true; }
+  remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this); }
   showModal() { this.open = true; }
   close(value = '') { this.returnValue = value; this.open = false; this.dispatch('close'); }
 }
 
-function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSeen.v1', 'seen']]) } = {}) {
+function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSeen.v1', 'seen']]), clipboard } = {}) {
   const elements = new Map();
+  const saved = [];
   const requests = [];
   const intervals = new Map();
   const timeouts = new Map();
@@ -69,7 +72,7 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
   let timerId = 0;
   const document = {
     readyState: 'loading', hidden: false,
-    documentElement: new Element(), activeElement: { tagName: 'BODY' },
+    documentElement: new Element(), body: new Element('body'), activeElement: { tagName: 'BODY' },
     getElementById(id) {
       if (!elements.has(id)) {
         const element = new Element('div', document);
@@ -84,11 +87,15 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
       return elements.get(id);
     },
     createElement: tag => new Element(tag, document),
-    querySelectorAll: selector => selector === '[data-filter]' ? filters : [],
+    querySelectorAll: selector => selector === '[data-filter]' ? filters : selector === '[data-sort]' ? sortButtons : [],
     addEventListener() {}
   };
   const filters = ['all', 'present', 'absent', 'review', 'unmatched', 'excluded'].map(filter => {
     const node = new Element('button', document); node.dataset.filter = filter; return node;
+  });
+  const sortButtons = ['number', 'name'].map(key => {
+    const header = new Element('th', document); const button = new Element('button', document);
+    button.dataset.sort = key; header.appendChild(button); return button;
   });
   const window = {
     confirm(message) { confirmations.push(message); return true; },
@@ -98,7 +105,9 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
   };
   const context = vm.createContext({
     document, window,
-    URL: { createObjectURL: () => 'blob:in-memory', revokeObjectURL() {} },
+    URL: { createObjectURL: blob => { saved.push(blob); return 'blob:in-memory'; }, revokeObjectURL() {} },
+    Blob: class { constructor(parts, options) { this.parts = parts; this.type = options.type; } },
+    navigator: { clipboard },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     clearInterval: id => intervals.delete(id), setTimeout: window.setTimeout,
     fetch: (url, options) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject }))
@@ -113,7 +122,8 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
       renderFreshness, renderReadiness, renderModeControls, applyAutoRefresh, applyConnectionMode,
       updateParsedCount, confidenceInfo, exportCsv, renderGroupOptions, applyGroup, installUpdate,
       loadRelaySettings, saveRelaySettings, createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy,
-      applyLanguage, toggleLanguage, restoreState, t };
+      applyLanguage, toggleLanguage, restoreState, t,
+      applySort, buildStatusText, copyMeetingStatus, downloadStatusText };
   })();`);
   vm.runInContext(instrumented, context, { filename: 'app.js' });
   const dashboard = context.dashboard;
@@ -122,7 +132,7 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
   dashboard.el.meetingId.value = '111';
   dashboard.el.intervalInput.value = '10';
   dashboard.el.snapshotNames.value = 'Alice';
-  return { ...dashboard, document, window, requests, intervals, timeouts, confirmations, filters };
+  return { ...dashboard, document, window, requests, intervals, timeouts, confirmations, filters, sortButtons, saved };
 }
 
 const drain = () => new Promise(resolve => setImmediate(resolve));
@@ -982,4 +992,97 @@ test('language preference is restored in a fresh dashboard session', () => {
   assert.equal(next.document.documentElement.lang, 'es');
   assert.equal(next.el.btnToggleLang.textContent, 'ES');
   assert.equal(next.el.btnSyncZoom.textContent, 'Sincronizar ahora');
+});
+
+function rosterBoard() {
+  return {
+    ...board('111'), lastReceivedAt: '2026-09-05T01:30:00Z',
+    people: [
+      { rosterPersonId: 'p10', sequence: '10', name: '학생010', group: 'A', attendanceState: 'NotJoined', confidence: 'Unmatched' },
+      { rosterPersonId: 'p2', sequence: '2', name: '학생002', group: 'A', attendanceState: 'Left', confidence: 'Verified' },
+      { rosterPersonId: 'px', sequence: '', name: '학생099', group: 'A', attendanceState: 'NotJoined', confidence: 'Unmatched' },
+      { rosterPersonId: 'p1', sequence: '1', name: '학생001', group: 'A', attendanceState: 'Present', confidence: 'Verified' },
+      { rosterPersonId: 'p3', sequence: '3', name: '학생003', group: 'B', attendanceState: 'NotJoined', confidence: 'Unmatched' },
+      { rosterPersonId: 'p4', sequence: '4', name: '학생004', group: 'A', attendanceState: 'NotJoined', confidence: 'Verified', isExcluded: true }
+    ],
+    currentConnections: [
+      { presenceKey: 'p1-a', source: 'zoom-app', displayName: '학생001', matchedRosterPersonId: 'p1' },
+      { presenceKey: 'p1-b', source: 'zoom-app', displayName: '학생001 폰', matchedRosterPersonId: 'p1' }
+    ],
+    unmatchedParticipants: [{ participantName: '손님', attendanceState: 'Present' }],
+    duplicateConnectionGroups: [{ rosterPersonId: 'p1', rosterPersonName: '학생001', connectionCount: 2,
+      connections: [{ presenceKey: 'p1-a', displayName: '학생001' }, { presenceKey: 'p1-b', displayName: '학생001 폰' }] }]
+  };
+}
+const rowKeys = h => h.el.participantRows.children.filter(row => row.className.includes('participant-row')).map(row => row.dataset.key);
+
+test('participants sort by roster number in numeric order with numberless rows last, and the choice persists', () => {
+  const storage = new Map([['zoomcheck.tutorialSeen.v1', 'seen']]);
+  const h = harness({ storage }); h.restoreState(); select(h, '111'); h.renderBoard(rosterBoard());
+  assert.deepEqual(rowKeys(h), ['roster:p1', 'roster:p2', 'roster:p3', 'roster:p10', 'roster:px', 'unmatched:손님']);
+  assert.equal(h.el.participantRows.children[0].children[0].textContent, '1');
+  assert.equal(h.sortButtons[0].parentNode.getAttribute('aria-sort'), 'ascending');
+  h.sortButtons[1].dispatch('click');
+  assert.deepEqual(rowKeys(h), ['unmatched:손님', 'roster:p1', 'roster:p2', 'roster:p3', 'roster:p10', 'roster:px']);
+  assert.equal(h.sortButtons[1].parentNode.getAttribute('aria-sort'), 'ascending');
+  assert.equal(h.sortButtons[0].parentNode.getAttribute('aria-sort'), null);
+  assert.equal(storage.get('zoomcheck.participantSort'), 'name');
+
+  const next = harness({ storage }); next.restoreState(); select(next, '111'); next.renderBoard(rosterBoard());
+  assert.equal(next.state.sort, 'name');
+  assert.equal(next.sortButtons[1].parentNode.getAttribute('aria-sort'), 'ascending');
+});
+
+test('status text follows the group scope: count, absentees by number, duplicate connections', () => {
+  const h = harness(); h.renderBoard(rosterBoard());
+  assert.equal(h.buildStatusText(), [
+    '회의 현황 · 회의 ID 111', h.buildStatusText().split('\n')[1], '',
+    '전체 5명 중 1명 접속', '오늘 제외 1명 (집계 미포함)', '',
+    '미참석 4명', '2번 학생002 (퇴장)', '3번 학생003', '10번 학생010', '학생099', '',
+    '중복 접속 1명', '1번 학생001 · 2회 접속'
+  ].join('\n'));
+  assert.match(h.buildStatusText().split('\n')[1], /^2026-09-05 \d\d:30 기준$/);
+  h.applyGroup('B');
+  const groupB = h.buildStatusText().split('\n');
+  assert.match(groupB[1], / · B 그룹$/);
+  assert.deepEqual(groupB.slice(3), ['전체 1명 중 0명 접속', '', '미참석 1명', '3번 학생003', '', '중복 접속 없음']);
+  h.applyGroup('A'); h.applyLanguage('en');
+  assert.deepEqual(h.buildStatusText().split('\n').slice(3), [
+    '1 of 4 connected', 'Excluded today: 1 (not counted)', '',
+    'Not connected: 3', '#2 학생002 (left)', '#10 학생010', '학생099', '',
+    'Connected more than once: 1', '#1 학생001 · 2 connections'
+  ]);
+  assert.doesNotMatch(h.buildStatusText(), /[|*#]{2}|[─│┌]/);
+});
+
+test('copy status writes to the clipboard, falls back to a selected text box, and saves the same text as .txt', async () => {
+  const written = [];
+  const h = harness({ clipboard: { writeText: text => { written.push(text); return Promise.resolve(); } } });
+  h.renderBoard(rosterBoard()); h.applyGroup('A');
+  assert.equal(h.el.btnCopyStatus.disabled, false);
+  h.el.btnCopyStatus.dispatch('click'); await drain();
+  assert.equal(written[0], h.buildStatusText());
+  assert.equal(h.el.statusTextDialog.open, true);
+  assert.equal(h.el.statusTextTitle.textContent, '현황을 복사했습니다');
+  assert.equal(h.el.statusText.value, written[0]);
+  h.el.btnStatusDownload.dispatch('click');
+  const file = h.saved[0];
+  assert.equal(file.type, 'text/plain;charset=utf-8');
+  assert.equal(file.parts[0], '﻿' + written[0].replace(/\n/g, '\r\n'));
+  assert.match(h.el.toastRegion.textContent, /111-A-status-\d{8}-\d{4}\.txt/);
+  assert.equal(h.document.body.children.length, 0);
+  h.el.btnStatusClose.dispatch('click');
+  assert.equal(h.el.statusTextDialog.open, false);
+  assert.equal(h.document.activeElement, h.el.btnCopyStatus);
+
+  const refused = harness({ clipboard: { writeText: () => Promise.reject(new Error('NotAllowedError')) } });
+  refused.renderBoard(rosterBoard()); await refused.copyMeetingStatus();
+  assert.equal(refused.el.statusTextTitle.textContent, '직접 복사하세요');
+  assert.equal(refused.document.activeElement, refused.el.statusText);
+  assert.equal(refused.el.statusText.selectionEnd, refused.el.statusText.value.length);
+  const missing = harness(); missing.renderBoard(rosterBoard()); await missing.copyMeetingStatus();
+  assert.equal(missing.el.statusTextTitle.textContent, '직접 복사하세요');
+
+  const empty = harness(); empty.renderBoard({ ...board('111'), people: [] });
+  assert.equal(empty.el.btnCopyStatus.disabled, true);
 });

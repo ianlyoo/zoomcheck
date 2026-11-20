@@ -10,11 +10,13 @@
     group: 'zoomcheck.groupFilter',
     theme: 'zoomcheck.theme',
     tutorialSeen: 'zoomcheck.tutorialSeen.v1',
-    lang: 'zoomcheck.lang'
+    lang: 'zoomcheck.lang',
+    sort: 'zoomcheck.participantSort'
   };
   var SUPPORTED_LANGS = ['ko', 'en', 'es'];
   var CONNECTION_MODES = ['auto', 'business', 'zoomApp', 'manual'];
   var THEME_OPTIONS = ['system', 'light', 'dark'];
+  var SORT_KEYS = ['number', 'name'];
   var MODE_LABEL = {
     auto: '자동',
     business: 'Business API',
@@ -81,6 +83,7 @@
     connections: [],
     duplicates: [],
     filter: 'all',
+    sort: 'number',
     group: '',
     groups: [],
     selectedKey: null,
@@ -1170,6 +1173,22 @@
     }
   }
 
+  /* 지표, 표 머리글, 현황 복사 글이 같은 집계를 쓰도록 한 곳에서 계산한다. */
+  function scopedSummary() {
+    var allScoped = scopedRows();
+    var scoped = allScoped.filter(function (row) { return !row.isExcluded; });
+    var rosterScoped = scoped.filter(function (row) { return row.kind === 'roster'; });
+    return {
+      allScoped: allScoped,
+      scoped: scoped,
+      excluded: allScoped.filter(function (row) { return row.isExcluded; }),
+      rosterScoped: rosterScoped,
+      present: rosterScoped.filter(function (row) { return row.attendanceState === 'Present'; }),
+      absent: rosterScoped.filter(function (row) { return row.attendanceState !== 'Present'; }),
+      duplicates: scopedDuplicates(rosterScoped)
+    };
+  }
+
   function renderBoard(board) {
     if (!board || typeof board !== 'object') { return; }
     if (board.meetingId && normalizeMeetingId(board.meetingId) !== currentMeetingId()) { return; }
@@ -1181,15 +1200,16 @@
     state.groups = collectGroups(board);
     renderGroupOptions();
 
-    var allScoped = scopedRows();
-    var excluded = allScoped.filter(function (row) { return row.isExcluded; });
-    var scoped = allScoped.filter(function (row) { return !row.isExcluded; });
-    var rosterScoped = scoped.filter(function (row) { return row.kind === 'roster'; });
-    var present = rosterScoped.filter(function (row) { return row.attendanceState === 'Present'; });
-    var absent = rosterScoped.filter(function (row) { return row.attendanceState !== 'Present'; });
+    var summary = scopedSummary();
+    var allScoped = summary.allScoped;
+    var excluded = summary.excluded;
+    var scoped = summary.scoped;
+    var rosterScoped = summary.rosterScoped;
+    var present = summary.present;
+    var absent = summary.absent;
     var review = scoped.filter(function (row) { return row.review; });
     var unmatched = scoped.filter(function (row) { return row.kind === 'unmatched'; });
-    var duplicates = scopedDuplicates(rosterScoped);
+    var duplicates = summary.duplicates;
     var connectionCount = scopedConnectionCount(rosterScoped);
     var total = rosterScoped.length;
     var rate = total ? Math.round((present.length / total) * 100) : 0;
@@ -1212,6 +1232,7 @@
     setText(el.btnExport, t('export_group_label', { group: state.group || t('group_all_scope'), count: total }));
     setText(el.exportScope, t('export_group_scope', { group: state.group || t('group_all_scope') }));
     el.btnExport.disabled = !currentMeetingId() || total === 0;
+    el.btnCopyStatus.disabled = el.btnExport.disabled;
 
     setText(el.countAll, scoped.length);
     setText(el.countPresent, scoped.filter(function (row) { return row.attendanceState === 'Present'; }).length);
@@ -1241,6 +1262,35 @@
     var connectionNames = row.connections.map(function (item) { return item.rawName + ' ' + item.canonicalName + ' ' + (item.email || ''); }).join(' ');
     var haystack = [row.name, row.email, row.organization, row.group, row.phone, digitsOnly(row.phone), connectionNames].join(' ');
     return normalizeSearch(haystack).indexOf(query) >= 0;
+  }
+
+  /* 번호는 숫자 순서(2 다음 10), 번호가 없는 행(미매칭 등)은 기존 순서대로 맨 뒤에 둔다. */
+  function sortRows(rows, key) {
+    var collator = new Intl.Collator(state.lang, { numeric: true, sensitivity: 'base' });
+    function bySequence(left, right) {
+      var a = String(left.sequence || '').trim();
+      var b = String(right.sequence || '').trim();
+      if (!a || !b) { return (a ? 0 : 1) - (b ? 0 : 1); }
+      return collator.compare(a, b);
+    }
+    function byName(left, right) { return collator.compare(left.name || '', right.name || ''); }
+    var compare = (key || state.sort) === 'name'
+      ? function (left, right) { return byName(left, right) || bySequence(left, right); }
+      : bySequence;
+    return rows.slice().sort(compare);
+  }
+  function applySort(key) {
+    state.sort = SORT_KEYS.indexOf(key) >= 0 ? key : 'number';
+    writeStore(STORAGE.sort, state.sort);
+    el.participantTableWrap.scrollTop = 0;
+    syncSortButtons(); renderParticipants();
+  }
+  function syncSortButtons() {
+    el.sortButtons.forEach(function (button) {
+      var header = button.closest('th');
+      if (button.dataset.sort === state.sort) { header.setAttribute('aria-sort', 'ascending'); }
+      else { header.removeAttribute('aria-sort'); }
+    });
   }
 
   function statusInfo(row) {
@@ -1280,7 +1330,7 @@
   function renderParticipants() {
     var scrollTop = el.participantTableWrap.scrollTop;
     var focus = captureParticipantFocus();
-    var rows = scopedRows().filter(rowMatchesFilter).filter(rowMatchesSearch);
+    var rows = sortRows(scopedRows().filter(rowMatchesFilter).filter(rowMatchesSearch));
     el.participantRows.textContent = '';
     el.participantsEmpty.hidden = rows.length > 0;
     setText(el.visibleCount, t('visible_count', { count: rows.length }));
@@ -1292,6 +1342,7 @@
       var tr = document.createElement('tr');
       tr.className = 'participant-row' + (row.key === state.selectedKey ? ' is-selected' : '') + (row.kind === 'unmatched' ? ' is-unmatched' : '');
       tr.dataset.key = row.key;
+      appendTextCell(tr, row.sequence, 'participant-number');
       appendPillCell(tr, statusInfo(row));
       var nameCell = document.createElement('td');
       var name = document.createElement('button');
@@ -1568,7 +1619,7 @@
     var tr = document.createElement('tr');
     tr.className = 'detail-row';
     var td = document.createElement('td');
-    td.colSpan = 7;
+    td.colSpan = 8;
     var detail = document.createElement('div');
     detail.className = 'participant-detail';
     var scope = meetingScope();
@@ -1787,17 +1838,89 @@
       return response.blob();
     }).then(function (blob) {
       endBusy(busy);
-      var url = URL.createObjectURL(blob);
-      var link = document.createElement('a');
-      link.href = url;
-      link.download = group
-        ? meetingId + '-' + group.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') + '-attendance.csv'
-        : meetingId + '-attendance.csv';
-      document.body.appendChild(link);
-      link.click(); link.remove();
-      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-      toast('ok', t('export_csv_started'), link.download);
+      var fileName = scopedFileName(meetingId, group, 'attendance.csv');
+      saveBlob(blob, fileName);
+      toast('ok', t('export_csv_started'), fileName);
     }, function (error) { endBusy(busy); toast('bad', t('export_csv_failed'), error.message); });
+  }
+
+  function scopedFileName(meetingId, group, suffix) {
+    return group
+      ? meetingId + '-' + group.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') + '-' + suffix
+      : meetingId + '-' + suffix;
+  }
+  function saveBlob(blob, fileName) {
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click(); link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  /* 카카오톡·메모에 붙여 넣을 회의 현황. 화면 지표와 같은 집계(선택 그룹, 오늘 제외 반영)를 쓴다. */
+  function buildStatusText() {
+    var board = state.board || {};
+    var summary = scopedSummary();
+    var rosterRows = {};
+    summary.rosterScoped.forEach(function (row) { rosterRows[row.rosterPersonId] = row; });
+    function personLine(sequence, name) {
+      return sequence ? t('status_text_person', { number: sequence, name: name }) : name;
+    }
+    var asOf = formatDateTime(board.lastReceivedAt || board.generatedAt || new Date()).slice(0, 16);
+    var lines = [t('status_text_title', { meetingId: currentMeetingId() }),
+      t('status_text_as_of', { time: asOf }) + (state.group ? ' · ' + t('status_text_group', { group: state.group }) : ''),
+      '',
+      t('status_text_connected', { total: summary.rosterScoped.length, present: summary.present.length })];
+    if (summary.excluded.length) { lines.push(t('status_text_excluded', { count: summary.excluded.length })); }
+    lines.push('');
+    if (summary.absent.length) {
+      lines.push(t('status_text_absent', { count: summary.absent.length }));
+      sortRows(summary.absent, 'number').forEach(function (row) {
+        lines.push(personLine(row.sequence, row.name) + (row.attendanceState === 'Left' ? t('status_text_left_suffix') : ''));
+      });
+    } else {
+      lines.push(t('status_text_absent_none'));
+    }
+    lines.push('');
+    if (summary.duplicates.length) {
+      lines.push(t('status_text_duplicates', { count: summary.duplicates.length }));
+      sortRows(summary.duplicates.map(function (group) {
+        var row = rosterRows[group.rosterPersonId] || {};
+        return { sequence: row.sequence, name: row.name || group.personName, count: group.connections.length };
+      }), 'number').forEach(function (item) {
+        lines.push(t('status_text_duplicate_line', { person: personLine(item.sequence, item.name), count: item.count }));
+      });
+    } else {
+      lines.push(t('status_text_duplicates_none'));
+    }
+    return lines.join('\n');
+  }
+
+  /* 클립보드를 쓸 수 있으면 복사 완료를, 막히면 같은 글을 선택해 둔 상자를 보여 준다. */
+  function copyMeetingStatus() {
+    if (!state.board) { return Promise.resolve(); }
+    var text = buildStatusText();
+    el.statusText.value = text;
+    var clipboard = typeof navigator !== 'undefined' && navigator.clipboard;
+    var written = clipboard && clipboard.writeText ? clipboard.writeText(text) : Promise.reject(new Error('clipboard unavailable'));
+    return written.then(function () { showStatusDialog(true); }, function () { showStatusDialog(false); });
+  }
+  function showStatusDialog(copied) {
+    setText(el.statusTextTitle, t(copied ? 'status_copied_title' : 'status_copy_manual_title'));
+    setText(el.statusTextNote, t(copied ? 'status_copied_note' : 'status_copy_manual_note'));
+    if (!el.statusTextDialog.open) { el.statusTextDialog.showModal(); }
+    if (copied) { el.btnStatusClose.focus(); }
+    else { el.statusText.focus(); el.statusText.setSelectionRange(0, el.statusText.value.length); }
+    el.statusText.scrollTop = 0;
+  }
+  function downloadStatusText() {
+    var now = new Date();
+    var stamp = now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '-' + pad(now.getHours()) + pad(now.getMinutes());
+    var fileName = scopedFileName(currentMeetingId(), state.group, 'status-' + stamp + '.txt');
+    saveBlob(new Blob(['\ufeff' + el.statusText.value.replace(/\n/g, '\r\n')], { type: 'text/plain;charset=utf-8' }), fileName);
+    toast('ok', t('status_download_started'), fileName);
   }
 
   function parseNames(raw) {
@@ -2414,7 +2537,7 @@
       'action-confirm','action-confirm-message','btn-confirm-cancel','btn-confirm-apply',
       'btn-sync-zoom','btn-toggle-lang','btn-toggle-theme','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
       'summary-total','summary-present','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
-      'participants-meta','btn-refresh','btn-export','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
+      'participants-meta','btn-refresh','btn-export','btn-copy-status','status-text-dialog','status-text-title','status-text-note','status-text','btn-status-download','btn-status-close','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
       'count-all','count-present','count-absent','count-review','count-unmatched','activity-feed','activity-empty','activity-count',
       'duplicate-list','duplicate-empty','duplicate-count','sync-summary','roster-summary','settings-dialog','roster-file','btn-upload-roster',
       'btn-reload-roster','roster-note','api-settings-status','btn-check-zoom','settings-autorefresh','autorefresh-interval','snapshot-names',
@@ -2431,6 +2554,7 @@
       el[key] = $(id);
     });
     el.filterButtons = Array.prototype.slice.call(document.querySelectorAll('[data-filter]'));
+    el.sortButtons = Array.prototype.slice.call(document.querySelectorAll('[data-sort]'));
     el.tutorialSteps = Array.prototype.slice.call(document.querySelectorAll('[data-tutorial-step]'));
     el.tutorialProgressButtons = Array.prototype.slice.call(document.querySelectorAll('#tutorial-progress [role="tab"]'));
     el.modeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="connection-mode"]'));
@@ -2467,6 +2591,13 @@
     el.btnSyncZoom.addEventListener('click', function () { syncNow({ silent: false }); });
     el.btnRefresh.addEventListener('click', function () { refreshBoard({ notify: true }); });
     el.btnExport.addEventListener('click', exportCsv);
+    el.btnCopyStatus.addEventListener('click', copyMeetingStatus);
+    el.btnStatusDownload.addEventListener('click', downloadStatusText);
+    el.btnStatusClose.addEventListener('click', function () { el.statusTextDialog.close(); });
+    el.statusTextDialog.addEventListener('close', function () { el.btnCopyStatus.focus(); });
+    el.sortButtons.forEach(function (button) {
+      button.addEventListener('click', function () { applySort(button.dataset.sort); });
+    });
     el.btnToggleTheme.addEventListener('click', toggleTheme);
     if (el.btnToggleLang) { el.btnToggleLang.addEventListener('click', toggleLanguage); }
     el.btnOpenSettings.addEventListener('click', openSettings);
@@ -2545,7 +2676,7 @@
     el.alertAction.addEventListener('click', function () { if (state.alertAction) { state.alertAction(); } });
     el.btnDismissAlert.addEventListener('click', hideAlert);
     document.addEventListener('keydown', function (event) {
-      if (el.actionConfirm.open) { return; }
+      if (el.actionConfirm.open || el.statusTextDialog.open) { return; }
       if (el.tutorialDialog.open && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
         event.preventDefault(); moveTutorial(event.key === 'ArrowRight' ? 1 : -1); return;
       }
@@ -2569,6 +2700,9 @@
     applyConnectionMode(readStore(STORAGE.connectionMode, 'auto'), { notify: false });
     state.group = normalizeGroupName(readStore(STORAGE.group, ''));
     renderGroupOptions();
+    var savedSort = readStore(STORAGE.sort, 'number');
+    state.sort = SORT_KEYS.indexOf(savedSort) >= 0 ? savedSort : 'number';
+    syncSortButtons();
   }
 
   function init() {

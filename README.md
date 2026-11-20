@@ -23,6 +23,7 @@ ZoomCheck does not scrape the participant panel or automate Zoom UI. Business ac
 - Reversible daily attendance exclusions, meeting-scoped identity/duplicate review, and manual matching of unknown connections
 - Explicit host/co-host action to apply a uniquely confirmed canonical name in the live Zoom meeting
 - CSV export, manual full-list fallback, responsive local dashboard
+- Roster-number column and sort; one-click meeting status copy (connected count, absentees by number, multiple connections) as plain text or .txt
 - Self-contained Windows installer and portable ZIP; no separate .NET install
 - Startup update checks and verified downloads with one-click install/restart in the dashboard
 - Six-step first-run guide with skip and reopen controls
