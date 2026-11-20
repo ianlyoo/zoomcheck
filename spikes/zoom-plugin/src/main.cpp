@@ -9,10 +9,10 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -119,6 +119,27 @@ std::string UrlEncode(const std::string& value) {
     return oss.str();
 }
 
+std::string UrlDecode(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '%' && i + 2 < value.size()) {
+            unsigned int hex_val = 0;
+            std::istringstream iss(value.substr(i + 1, 2));
+            if (iss >> std::hex >> hex_val) {
+                out.push_back(static_cast<char>(hex_val));
+                i += 2;
+                continue;
+            }
+        } else if (value[i] == '+') {
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(value[i]);
+    }
+    return out;
+}
+
 std::optional<std::string> ExtractQueryParam(const std::string& request_target, const std::string& key) {
     auto qpos = request_target.find('?');
     if (qpos == std::string::npos) return std::nullopt;
@@ -127,7 +148,7 @@ std::optional<std::string> ExtractQueryParam(const std::string& request_target, 
     while (std::getline(iss, pair, '&')) {
         auto eq = pair.find('=');
         if (eq != std::string::npos && pair.substr(0, eq) == key) {
-            return pair.substr(eq + 1);
+            return UrlDecode(pair.substr(eq + 1));
         }
     }
     return std::nullopt;
@@ -150,7 +171,7 @@ struct LoopbackServer {
             Close();
             return false;
         }
-        if (listen(listen_sock, 1) == SOCKET_ERROR) {
+        if (listen(listen_sock, 4) == SOCKET_ERROR) {
             Close();
             return false;
         }
@@ -165,50 +186,69 @@ struct LoopbackServer {
     }
 
     std::optional<std::string> WaitForAuthorizationCode(const std::string& expected_state, int timeout_seconds) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(listen_sock, &read_fds);
-        timeval tv{};
-        tv.tv_sec = timeout_seconds;
-        tv.tv_usec = 0;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto rem = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+            if (rem.count() <= 0) break;
 
-        int ready = select(0, &read_fds, nullptr, nullptr, &tv);
-        if (ready <= 0) return std::nullopt;
+            fd_set read_fds;
+            FD_ZERO(&read_fds);
+            FD_SET(listen_sock, &read_fds);
+            timeval tv{};
+            tv.tv_sec = static_cast<long>(std::min<long long>(rem.count() / 1000, 1));
+            tv.tv_usec = 200000;
 
-        SOCKET client = accept(listen_sock, nullptr, nullptr);
-        if (client == INVALID_SOCKET) return std::nullopt;
+            int ready = select(0, &read_fds, nullptr, nullptr, &tv);
+            if (ready <= 0) continue;
 
-        char buf[4096] = {};
-        int received = recv(client, buf, sizeof(buf) - 1, 0);
-        std::string req(received > 0 ? buf : "");
+            SOCKET client = accept(listen_sock, nullptr, nullptr);
+            if (client == INVALID_SOCKET) continue;
 
-        std::string target;
-        auto line_end = req.find("\r\n");
-        if (line_end != std::string::npos) {
-            std::istringstream line(req.substr(0, line_end));
-            std::string method;
-            line >> method >> target;
+            char buf[4096] = {};
+            int received = recv(client, buf, sizeof(buf) - 1, 0);
+            std::string req(received > 0 ? buf : "");
+
+            std::string target;
+            auto line_end = req.find("\r\n");
+            if (line_end != std::string::npos) {
+                std::istringstream line(req.substr(0, line_end));
+                std::string method;
+                line >> method >> target;
+            }
+
+            if (target.rfind("/callback", 0) != 0) {
+                const char* nf = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                send(client, nf, static_cast<int>(std::strlen(nf)), 0);
+                closesocket(client);
+                continue;
+            }
+
+            auto err = ExtractQueryParam(target, "error");
+            auto state = ExtractQueryParam(target, "state");
+            auto code = ExtractQueryParam(target, "code");
+            bool valid = !err.has_value() && state.has_value() && *state == expected_state && code.has_value() && !code->empty();
+
+            const char* body = valid
+                ? "<html><body><h3>ZoomCheck connected.</h3><p>You can close this window.</p></body></html>"
+                : "<html><body><h3>Authorization failed.</h3></body></html>";
+            std::ostringstream resp;
+            resp << (valid ? "HTTP/1.1 200 OK\r\n" : "HTTP/1.1 400 Bad Request\r\n")
+                 << "Content-Type: text/html; charset=utf-8\r\n"
+                 << "Connection: close\r\n"
+                 << "Content-Length: " << std::strlen(body) << "\r\n\r\n"
+                 << body;
+            std::string resp_str = resp.str();
+            send(client, resp_str.data(), static_cast<int>(resp_str.size()), 0);
+            closesocket(client);
+            Close();
+
+            if (err.has_value()) {
+                std::cerr << "[oauth] Zoom returned error=" << *err << "\n";
+            }
+            return valid ? code : std::nullopt;
         }
-
-        auto state = ExtractQueryParam(target, "state");
-        auto code = ExtractQueryParam(target, "code");
-        bool valid = state.has_value() && *state == expected_state && code.has_value() && !code->empty();
-
-        const char* body = valid
-            ? "<html><body><h3>ZoomCheck connected.</h3><p>You can close this window.</p></body></html>"
-            : "<html><body><h3>Authorization failed.</h3></body></html>";
-        std::ostringstream resp;
-        resp << (valid ? "HTTP/1.1 200 OK\r\n" : "HTTP/1.1 400 Bad Request\r\n")
-             << "Content-Type: text/html; charset=utf-8\r\n"
-             << "Connection: close\r\n"
-             << "Content-Length: " << std::strlen(body) << "\r\n\r\n"
-             << body;
-        std::string resp_str = resp.str();
-        send(client, resp_str.data(), static_cast<int>(resp_str.size()), 0);
-        closesocket(client);
         Close();
-
-        return valid ? code : std::nullopt;
+        return std::nullopt;
     }
 
     void Close() {
@@ -254,7 +294,7 @@ std::optional<std::string> ExchangePublicPkceToken(
         "&redirect_uri=" + UrlEncode(redirect_uri) +
         "&code_verifier=" + UrlEncode(code_verifier);
 
-    HINTERNET session = WinHttpOpen(L"ZoomCheck-Plugin-Probe/0.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0);
+    HINTERNET session = WinHttpOpen(L"ZoomCheck-Plugin-Probe/0.2", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0);
     if (!session) return std::nullopt;
     HINTERNET connect = WinHttpConnect(session, L"zoom.us", INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (!connect) {
@@ -298,8 +338,16 @@ std::optional<std::string> ExchangePublicPkceToken(
     WinHttpCloseHandle(session);
 
     if (status_code != 200) {
-        std::cerr << "[oauth] token exchange failed with HTTP " << status_code << "\n";
+        auto err = ExtractJsonStringField(response_body, "reason");
+        std::cerr << "[oauth] token exchange failed with HTTP " << status_code
+                  << (err ? (" (" + *err + ")") : "") << "\n";
         return std::nullopt;
+    }
+    auto scope = ExtractJsonStringField(response_body, "scope");
+    if (scope) {
+        std::cout << "[oauth] token exchange succeeded, granted scope=\"" << *scope << "\"\n" << std::flush;
+    } else {
+        std::cout << "[oauth] token exchange succeeded\n" << std::flush;
     }
     return ExtractJsonStringField(response_body, "access_token");
 }
@@ -309,12 +357,21 @@ struct CapturedParticipant {
     std::string display_name;
     bool is_host = false;
     bool is_myself = false;
+    bool is_attendee = false;
+    bool in_waiting_room = false;
+    std::string role = "Unknown";
 };
 
-std::string FormatSnapshotJson(const std::string& meeting_num, const std::vector<CapturedParticipant>& participants) {
+std::string FormatSnapshotJson(
+    const std::string& meeting_num,
+    const std::string& meeting_topic,
+    int meeting_status,
+    const std::vector<CapturedParticipant>& participants) {
     std::ostringstream oss;
     oss << "{\n"
         << "  \"meetingId\": \"" << JsonEscape(meeting_num) << "\",\n"
+        << "  \"meetingTopic\": \"" << JsonEscape(meeting_topic) << "\",\n"
+        << "  \"meetingStatus\": " << meeting_status << ",\n"
         << "  \"source\": \"zoom-plugin-sdk\",\n"
         << "  \"participantNames\": [";
     for (size_t i = 0; i < participants.size(); ++i) {
@@ -326,10 +383,14 @@ std::string FormatSnapshotJson(const std::string& meeting_num, const std::vector
     for (size_t i = 0; i < participants.size(); ++i) {
         const auto& p = participants[i];
         oss << "    {\"presenceKey\": \"plugin:" << p.user_id << "\", "
+            << "\"userId\": " << p.user_id << ", "
             << "\"displayName\": \"" << JsonEscape(p.display_name) << "\", "
             << "\"email\": null, "
             << "\"isHost\": " << (p.is_host ? "true" : "false") << ", "
-            << "\"isMyself\": " << (p.is_myself ? "true" : "false") << "}";
+            << "\"isMyself\": " << (p.is_myself ? "true" : "false") << ", "
+            << "\"isAttendee\": " << (p.is_attendee ? "true" : "false") << ", "
+            << "\"inWaitingRoom\": " << (p.in_waiting_room ? "true" : "false") << ", "
+            << "\"role\": \"" << JsonEscape(p.role) << "\"}";
         if (i + 1 < participants.size()) oss << ",";
         oss << "\n";
     }
@@ -358,6 +419,17 @@ const char* IpcStatusName(ZMToolSuiteIPCConnectStatus s) {
     }
 }
 
+const char* UserActionName(ZMToolSuiteUserAction a) {
+    switch (a) {
+        case USER_ACTION_NO_ACTION: return "NO_ACTION";
+        case USER_ACTION_SYNC_ALL: return "SYNC_ALL";
+        case USER_ACTION_ADD_USER: return "ADD_USER";
+        case USER_ACTION_LEFT_USER: return "LEFT_USER";
+        case USER_ACTION_UPDATE_USER: return "UPDATE_USER";
+        default: return "UNKNOWN";
+    }
+}
+
 const char* UserRoleName(ZMToolSuiteUserRole role) {
     switch (role) {
         case ZMToolSuiteUserRole_Host: return "Host";
@@ -369,56 +441,71 @@ const char* UserRoleName(ZMToolSuiteUserRole role) {
     }
 }
 
+template <typename Pred>
+bool PumpWaitUntil(int timeout_ms, Pred pred) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (pred()) return true;
+        MSG msg{};
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (pred()) return true;
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 25, QS_ALLINPUT);
+    }
+    return pred();
+}
+
 class ProbeListener final : public IZMToolSuiteProxyListener {
 public:
     std::mutex mu;
-    std::condition_variable cv;
     bool auth_done = false;
     ZMToolSuiteProxyAuthResult auth_result = AUTH_RESULT_FAILED;
     bool ipc_connected = false;
-    bool user_event_received = false;
+    int user_event_count = 0;
     ZMToolSuiteMeetingStatus last_meeting_status = MEETING_STATUS_IDLE;
 
     void OnAuthResult(ZMToolSuiteProxyAuthResult eResult) override {
-        std::cout << "[sdk] OnAuthResult: " << AuthResultName(eResult) << "\n";
-        {
-            std::lock_guard<std::mutex> lock(mu);
-            auth_done = true;
-            auth_result = eResult;
-        }
-        cv.notify_all();
+        std::cout << "[sdk] OnAuthResult: " << AuthResultName(eResult) << "\n" << std::flush;
+        std::lock_guard<std::mutex> lock(mu);
+        auth_done = true;
+        auth_result = eResult;
     }
 
     void OnIPCConnectStatusChanged(ZMToolSuiteIPCConnectStatus eStatus, std::string errorMessage) override {
         std::cout << "[sdk] OnIPCConnectStatusChanged: " << IpcStatusName(eStatus);
         if (!errorMessage.empty()) std::cout << " (" << errorMessage << ")";
-        std::cout << "\n";
-        {
-            std::lock_guard<std::mutex> lock(mu);
-            ipc_connected = (eStatus == IPC_STATUS_CONNECTED);
-        }
-        cv.notify_all();
+        std::cout << "\n" << std::flush;
+        std::lock_guard<std::mutex> lock(mu);
+        ipc_connected = (eStatus == IPC_STATUS_CONNECTED);
     }
 
     void OnMeetingStatusChanged(ZMToolSuiteProxy::ZMToolSuiteMeetingStatus status) override {
-        std::cout << "[sdk] OnMeetingStatusChanged: " << static_cast<int>(status) << "\n";
-        {
-            std::lock_guard<std::mutex> lock(mu);
-            last_meeting_status = status;
-        }
-        cv.notify_all();
+        std::cout << "[sdk] OnMeetingStatusChanged: " << static_cast<int>(status) << "\n" << std::flush;
+        std::lock_guard<std::mutex> lock(mu);
+        last_meeting_status = status;
     }
 
     void OnUserStatusChanged(ZMToolSuiteUserList vUserList, ZMToolSuiteMeetingInstance eInstance) override {
         int count = vUserList.vUserList ? vUserList.vUserList->GetCount() : 0;
-        std::cout << "[sdk] OnUserStatusChanged: action=" << static_cast<int>(vUserList.eUserAction)
+        std::cout << "[sdk] OnUserStatusChanged: action=" << UserActionName(vUserList.eUserAction)
+                  << " err=" << static_cast<int>(vUserList.error_code)
                   << " instance=" << static_cast<int>(eInstance)
                   << " count=" << count << "\n";
-        {
-            std::lock_guard<std::mutex> lock(mu);
-            user_event_received = true;
+        if (vUserList.vUserList) {
+            for (int i = 0; i < count; ++i) {
+                ZMToolSuiteUser u = vUserList.vUserList->GetItem(i);
+                std::cout << "  -> userID=" << u.iUserID
+                          << " name=\"" << WideToUtf8(u.strUserName) << "\""
+                          << " bHost=" << (u.bHost ? "true" : "false")
+                          << " bMyself=" << (u.bMyself ? "true" : "false")
+                          << " bInWaitingRoom=" << (u.bInWaitingRoom ? "true" : "false") << "\n";
+            }
         }
-        cv.notify_all();
+        std::cout << std::flush;
+        std::lock_guard<std::mutex> lock(mu);
+        user_event_count++;
     }
 
     void OnMeetingShareOptionsChanged(ZMToolSuiteShareOptions&) override {}
@@ -450,7 +537,59 @@ public:
     void OnFullScreenStatusChange(bool, ZMToolSuitMonitorType, ZMToolSuiteMeetingInstance) override {}
 };
 
-int RunPluginSession(const std::wstring& access_token, int wait_seconds) {
+struct ProbeOptions {
+    int wait_seconds = 20;
+    int watch_seconds = 0;
+    std::string out_json_path;
+    std::string rename_match;
+    std::string rename_to;
+};
+
+std::vector<CapturedParticipant> CaptureParticipants(
+    meeting::IMeetingToolkit* meeting_api,
+    meeting::IParticipantsToolkit* participants_api) {
+    std::vector<CapturedParticipant> captured;
+    IToolSuiteVector<ZMToolSuiteUser>* list = meeting_api->GetParticipantsList();
+    if (!list) return captured;
+    int count = list->GetCount();
+    captured.reserve(static_cast<size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        ZMToolSuiteUser u = list->GetItem(i);
+        CapturedParticipant cp;
+        cp.user_id = u.iUserID;
+        cp.display_name = WideToUtf8(u.strUserName);
+        cp.is_host = u.bHost;
+        cp.is_myself = u.bMyself;
+        cp.is_attendee = u.bAttendee;
+        cp.in_waiting_room = u.bInWaitingRoom;
+        if (participants_api) {
+            std::atomic<bool> done{false};
+            std::string role_name = "Unknown";
+            participants_api->GetUserRoleByUserID(u.iUserID, [&](const GetUserRoleByUserIDResult& r) {
+                if (r.error_code == kZMToolSuiteProxyErrorsSuccess) {
+                    role_name = UserRoleName(r.role);
+                } else {
+                    role_name = "Err:" + std::to_string(static_cast<int>(r.error_code));
+                }
+                done.store(true);
+            });
+            PumpWaitUntil(500, [&] { return done.load(); });
+            cp.role = role_name;
+        }
+        captured.push_back(std::move(cp));
+    }
+    return captured;
+}
+
+void WriteOutJson(const std::string& path, const std::string& json) {
+    if (path.empty()) return;
+    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    if (ofs) {
+        ofs << json << "\n";
+    }
+}
+
+int RunPluginSession(const std::wstring& access_token, const ProbeOptions& opts) {
     ProbeListener listener;
     InitZMToolSuite();
 
@@ -465,23 +604,30 @@ int RunPluginSession(const std::wstring& access_token, int wait_seconds) {
     }
     SetToolSuiteProxyListener(&listener);
 
+    PumpWaitUntil(opts.wait_seconds * 1000, [&] {
+        std::lock_guard<std::mutex> lock(listener.mu);
+        return listener.auth_done && listener.ipc_connected;
+    });
+
+    bool auth_ok = false;
+    bool ipc_ok = false;
+    ZMToolSuiteProxyAuthResult auth_res = AUTH_RESULT_FAILED;
     {
-        std::unique_lock<std::mutex> lock(listener.mu);
-        listener.cv.wait_for(lock, std::chrono::seconds(wait_seconds), [&] {
-            return listener.auth_done && listener.ipc_connected;
-        });
+        std::lock_guard<std::mutex> lock(listener.mu);
+        auth_ok = listener.auth_done && listener.auth_result == AUTH_RESULT_SUCCESS;
+        ipc_ok = listener.ipc_connected;
+        auth_res = listener.auth_result;
     }
 
-    if (!listener.auth_done || listener.auth_result != AUTH_RESULT_SUCCESS) {
-        std::cerr << "[sdk] Auth did not succeed (done=" << listener.auth_done
-                  << ", result=" << AuthResultName(listener.auth_result) << ")\n";
+    if (!auth_ok) {
+        std::cerr << "[sdk] Auth did not succeed (result=" << AuthResultName(auth_res) << ")\n";
         SetToolSuiteProxyListener(nullptr);
         UninitZMToolSuite();
         return 3;
     }
 
-    if (!listener.ipc_connected) {
-        std::cerr << "[sdk] IPC did not connect within " << wait_seconds << "s\n";
+    if (!ipc_ok) {
+        std::cerr << "[sdk] IPC did not connect within " << opts.wait_seconds << "s\n";
         SetToolSuiteProxyListener(nullptr);
         UninitZMToolSuite();
         return 4;
@@ -496,48 +642,105 @@ int RunPluginSession(const std::wstring& access_token, int wait_seconds) {
         return 5;
     }
 
-    ZMToolSuiteMeetingStatus status = meeting_api->GetMeetingStatus();
-    std::cout << "[sdk] Current GetMeetingStatus(): " << static_cast<int>(status) << "\n";
-    if (status != MEETING_STATUS_INMEETING) {
-        std::cout << "[sdk] Waiting up to " << wait_seconds << "s for MEETING_STATUS_INMEETING...\n";
-        std::unique_lock<std::mutex> lock(listener.mu);
-        listener.cv.wait_for(lock, std::chrono::seconds(wait_seconds), [&] {
-            return listener.last_meeting_status == MEETING_STATUS_INMEETING ||
-                   meeting_api->GetMeetingStatus() == MEETING_STATUS_INMEETING;
+    ZMToolSuiteMeetingStatus initial_status = meeting_api->GetMeetingStatus();
+    std::cout << "[sdk] Immediate GetMeetingStatus() after IPC connect: " << static_cast<int>(initial_status) << "\n" << std::flush;
+    if (initial_status != MEETING_STATUS_INMEETING) {
+        std::cout << "[sdk] Waiting up to " << opts.wait_seconds << "s for MEETING_STATUS_INMEETING...\n" << std::flush;
+        PumpWaitUntil(opts.wait_seconds * 1000, [&] {
+            return meeting_api->GetMeetingStatus() == MEETING_STATUS_INMEETING;
         });
     }
 
+    ZMToolSuiteMeetingStatus cur_status = meeting_api->GetMeetingStatus();
     ZMToolSuiteGetMeetingProperty prop = meeting_api->GetMeetingProperty();
     std::string meeting_num = WideToUtf8(prop.strCurrentMeetingNum);
     std::string meeting_topic = WideToUtf8(prop.strMeetingTopic);
-    std::cout << "[sdk] Meeting num=" << meeting_num << " topic=\"" << meeting_topic << "\"\n";
+    std::cout << "[sdk] Meeting status=" << static_cast<int>(cur_status)
+              << " propErr=" << static_cast<int>(prop.error_code)
+              << " num=" << meeting_num
+              << " topic=\"" << meeting_topic << "\"\n" << std::flush;
 
     ZMToolSuiteUser me = participants_api->GetMySelf();
     std::cout << "[sdk] Self userID=" << me.iUserID << " name=\"" << WideToUtf8(me.strUserName)
-              << "\" bHost=" << (me.bHost ? "true" : "false") << "\n";
+              << "\" bHost=" << (me.bHost ? "true" : "false") << "\n" << std::flush;
 
-    participants_api->GetUserRoleByUserID(me.iUserID, [](const GetUserRoleByUserIDResult& r) {
-        std::cout << "[sdk] Self role=" << UserRoleName(r.role)
-                  << " (err=" << static_cast<int>(r.error_code) << ")\n";
-    });
+    auto captured = CaptureParticipants(meeting_api, participants_api);
+    std::string json = FormatSnapshotJson(meeting_num, meeting_topic, static_cast<int>(cur_status), captured);
+    std::cout << json << "\n" << std::flush;
+    WriteOutJson(opts.out_json_path, json);
 
-    std::vector<CapturedParticipant> captured;
-    IToolSuiteVector<ZMToolSuiteUser>* list = meeting_api->GetParticipantsList();
-    if (list) {
-        int count = list->GetCount();
-        captured.reserve(static_cast<size_t>(count));
-        for (int i = 0; i < count; ++i) {
-            ZMToolSuiteUser u = list->GetItem(i);
-            captured.push_back(CapturedParticipant{
-                u.iUserID,
-                WideToUtf8(u.strUserName),
-                u.bHost,
-                u.bMyself
-            });
+    if (opts.watch_seconds > 0) {
+        std::cout << "[sdk] Watching live events for " << opts.watch_seconds << "s...\n" << std::flush;
+        auto end_time = std::chrono::steady_clock::now() + std::chrono::seconds(opts.watch_seconds);
+        int last_events = 0;
+        {
+            std::lock_guard<std::mutex> lock(listener.mu);
+            last_events = listener.user_event_count;
         }
-    }
+        bool rename_done = false;
+        auto next_poll = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 
-    std::cout << FormatSnapshotJson(meeting_num, captured) << "\n";
+        while (std::chrono::steady_clock::now() < end_time) {
+            PumpWaitUntil(250, [&] {
+                std::lock_guard<std::mutex> lock(listener.mu);
+                return listener.user_event_count != last_events;
+            });
+
+            bool changed = false;
+            {
+                std::lock_guard<std::mutex> lock(listener.mu);
+                if (listener.user_event_count != last_events) {
+                    last_events = listener.user_event_count;
+                    changed = true;
+                }
+            }
+
+            if (changed || std::chrono::steady_clock::now() >= next_poll) {
+                next_poll = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+                cur_status = meeting_api->GetMeetingStatus();
+                prop = meeting_api->GetMeetingProperty();
+                meeting_num = WideToUtf8(prop.strCurrentMeetingNum);
+                meeting_topic = WideToUtf8(prop.strMeetingTopic);
+                auto updated = CaptureParticipants(meeting_api, participants_api);
+
+                if (changed || updated.size() != captured.size()) {
+                    captured = std::move(updated);
+                    json = FormatSnapshotJson(meeting_num, meeting_topic, static_cast<int>(cur_status), captured);
+                    std::cout << "[sdk] Snapshot update (count=" << captured.size() << "):\n" << json << "\n" << std::flush;
+                    WriteOutJson(opts.out_json_path, json);
+                }
+
+                if (!rename_done && !opts.rename_match.empty() && !opts.rename_to.empty()) {
+                    for (const auto& p : captured) {
+                        if (p.display_name.find(opts.rename_match) != std::string::npos) {
+                            rename_done = true;
+                            std::wstring wnew = Utf8ToWide(opts.rename_to);
+                            std::cout << "[sdk] Testing ChangeUserName(userID=" << p.user_id
+                                      << ", \"" << p.display_name << "\" -> \"" << opts.rename_to << "\")...\n" << std::flush;
+                            std::atomic<bool> rdone{false};
+                            bool submitted = meeting_api->ChangeUserName(p.user_id, wnew.c_str(), [&](const BaseResult& r) {
+                                std::cout << "[sdk] ChangeUserName callback error_code=" << static_cast<int>(r.error_code) << "\n" << std::flush;
+                                rdone.store(true);
+                            });
+                            std::cout << "[sdk] ChangeUserName submitted=" << (submitted ? "true" : "false") << "\n" << std::flush;
+                            PumpWaitUntil(5000, [&] { return rdone.load(); });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Final snapshot at end of watch window
+        cur_status = meeting_api->GetMeetingStatus();
+        prop = meeting_api->GetMeetingProperty();
+        meeting_num = WideToUtf8(prop.strCurrentMeetingNum);
+        meeting_topic = WideToUtf8(prop.strMeetingTopic);
+        captured = CaptureParticipants(meeting_api, participants_api);
+        json = FormatSnapshotJson(meeting_num, meeting_topic, static_cast<int>(cur_status), captured);
+        std::cout << "[sdk] Final snapshot:\n" << json << "\n" << std::flush;
+        WriteOutJson(opts.out_json_path, json);
+    }
 
     SetToolSuiteProxyListener(nullptr);
     UninitZMToolSuite();
@@ -545,7 +748,6 @@ int RunPluginSession(const std::wstring& access_token, int wait_seconds) {
 }
 
 int RunSelfTest() {
-    // 1. RFC 7636 Appendix B S256 test vector
     const std::string rfc_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     const std::string rfc_expected = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
     const std::string actual = Sha256Base64Url(rfc_verifier);
@@ -555,7 +757,6 @@ int RunSelfTest() {
     }
     std::cout << "[self-test] PASS PKCE S256 RFC 7636 vector\n";
 
-    // 2. Real 127.0.0.1:0 loopback callback listener test
     LoopbackServer server;
     if (!server.Start() || server.port == 0) {
         std::cerr << "[self-test] FAIL LoopbackServer::Start\n";
@@ -590,10 +791,11 @@ int RunSelfTest() {
     }
     std::cout << "[self-test] PASS RFC 8252 loopback redirect on 127.0.0.1:" << port << "\n";
 
-    // 3. SDK contract lifecycle + UTF-8 Korean snapshot JSON verification
 #if defined(ZOOM_PLUGIN_SDK_STUB)
     std::cout << "[self-test] Running ZMToolSuiteProxy lifecycle against offline 7.1.0.2020 contract stub\n";
-    int rc = RunPluginSession(L"stub-access-token", 2);
+    ProbeOptions opts;
+    opts.wait_seconds = 2;
+    int rc = RunPluginSession(L"stub-access-token", opts);
     if (rc != 0) {
         std::cerr << "[self-test] FAIL stub SDK lifecycle rc=" << rc << "\n";
         return rc;
@@ -603,6 +805,18 @@ int RunSelfTest() {
     std::cout << "[self-test] Built against real Zoom Plugin SDK; skipping live IPC in --self-test\n";
 #endif
     return 0;
+}
+
+std::string ReadTrimmedFile(const std::string& path) {
+    std::ifstream ifs(path);
+    if (!ifs) return {};
+    std::ostringstream oss;
+    oss << ifs.rdbuf();
+    std::string s = oss.str();
+    while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ' || s.back() == '\t')) {
+        s.pop_back();
+    }
+    return s;
 }
 
 } // namespace
@@ -619,63 +833,97 @@ int main(int argc, char** argv) {
     int exit_code = 0;
     std::string client_id;
     std::string access_token;
+    std::string token_file;
     bool self_test = false;
+    bool no_browser = false;
+    ProbeOptions opts;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--self-test") {
             self_test = true;
+        } else if (arg == "--no-browser") {
+            no_browser = true;
         } else if (arg == "--client-id" && i + 1 < argc) {
             client_id = argv[++i];
         } else if (arg == "--access-token" && i + 1 < argc) {
             access_token = argv[++i];
+        } else if (arg == "--token-file" && i + 1 < argc) {
+            token_file = argv[++i];
+        } else if (arg == "--wait" && i + 1 < argc) {
+            opts.wait_seconds = std::stoi(argv[++i]);
+        } else if (arg == "--watch" && i + 1 < argc) {
+            opts.watch_seconds = std::stoi(argv[++i]);
+        } else if (arg == "--out" && i + 1 < argc) {
+            opts.out_json_path = argv[++i];
+        } else if (arg == "--rename-match" && i + 1 < argc) {
+            opts.rename_match = argv[++i];
+        } else if (arg == "--rename-to" && i + 1 < argc) {
+            opts.rename_to = argv[++i];
         }
     }
 
     if (self_test) {
         exit_code = RunSelfTest();
-    } else if (!access_token.empty()) {
-        exit_code = RunPluginSession(Utf8ToWide(access_token), 15);
-    } else if (!client_id.empty()) {
-        LoopbackServer server;
-        if (!server.Start()) {
-            std::cerr << "[oauth] Could not start 127.0.0.1 loopback listener\n";
-            WSACleanup();
-            return 1;
+    } else {
+        if (access_token.empty() && !token_file.empty()) {
+            access_token = ReadTrimmedFile(token_file);
         }
-        std::string verifier = RandomBase64Url(32);
-        std::string challenge = Sha256Base64Url(verifier);
-        std::string state = RandomBase64Url(16);
-        std::string redirect_uri = "http://127.0.0.1:" + std::to_string(server.port) + "/callback";
-        std::string auth_url =
-            "https://zoom.us/oauth/authorize?response_type=code"
-            "&client_id=" + UrlEncode(client_id) +
-            "&redirect_uri=" + UrlEncode(redirect_uri) +
-            "&code_challenge=" + UrlEncode(challenge) +
-            "&code_challenge_method=S256"
-            "&state=" + UrlEncode(state);
 
-        std::cout << "[oauth] Opening browser for Zoom PKCE authorization (" << redirect_uri << ")...\n";
-        std::wstring wurl = Utf8ToWide(auth_url);
-        ShellExecuteW(nullptr, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOW);
+        if (access_token.empty() && !client_id.empty()) {
+            LoopbackServer server;
+            if (!server.Start()) {
+                std::cerr << "[oauth] Could not start 127.0.0.1 loopback listener\n";
+                WSACleanup();
+                return 1;
+            }
+            std::string verifier = RandomBase64Url(32);
+            std::string challenge = Sha256Base64Url(verifier);
+            std::string state = RandomBase64Url(16);
+            std::string redirect_uri = "http://127.0.0.1:" + std::to_string(server.port) + "/callback";
+            std::string auth_url =
+                "https://zoom.us/oauth/authorize?response_type=code"
+                "&client_id=" + UrlEncode(client_id) +
+                "&redirect_uri=" + UrlEncode(redirect_uri) +
+                "&code_challenge=" + UrlEncode(challenge) +
+                "&code_challenge_method=S256"
+                "&state=" + UrlEncode(state);
 
-        auto code = server.WaitForAuthorizationCode(state, 180);
-        if (!code.has_value()) {
-            std::cerr << "[oauth] Timed out or invalid state waiting for loopback callback\n";
-            exit_code = 1;
-        } else {
-            auto token = ExchangePublicPkceToken(client_id, *code, redirect_uri, verifier);
-            if (!token.has_value()) {
+            std::cout << "AUTH_URL=" << auth_url << "\n" << std::flush;
+            if (!no_browser) {
+                std::cout << "[oauth] Opening default browser for Zoom PKCE authorization (" << redirect_uri << ")...\n" << std::flush;
+                std::wstring wurl = Utf8ToWide(auth_url);
+                ShellExecuteW(nullptr, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOW);
+            } else {
+                std::cout << "[oauth] Waiting for loopback callback on " << redirect_uri << " (--no-browser)...\n" << std::flush;
+            }
+
+            auto code = server.WaitForAuthorizationCode(state, 240);
+            if (!code.has_value()) {
+                std::cerr << "[oauth] Timed out or invalid state waiting for loopback callback\n";
                 exit_code = 1;
             } else {
-                exit_code = RunPluginSession(Utf8ToWide(*token), 30);
+                auto token = ExchangePublicPkceToken(client_id, *code, redirect_uri, verifier);
+                if (!token.has_value()) {
+                    exit_code = 1;
+                } else {
+                    access_token = *token;
+                    if (!token_file.empty()) {
+                        std::ofstream ofs(token_file, std::ios::binary | std::ios::trunc);
+                        if (ofs) ofs << access_token;
+                    }
+                }
             }
         }
-    } else {
-        std::cout << "Usage:\n"
-                  << "  zoomcheck-plugin-probe --self-test\n"
-                  << "  zoomcheck-plugin-probe --client-id <ZOOM_PUBLIC_CLIENT_ID>\n"
-                  << "  zoomcheck-plugin-probe --access-token <ZOOM_OAUTH_ACCESS_TOKEN>\n";
+
+        if (!access_token.empty()) {
+            exit_code = RunPluginSession(Utf8ToWide(access_token), opts);
+        } else if (exit_code == 0) {
+            std::cout << "Usage:\n"
+                      << "  zoomcheck-plugin-probe --self-test\n"
+                      << "  zoomcheck-plugin-probe --client-id <ZOOM_PUBLIC_CLIENT_ID> [--no-browser] [--watch 60] [--out snapshot.json]\n"
+                      << "  zoomcheck-plugin-probe --token-file <path> [--watch 60] [--out snapshot.json] [--rename-match <substr> --rename-to <name>]\n";
+        }
     }
 
     WSACleanup();
