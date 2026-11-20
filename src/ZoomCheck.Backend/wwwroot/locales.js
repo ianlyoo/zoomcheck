@@ -39,7 +39,7 @@
     language_es: 'Español',
 
     // Alert Bar
-    alert_details_summary: '기술 상세',
+    alert_details_summary: '자세히 (운영자용)',
     close: '닫기',
 
     // Summary Section
@@ -640,7 +640,7 @@
     language_es: 'Español',
 
     // Alert Bar
-    alert_details_summary: 'Technical details',
+    alert_details_summary: 'Details (for operators)',
     close: 'Close',
 
     // Summary Section
@@ -1241,7 +1241,7 @@
     language_es: 'Español',
 
     // Alert Bar
-    alert_details_summary: 'Detalles técnicos',
+    alert_details_summary: 'Detalles (para operadores)',
     close: 'Cerrar',
 
     // Summary Section

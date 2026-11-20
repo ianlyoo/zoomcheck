@@ -673,8 +673,62 @@ for (const [status, label] of [[403, '권한 설정 확인'], [404, '회의 ID �
     await respond(h.requests[0], { title: 'Technical detail' }, status);
     assert.equal(h.el.alertAction.textContent, label);
     assert.match(h.el.alertTechnical.textContent, /Technical detail/);
+    assert.equal(h.el.toastRegion.children.length, 0);
   });
 }
+
+test('sync failure produces one visible message in the user language and hides raw setting names behind the operator disclosure', async () => {
+  const h = harness();
+  h.applyConnectionMode('business');
+  const problem = {
+    title: 'Zoom API credentials are not configured.',
+    detail: 'Set ZOOMCHECK_Zoom__AccountId, ZOOMCHECK_Zoom__ClientId, and ZOOMCHECK_Zoom__ClientSecret, then restart ZoomCheck.'
+  };
+
+  const sync = h.syncZoomParticipants({ silent: false });
+  await respond(h.requests.at(-1), problem, 503);
+  await sync;
+
+  // Exactly one visible message: the alert bar; no duplicate toast.
+  assert.equal(h.el.alertBar.hidden, false);
+  assert.equal(h.el.toastRegion.children.length, 0);
+  assert.equal(h.el.alertTitle.textContent, '참가자 수신 실패');
+  assert.match(h.el.alertMessage.textContent, /API 연결 설정이 필요합니다/);
+  assert.doesNotMatch(h.el.alertTitle.textContent, /ZOOMCHECK_/);
+  assert.doesNotMatch(h.el.alertMessage.textContent, /ZOOMCHECK_/);
+  assert.doesNotMatch(h.el.alertAction.textContent, /ZOOMCHECK_/);
+  assert.doesNotMatch(h.el.toastRegion.textContent, /ZOOMCHECK_/);
+
+  // Raw setting names live only inside the collapsed operator disclosure and session log.
+  assert.equal(h.el.alertDetails.hidden, false);
+  assert.equal(h.el.alertDetails.open, false);
+  assert.match(h.el.alertTechnical.textContent, /ZOOMCHECK_Zoom__AccountId/);
+  assert.ok(h.state.sessionLog.some(entry => entry.message.includes('ZOOMCHECK_Zoom__AccountId')));
+  assert.equal(h.t('alert_details_summary'), '자세히 (운영자용)');
+  assert.match(markup, /<summary data-i18n="alert_details_summary">자세히 \(운영자용\)<\/summary>/);
+
+  // Switching UI language re-renders the open alert bar in en/es with no raw setting names outside the disclosure.
+  h.applyLanguage('en');
+  assert.equal(h.el.alertTitle.textContent, 'Could not fetch participants');
+  assert.match(h.el.alertMessage.textContent, /Set up the API connection/);
+  assert.equal(h.t('alert_details_summary'), 'Details (for operators)');
+  assert.doesNotMatch(h.el.alertMessage.textContent, /ZOOMCHECK_/);
+
+  h.applyLanguage('es');
+  assert.equal(h.el.alertTitle.textContent, 'No se pudo obtener la lista de participantes');
+  assert.match(h.el.alertMessage.textContent, /Configura la conexión con la API/);
+  assert.equal(h.t('alert_details_summary'), 'Detalles (para operadores)');
+  assert.doesNotMatch(h.el.alertMessage.textContent, /ZOOMCHECK_/);
+
+  // Zoom App sync failure also avoids stacking a duplicate toast.
+  const zoomAppSync = h.requestZoomAppSync({ silent: false });
+  await respond(h.requests.at(-1), { title: 'Bridge session not connected' }, 409);
+  await zoomAppSync;
+  assert.equal(h.el.alertBar.hidden, false);
+  assert.equal(h.el.toastRegion.children.length, 0);
+  assert.equal(h.el.alertDetails.open, false);
+  assert.match(h.el.alertTechnical.textContent, /Bridge session not connected/);
+});
 
 test('row disclosure, review action and connection drafts retain focus across renders', () => {
   const h = harness(); h.renderBoard(decisionBoard());
