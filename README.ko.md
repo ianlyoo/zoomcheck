@@ -2,7 +2,7 @@
 
 Windows에서 Excel 명단과 진행 중인 Zoom 회의 참가자를 공식 Zoom API로 대조하는 로컬 웹 대시보드입니다. Business용 Dashboard API와 Pro에서도 사용할 수 있는 회의 내 Zoom App 연결을 함께 지원합니다.
 
-[English](README.md) · [Español](README.es.md) · [Windows 실회의 테스트](docs/windows-live-test-ko.md) · [MIT License](LICENSE)
+[English](README.md) · [Español](README.es.md) · [Windows 실회의 테스트](docs/windows-live-test-ko.md) · [Code signing policy](CODE_SIGNING.md) · [MIT License](LICENSE)
 
 [![CI](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/ci.yml)
 [![Windows build](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml/badge.svg)](https://github.com/ianlyoo/zoomcheck/actions/workflows/build-windows-installer.yml)
@@ -154,6 +154,12 @@ Windows 패키지 출력:
 ## 주의
 
 출석 정보는 민감한 데이터입니다. 공식 기록으로 사용하기 전에 검토 필요 항목과 CSV 결과를 사람이 확인하세요.
+
+## 코드 서명 정책 (Code signing policy)
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+공식 Windows 설치 파일의 코드 서명 범위, 역할(커미터·리뷰어·승인자: [ianlyoo](https://github.com/ianlyoo)), 개인정보 처리 및 제거 방법은 [CODE_SIGNING.md](CODE_SIGNING.md)에 정리되어 있습니다.
 
 ## 라이선스
 
