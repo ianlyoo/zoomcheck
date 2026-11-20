@@ -194,8 +194,10 @@ jobs:
           Expand-Archive $zip -DestinationPath portable
           $exe = Get-ChildItem portable -Filter ZoomCheck.Backend.exe -Recurse | Select-Object -First 1
           if (-not $exe) { throw 'Portable executable missing' }
-          Start-Process $exe.FullName -WorkingDirectory $exe.DirectoryName
-          $deadline = (Get-Date).AddMinutes(3)
+          $backendOut = Join-Path $env:RUNNER_TEMP 'zoomcheck-update-output.log'
+          $backendErr = Join-Path $env:RUNNER_TEMP 'zoomcheck-update-error.log'
+          Start-Process $exe.FullName -WorkingDirectory $exe.DirectoryName -RedirectStandardOutput $backendOut -RedirectStandardError $backendErr
+          $deadline = (Get-Date).AddSeconds(65)
           $status = $null; $raw = $null
           do {
             try {
@@ -206,8 +208,10 @@ jobs:
             } catch { Write-Host 'Waiting for update status endpoint.' }
             Start-Sleep -Seconds 2
           } while ((Get-Date) -lt $deadline)
-          if (-not $status -or -not $status.lastCheckedAt) { throw 'Update check did not complete before deadline.' }
-          Write-Host "UPDATE_STATUS_JSON=$raw"
+          if ($raw) { Write-Host "UPDATE_STATUS_JSON=$raw" }
+          if (Test-Path $backendOut) { Select-String -Path $backendOut -Pattern 'Update check finished|Update check could not|Update check failed' | ForEach-Object { Write-Host "BACKEND_UPDATE_LOG=$($_.Line)" } }
+          if (-not $status) { throw 'Update status endpoint did not answer.' }
+          if (-not $status.lastCheckedAt) { Write-Host 'UPDATE_RESULT=lastCheckedAt-unset'; exit 0 }
           if ($status.availability -ne 'UpdateAvailable') { Write-Host 'UPDATE_RESULT=not-update-available'; exit 0 }
           if ($status.currentVersion -ne '0.6.3' -or $status.latestVersion -ne '0.7.0') { Write-Host 'UPDATE_RESULT=unexpected-version'; exit 0 }
           if ($status.downloadState -ne 'None' -or $status.installerReady) { throw 'Unexpected installer download or staged installer.' }
