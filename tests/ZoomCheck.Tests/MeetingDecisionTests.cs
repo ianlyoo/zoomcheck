@@ -1,5 +1,8 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 using ZoomCheck.Backend.Contracts;
 using ZoomCheck.Backend.Controllers;
 using ZoomCheck.Core.Enums;
@@ -506,5 +509,196 @@ public sealed class MeetingDecisionTests : IAsyncLifetime
         Assert.Equal(5, board.UnmatchedParticipants.Count);
         Assert.Equal(8, board.People.Count(p => p.ReviewRequired) + board.UnmatchedParticipants.Count);
         Assert.Equal(new[] { "p005", "p010", "p012" }, board.People.Where(p => p.ReviewRequired).Select(p => p.RosterPersonId).OrderBy(id => id).ToArray());
+    }
+
+    [Fact]
+    public async Task V063Upgrade_PreservesSavedConfirmedAndDeferredIdentityAndDuplicateDecisions()
+    {
+        var upgradeDbPath = Path.Combine(Path.GetTempPath(), $"zoomcheck-v063-upgrade-{Guid.NewGuid():N}.db");
+        try
+        {
+            static string V063Evidence(object value)
+                => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value))));
+
+            var joinedAt = new DateTimeOffset(2026, 9, 5, 1, 0, 0, TimeSpan.Zero);
+            var joinedIso = joinedAt.ToString("O");
+
+            // Compute exact v0.6.3 tokens (without NeedsReview / ReviewReasonCode / IdentityReviewReason).
+            var s005Conn1 = V063Evidence(new
+            {
+                Source = "zoom-app",
+                PresenceKey = "fake-학생005-1",
+                RawName = "학생005",
+                Email = "",
+                FirstSeenAt = joinedAt,
+                MatchedRosterPersonId = "p005",
+                Confidence = MatchConfidence.NameOnly,
+                ManualMatch = false
+            });
+            var s005Conn2 = V063Evidence(new
+            {
+                Source = "zoom-app",
+                PresenceKey = "fake-학생005 (태블릿)-1",
+                RawName = "학생005 (태블릿)",
+                Email = "",
+                FirstSeenAt = joinedAt,
+                MatchedRosterPersonId = "p005",
+                Confidence = MatchConfidence.Possible,
+                ManualMatch = false
+            });
+            var s005Conns = new[] { s005Conn1, s005Conn2 }.OrderBy(t => t, StringComparer.Ordinal).ToArray();
+            var s005IdentityToken = V063Evidence(new
+            {
+                RosterPersonId = "p005",
+                Confidence = MatchConfidence.Possible,
+                LastJoinedAt = (DateTimeOffset?)joinedAt,
+                LastLeftAt = (DateTimeOffset?)null,
+                Connections = s005Conns
+            });
+            var s005DuplicateToken = V063Evidence(new
+            {
+                RosterPersonId = "p005",
+                Connections = s005Conns
+            });
+
+            var s010Conn1 = V063Evidence(new
+            {
+                Source = "zoom-app",
+                PresenceKey = "fake-학생010-1",
+                RawName = "학생010",
+                Email = "",
+                FirstSeenAt = joinedAt,
+                MatchedRosterPersonId = "p010",
+                Confidence = MatchConfidence.NameOnly,
+                ManualMatch = false
+            });
+            var s010Conn2 = V063Evidence(new
+            {
+                Source = "zoom-app",
+                PresenceKey = "fake-학생010_1조-1",
+                RawName = "학생010_1조",
+                Email = "",
+                FirstSeenAt = joinedAt,
+                MatchedRosterPersonId = "p010",
+                Confidence = MatchConfidence.Possible,
+                ManualMatch = false
+            });
+            var s010Conns = new[] { s010Conn1, s010Conn2 }.OrderBy(t => t, StringComparer.Ordinal).ToArray();
+            var s010DuplicateToken = V063Evidence(new
+            {
+                RosterPersonId = "p010",
+                Connections = s010Conns
+            });
+
+            var unmatchedConnToken = V063Evidence(new
+            {
+                Source = "zoom-app",
+                PresenceKey = "fake-iPhone-1",
+                RawName = "iPhone",
+                Email = "",
+                FirstSeenAt = joinedAt,
+                MatchedRosterPersonId = (string?)null,
+                Confidence = MatchConfidence.Unmatched,
+                ManualMatch = false
+            });
+
+            // Build a v0.6.3-shaped SQLite database directly (no occurred_at_ticks, no summary tables).
+            var connectionString = new SqliteConnectionStringBuilder { DataSource = upgradeDbPath, Pooling = false }.ToString();
+            await using (var conn = new SqliteConnection(connectionString))
+            {
+                await conn.OpenAsync();
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText = """
+                    CREATE TABLE roster_imports (import_id TEXT PRIMARY KEY, source_path TEXT NOT NULL, display_name TEXT NOT NULL, imported_at TEXT NOT NULL);
+                    CREATE TABLE roster_people (id TEXT PRIMARY KEY, import_id TEXT NOT NULL, sequence TEXT NOT NULL, name TEXT NOT NULL, normalized_name TEXT NOT NULL, email TEXT NOT NULL, phone TEXT NOT NULL, organization TEXT NOT NULL, aliases_json TEXT NOT NULL, group_name TEXT NOT NULL DEFAULT '');
+                    CREATE TABLE manual_aliases (alias_key TEXT PRIMARY KEY, roster_person_id TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL);
+                    CREATE TABLE participant_events (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, occurred_at TEXT NOT NULL, event_type TEXT NOT NULL, participant_name TEXT NOT NULL, normalized_participant_name TEXT NOT NULL, participant_email TEXT NULL, confidence TEXT NOT NULL, matched_roster_person_id TEXT NULL, source TEXT NOT NULL, raw_payload TEXT NOT NULL, presence_key TEXT NULL, raw_participant_name TEXT NULL, canonical_participant_name TEXT NULL, previous_participant_name TEXT NULL, previous_raw_participant_name TEXT NULL);
+                    CREATE TABLE participant_snapshots (meeting_id TEXT NOT NULL, source TEXT NOT NULL, captured_at TEXT NOT NULL, present_count INTEGER NOT NULL, PRIMARY KEY (meeting_id, source));
+                    CREATE TABLE participant_presence_v2 (meeting_id TEXT NOT NULL, source TEXT NOT NULL, presence_key TEXT NOT NULL, normalized_name TEXT NOT NULL, display_name TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, participant_email TEXT NULL, raw_display_name TEXT NULL, canonical_name TEXT NULL, PRIMARY KEY (meeting_id, source, presence_key));
+                    CREATE TABLE schema_migrations (migration_id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+                    CREATE TABLE meeting_exclusions (meeting_id TEXT NOT NULL, attendance_date TEXT NOT NULL, roster_person_id TEXT NOT NULL, excluded_at TEXT NOT NULL, PRIMARY KEY (meeting_id, attendance_date, roster_person_id));
+                    CREATE TABLE meeting_reviews (meeting_id TEXT NOT NULL, subject_key TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, evidence_token TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (meeting_id, subject_key, kind));
+                    CREATE TABLE meeting_connection_observations (meeting_id TEXT NOT NULL, source TEXT NOT NULL, presence_key TEXT NOT NULL, first_seen_at TEXT NOT NULL, observed_name TEXT NOT NULL, observed_email TEXT NOT NULL, roster_person_id TEXT NOT NULL, observed_at TEXT NOT NULL, PRIMARY KEY (meeting_id, source, presence_key, first_seen_at, observed_name, observed_email));
+                    """;
+                await cmd.ExecuteNonQueryAsync();
+
+                await using var seed = conn.CreateCommand();
+                seed.CommandText = """
+                    INSERT INTO schema_migrations VALUES ('meeting-id-v1', $t);
+                    INSERT INTO roster_imports VALUES ('imp1', 'roster.xlsx', 'roster.xlsx', $t);
+                    INSERT INTO roster_people VALUES ('p005', 'imp1', '5', '학생005', '학생005', 'student005@example.com', '', '', '[]', '1조');
+                    INSERT INTO roster_people VALUES ('p010', 'imp1', '10', '학생010', '학생010', 'student010@example.com', '', '', '[]', '1조');
+                    INSERT INTO participant_snapshots VALUES ($m, 'zoom-app', $t, 5);
+                    INSERT INTO participant_presence_v2 VALUES ($m, 'zoom-app', 'fake-학생005-1', '학생005', '학생005', $t, $t, NULL, '학생005', NULL);
+                    INSERT INTO participant_presence_v2 VALUES ($m, 'zoom-app', 'fake-학생005 (태블릿)-1', '학생005태블릿', '학생005 (태블릿)', $t, $t, NULL, '학생005 (태블릿)', NULL);
+                    INSERT INTO participant_presence_v2 VALUES ($m, 'zoom-app', 'fake-학생010-1', '학생010', '학생010', $t, $t, NULL, '학생010', NULL);
+                    INSERT INTO participant_presence_v2 VALUES ($m, 'zoom-app', 'fake-학생010_1조-1', '학생0101조', '학생010_1조', $t, $t, NULL, '학생010_1조', NULL);
+                    INSERT INTO participant_presence_v2 VALUES ($m, 'zoom-app', 'fake-iPhone-1', 'iphone', 'iPhone', $t, $t, NULL, 'iPhone', NULL);
+                    INSERT INTO participant_events VALUES ('e1', $m, $t, 'Joined', '학생005', '학생005', NULL, 'NameOnly', 'p005', 'zoom-app', '{}', 'fake-학생005-1', '학생005', NULL, NULL, NULL);
+                    INSERT INTO participant_events VALUES ('e2', $m, $t, 'Joined', '학생005 (태블릿)', '학생005태블릿', NULL, 'Possible', 'p005', 'zoom-app', '{}', 'fake-학생005 (태블릿)-1', '학생005 (태블릿)', NULL, NULL, NULL);
+                    INSERT INTO participant_events VALUES ('e3', $m, $t, 'Joined', '학생010', '학생010', NULL, 'NameOnly', 'p010', 'zoom-app', '{}', 'fake-학생010-1', '학생010', NULL, NULL, NULL);
+                    INSERT INTO participant_events VALUES ('e4', $m, $t, 'Joined', '학생010_1조', '학생0101조', NULL, 'Possible', 'p010', 'zoom-app', '{}', 'fake-학생010_1조-1', '학생010_1조', NULL, NULL, NULL);
+                    INSERT INTO participant_events VALUES ('e5', $m, $t, 'Joined', 'iPhone', 'iphone', NULL, 'Unmatched', NULL, 'zoom-app', '{}', 'fake-iPhone-1', 'iPhone', NULL, NULL, NULL);
+                    INSERT INTO meeting_reviews VALUES ($m, 'p005', 'identity', 'confirmed', $tok005Id, $t);
+                    INSERT INTO meeting_reviews VALUES ($m, 'p005', 'duplicate', 'deferred', $tok005Dup, $t);
+                    INSERT INTO meeting_reviews VALUES ($m, 'p010', 'duplicate', 'confirmed', $tok010Dup, $t);
+                    INSERT INTO meeting_reviews VALUES ($m, $connSubject, 'connection', 'deferred', $tokConn, $t);
+                    """;
+                seed.Parameters.AddWithValue("$m", Meeting);
+                seed.Parameters.AddWithValue("$t", joinedIso);
+                seed.Parameters.AddWithValue("$tok005Id", s005IdentityToken);
+                seed.Parameters.AddWithValue("$tok005Dup", s005DuplicateToken);
+                seed.Parameters.AddWithValue("$tok010Dup", s010DuplicateToken);
+                seed.Parameters.AddWithValue("$connSubject", JsonSerializer.Serialize(new[] { "zoom-app", "fake-iPhone-1" }));
+                seed.Parameters.AddWithValue("$tokConn", unmatchedConnToken);
+                await seed.ExecuteNonQueryAsync();
+            }
+
+            // Start the new code against the v0.6.3 database.
+            var upgradedRepo = new SqliteAttendanceRepository(upgradeDbPath);
+            await upgradedRepo.InitializeAsync();
+            var upgradedService = CreateService(upgradedRepo);
+            var board = await upgradedService.BuildBoardAsync(Meeting);
+
+            var p005 = P(board, "p005");
+            Assert.Equal("confirmed", p005.IdentityReviewStatus);
+            Assert.Equal("deferred", p005.DuplicateReviewStatus);
+            Assert.True(p005.ReviewRequired);
+
+            var p010 = P(board, "p010");
+            Assert.Equal("pending", p010.IdentityReviewStatus);
+            Assert.Equal("confirmed", p010.DuplicateReviewStatus);
+            Assert.True(p010.ReviewRequired);
+
+            var unmatched = C(board, "fake-iPhone-1", "zoom-app");
+            Assert.Equal("deferred", unmatched.ReviewStatus);
+
+            // Real evidence changes still invalidate the preserved decision.
+            var changed = (await upgradedService.ApplyParticipantSnapshotAsync(new(
+                Meeting,
+                new[] { "학생005", "학생005 (태블릿)", "학생005 (폰)", "학생010", "학생010_1조", "iPhone" },
+                "zoom-app",
+                joinedAt.AddMinutes(1),
+                Participants: new[]
+                {
+                    new ParticipantSnapshotParticipant("fake-학생005-1", "학생005"),
+                    new ParticipantSnapshotParticipant("fake-학생005 (태블릿)-1", "학생005 (태블릿)"),
+                    new ParticipantSnapshotParticipant("fake-학생005 (폰)-1", "학생005 (폰)"),
+                    new ParticipantSnapshotParticipant("fake-학생010-1", "학생010"),
+                    new ParticipantSnapshotParticipant("fake-학생010_1조-1", "학생010_1조"),
+                    new ParticipantSnapshotParticipant("fake-iPhone-1", "iPhone")
+                }))).Board;
+            Assert.Equal("pending", P(changed, "p005").IdentityReviewStatus);
+            Assert.Equal("pending", P(changed, "p005").DuplicateReviewStatus);
+            Assert.Equal("confirmed", P(changed, "p010").DuplicateReviewStatus);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            foreach (var suffix in new[] { "", "-wal", "-shm" })
+            {
+                if (File.Exists(upgradeDbPath + suffix)) { File.Delete(upgradeDbPath + suffix); }
+            }
+        }
     }
 }

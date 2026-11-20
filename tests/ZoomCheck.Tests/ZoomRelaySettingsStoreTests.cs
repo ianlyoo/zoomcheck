@@ -153,6 +153,41 @@ public sealed class ZoomRelaySettingsStoreTests : IDisposable
         Assert.Equal((true, "https://saved.example/", false), store.Get());
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public async Task SaveAsync_EmptyValueClearsSavedRelayImmediatelyAndPersistsAcrossRestart(string? emptyInput)
+    {
+        var path = Path.Combine(_directory, ZoomRelaySettingsStore.FileName);
+        var store = new ZoomRelaySettingsStore(path, "https://old.example/");
+        await store.SaveAsync("https://saved.example/", CancellationToken.None);
+        var changedCount = 0;
+        store.Changed += () => changedCount++;
+
+        var cleared = await store.SaveAsync(emptyInput, CancellationToken.None);
+
+        Assert.False(cleared.Configured);
+        Assert.Equal(string.Empty, cleared.BaseUrl);
+        Assert.False(cleared.RestartRequired);
+        Assert.Equal((false, string.Empty, false), store.Get());
+        Assert.Null(store.GetActiveBaseUri());
+        Assert.Equal(1, changedCount);
+
+        // Clearing again when already unconfigured is a no-op and does not refire Changed.
+        var clearedAgain = await store.SaveAsync("", CancellationToken.None);
+        Assert.Equal((false, string.Empty, false), clearedAgain);
+        Assert.Equal(1, changedCount);
+
+        // Restarting with legacy relay configuration still respects the explicit clear.
+        var configuration = LegacyConfiguration();
+        ZoomRelaySettingsStore.AddUserConfiguration(configuration, path);
+        var restarted = new ZoomRelaySettingsStore(path,
+            configuration["ZoomRelay:BaseUrl"], configuration.GetValue<bool>("ZoomRelay:Enabled"));
+        Assert.Equal((false, string.Empty, false), restarted.Get());
+        Assert.Null(restarted.GetActiveBaseUri());
+    }
+
     private static ConfigurationManager LegacyConfiguration()
     {
         var configuration = new ConfigurationManager();

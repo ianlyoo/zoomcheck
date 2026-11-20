@@ -644,9 +644,7 @@ internal static class AttendanceBoardProjector
             connection.FirstSeenAt,
             connection.MatchedRosterPersonId,
             connection.Confidence,
-            connection.ManualMatch,
-            connection.NeedsReview,
-            connection.ReviewReasonCode
+            connection.ManualMatch
         });
         return connection with
         {
@@ -732,7 +730,6 @@ internal static class AttendanceBoardProjector
             {
                 person.RosterPersonId,
                 person.Confidence,
-                IdentityReviewReason = identityReviewReason,
                 person.LastJoinedAt,
                 person.LastLeftAt,
                 Connections = connectionEvidence!

@@ -135,6 +135,9 @@
     readinessAction: null,
     sessionLog: [],
     alertAction: null,
+    healthStatus: null,
+    zoomApiStatus: null,
+    zoomApiError: '',
     zoomConfigured: false,
     connectionMode: 'auto',
     recommendedMode: null,
@@ -429,15 +432,25 @@
     if (status === 'warn') { node.classList.add('warn'); }
   }
 
+  function renderHealthStatus() {
+    if (!el.healthText) { return; }
+    if (state.healthStatus === 'ok') { setText(el.healthText, t('status_connected')); }
+    else if (state.healthStatus === 'error') { setText(el.healthText, t('error')); }
+    else if (state.healthStatus === 'failed') { setText(el.healthText, t('status_connect_failed')); }
+    else { setText(el.healthText, t('checking')); }
+  }
+
   function checkHealth() {
     return request('/health').then(function (payload) {
       var ok = payload && payload.status === 'ok';
+      state.healthStatus = ok ? 'ok' : 'error';
       setDot(el.healthDot, ok);
-      setText(el.healthText, ok ? '연결됨' : '오류');
+      renderHealthStatus();
       return ok;
     }, function (error) {
+      state.healthStatus = 'failed';
       setDot(el.healthDot, false);
-      setText(el.healthText, '연결 실패');
+      renderHealthStatus();
       showAlert('bad', '백엔드 연결 실패', error.message, '재시도', checkHealth);
       return false;
     });
@@ -563,9 +576,9 @@
   }
 
   function describeZoomAppRole(role) {
-    if (role === 'host') { return '호스트'; }
-    if (role === 'coHost' || role === 'cohost' || role === 'co-host') { return '공동호스트'; }
-    return role ? String(role) : '권한 미확인';
+    if (role === 'host') { return t('role_host'); }
+    if (role === 'coHost' || role === 'cohost' || role === 'co-host') { return t('role_cohost'); }
+    return role ? String(role) : t('role_unknown');
   }
 
   function effectiveZoomAppHomeUrl() {
@@ -590,15 +603,27 @@
     var connected = !!app.connected;
     var sessionActive = app.sessionActive !== undefined ? !!app.sessionActive : connected;
     setDot(el.zoomAppDot, connected ? true : (sessionActive ? 'warn' : (state.connectionMode === 'zoomApp' ? false : null)));
-    setText(el.zoomAppStatus, connected ? describeZoomAppRole(app.role) + ' 연결' : (sessionActive ? '연결 유지' : '미연결'));
+    setText(el.zoomAppStatus, connected
+      ? t('zoom_app_role_connected', { role: describeZoomAppRole(app.role) })
+      : (sessionActive ? t('zoom_app_session_active') : t('zoom_app_disconnected')));
     if (connected) {
-      setText(el.zoomAppSettingsStatus, 'Zoom 앱이 연결되어 있습니다 · 회의 ' + (app.meetingId || '–')
-        + ' · ' + describeZoomAppRole(app.role) + ' · 마지막 수신 ' + formatTime(app.lastSeenAt));
-      setText(el.pairingSession, '연결된 Zoom 앱: 회의 ' + (app.meetingId || '–') + ' · ' + describeZoomAppRole(app.role));
+      setText(el.zoomAppSettingsStatus, t('zoom_app_connected_settings', {
+        meetingId: app.meetingId || '–',
+        role: describeZoomAppRole(app.role),
+        time: formatTime(app.lastSeenAt)
+      }));
+      setText(el.pairingSession, t('zoom_app_connected_session', {
+        meetingId: app.meetingId || '–',
+        role: describeZoomAppRole(app.role)
+      }));
     } else if (sessionActive) {
-      setText(el.zoomAppSettingsStatus, '페어링은 유지 중이며 참가자 신호를 다시 확인하고 있습니다 · 회의 '
-        + (app.meetingId || '–') + ' · 마지막 수신 ' + formatTime(app.lastSeenAt));
-      setText(el.pairingSession, '연결 유지 중: 회의 ' + (app.meetingId || '–') + ' · Zoom 앱 신호 재확인 중');
+      setText(el.zoomAppSettingsStatus, t('zoom_app_active_settings', {
+        meetingId: app.meetingId || '–',
+        time: formatTime(app.lastSeenAt)
+      }));
+      setText(el.pairingSession, t('zoom_app_active_session', {
+        meetingId: app.meetingId || '–'
+      }));
     } else {
       setText(el.zoomAppSettingsStatus, t('zoom_app_waiting_status'));
       setText(el.pairingSession, t('pairing_session_default'));
@@ -676,6 +701,8 @@
       setText(el.relaySettingsNote, settings.restartRequired
         ? t('relay_note_restart')
         : (settings.configured ? t('relay_note_configured') : t('relay_note_unconfigured')));
+    } else {
+      setText(el.relaySettingsNote, t('relay_note_checking'));
     }
     if (el.btnSaveRelayUrl) { el.btnSaveRelayUrl.disabled = state.relaySettingsSaving; }
     renderRelayHealth();
@@ -690,7 +717,14 @@
       state.pairing = null;
       state.relayHealth = null;
       if (state.zoomApp && urlChanged) {
-        state.zoomApp = Object.assign({}, state.zoomApp, { connected: false, sessionActive: false, pairingCodeExpiresAt: null });
+        var clearedHome = !result.configured && previous && previous.baseUrl
+          && state.zoomApp.homeUrl === previous.baseUrl.replace(/\/+$/, '') + '/zoom-app/';
+        state.zoomApp = Object.assign({}, state.zoomApp, {
+          connected: false,
+          sessionActive: false,
+          pairingCodeExpiresAt: null,
+          homeUrl: clearedHome ? '' : state.zoomApp.homeUrl
+        });
       }
     }
     if (result.configured && !result.restartRequired && result.baseUrl) {
@@ -719,7 +753,8 @@
   function saveRelaySettings() {
     if (state.relaySettingsSaving) { return Promise.resolve(null); }
     var value = el.relayBaseUrl ? el.relayBaseUrl.value.trim() : '';
-    if (value.toLowerCase().indexOf('https://') !== 0 || /\s/.test(value)) {
+    var clearing = !value;
+    if (!clearing && (value.toLowerCase().indexOf('https://') !== 0 || /\s/.test(value))) {
       toast('warn', t('relay_save_invalid_title'), t('relay_save_invalid_note'));
       if (el.relayBaseUrl) { el.relayBaseUrl.focus(); }
       return Promise.resolve(null);
@@ -732,9 +767,13 @@
       endBusy(busy);
       state.relaySettingsSaving = false;
       applyRelaySettings(result);
-      toast('ok', t('relay_save_ok_title'), result.restartRequired
-        ? t('relay_note_restart')
-        : t('relay_save_ok_note'));
+      if (clearing && !result.configured) {
+        toast('ok', t('relay_clear_ok_title'), t('relay_clear_ok_note'));
+      } else {
+        toast('ok', t('relay_save_ok_title'), result.restartRequired
+          ? t('relay_note_restart')
+          : t('relay_save_ok_note'));
+      }
       return result;
     }, function (error) {
       endBusy(busy);
@@ -792,8 +831,8 @@
     var app = state.zoomApp || {};
     var sessionActive = app.sessionActive !== undefined ? !!app.sessionActive : !!app.connected;
     if (sessionActive) {
-      setText(el.pairingCode, '연결 유지 중');
-      setText(el.pairingExpiry, '6자리 코드는 최초 연결 후 폐기되며, 코드 만료와 무관하게 현재 세션이 유지됩니다.');
+      setText(el.pairingCode, t('pairing_code_active'));
+      setText(el.pairingExpiry, t('pairing_expiry_active'));
       return;
     }
     if (!state.pairing) {
@@ -804,16 +843,35 @@
     setText(el.pairingCode, String(state.pairing.code || '').split('').join(' '));
     var expiresAt = state.pairing.expiresAt ? new Date(state.pairing.expiresAt) : null;
     if (!expiresAt || isNaN(expiresAt.getTime())) {
-      setText(el.pairingExpiry, '유효 시간 정보를 확인할 수 없습니다.');
+      setText(el.pairingExpiry, t('pairing_expiry_unknown'));
       return;
     }
     var remaining = Math.round((expiresAt.getTime() - Date.now()) / 1000);
     if (remaining <= 0) {
-      setText(el.pairingExpiry, '코드가 만료되었습니다. 다시 생성하세요.');
+      setText(el.pairingExpiry, t('pairing_expiry_expired'));
       return;
     }
-    setText(el.pairingExpiry, formatTime(expiresAt) + '까지 유효 · 남은 시간 '
-      + Math.floor(remaining / 60) + '분 ' + pad(remaining % 60) + '초');
+    setText(el.pairingExpiry, t('pairing_expiry_remaining', {
+      time: formatTime(expiresAt),
+      min: Math.floor(remaining / 60),
+      sec: pad(remaining % 60)
+    }));
+  }
+
+  function renderZoomApiStatus() {
+    if (el.zoomStatus) {
+      if (state.zoomApiStatus === 'ok') { setText(el.zoomStatus, t('connected')); }
+      else if (state.zoomApiStatus === 'configured') { setText(el.zoomStatus, t('status_configured')); }
+      else if (state.zoomApiStatus === 'unconfigured') { setText(el.zoomStatus, t('status_unconfigured')); }
+      else if (state.zoomApiStatus === 'error') { setText(el.zoomStatus, t('status_check_failed')); }
+      else { setText(el.zoomStatus, t('checking')); }
+    }
+    if (el.apiSettingsStatus) {
+      if (state.zoomApiStatus === 'error') { setText(el.apiSettingsStatus, state.zoomApiError || t('status_check_failed')); }
+      else if (state.zoomApiStatus === 'configured' || state.zoomApiStatus === 'ok') { setText(el.apiSettingsStatus, t('api_settings_configured')); }
+      else if (state.zoomApiStatus === 'unconfigured') { setText(el.apiSettingsStatus, t('api_settings_unconfigured')); }
+      else { setText(el.apiSettingsStatus, t('api_settings_checking')); }
+    }
   }
 
   function checkZoomConnection(showToast) {
@@ -822,6 +880,8 @@
       var business = payload.business || {};
       /* configured/business.configured 둘 다 지원해 기존 응답과 호환한다. */
       state.zoomConfigured = business.configured !== undefined ? !!business.configured : !!payload.configured;
+      state.zoomApiStatus = state.zoomConfigured ? 'configured' : 'unconfigured';
+      state.zoomApiError = '';
       state.zoomApp = payload.zoomApp || null;
       state.recommendedMode = payload.recommendedMode ? normalizeMode(payload.recommendedMode) : null;
       if (state.zoomApp && (state.zoomApp.sessionActive || state.zoomApp.connected)) {
@@ -836,10 +896,7 @@
         state.pairing = { code: null, expiresAt: state.zoomApp.pairingCodeExpiresAt };
       }
       renderZoomApiDot();
-      setText(el.zoomStatus, state.zoomConfigured ? '설정됨' : '미설정');
-      setText(el.apiSettingsStatus, state.zoomConfigured
-        ? 'OAuth 자격증명이 설정되어 있습니다. 실제 권한은 지금 동기화에서 확인됩니다.'
-        : 'Windows 사용자 환경 변수 Account ID, Client ID, Client Secret을 설정한 뒤 앱을 다시 시작하세요. Pro 요금제라면 Zoom 앱 페어링을 사용하세요.');
+      renderZoomApiStatus();
       renderZoomAppStrip();
       renderModeNote();
       if (showToast) {
@@ -849,9 +906,10 @@
       return payload;
     }, function (error) {
       state.zoomConfigured = false;
+      state.zoomApiStatus = 'error';
+      state.zoomApiError = error.message;
       setDot(el.zoomDot, false);
-      setText(el.zoomStatus, '확인 실패');
-      setText(el.apiSettingsStatus, error.message);
+      renderZoomApiStatus();
       if (showToast) { toast('bad', 'Zoom API 상태 확인 실패', error.message); }
     });
   }
@@ -1194,8 +1252,9 @@
       if (!finishMeetingRequest(context)) { return null; }
       hideAlert();
       state.zoomConfigured = true;
+      state.zoomApiStatus = 'ok';
       setDot(el.zoomDot, true);
-      setText(el.zoomStatus, '정상');
+      renderZoomApiStatus();
       if (result && result.snapshot && result.snapshot.board) { renderBoard(result.snapshot.board); }
       markSync(true, ' 참가자 ' + (result && result.activeParticipants !== undefined ? result.activeParticipants : '–') + '명');
       scheduleNextSync();
@@ -1293,9 +1352,9 @@
         return {
           key: group.key || personId || ('group-' + index),
           rosterPersonId: personId,
-          personName: group.personName || group.rosterPersonName || group.name || (rosterMap[personId] && rosterMap[personId].name) || '검토 필요',
+          personName: group.personName || group.rosterPersonName || group.name || (rosterMap[personId] && rosterMap[personId].name) || t('metric_review'),
           connections: groupConnections,
-          reason: group.reason || '같은 명단 인물로 매칭된 여러 연결'
+          reason: group.reason || t('duplicate_multiple_connections')
         };
       }).filter(function (group) { return group.connections.length > 1; });
     }
@@ -1309,9 +1368,9 @@
       return {
         key: personId,
         rosterPersonId: personId,
-        personName: rosterMap[personId] ? rosterMap[personId].name : '검토 필요',
+        personName: rosterMap[personId] ? rosterMap[personId].name : t('metric_review'),
         connections: byPerson[personId],
-        reason: '같은 명단 인물로 매칭된 여러 연결'
+        reason: t('duplicate_multiple_connections')
       };
     });
   }
@@ -1508,6 +1567,26 @@
     };
   }
 
+  function renderDesktopSummary(total, present) {
+    setText(el.summaryTotal, total);
+    setText(el.summaryPresent, present);
+    if (!el.desktopSummary) { return; }
+    var template = t('summary_progress');
+    if (el.desktopSummary.replaceChildren && el.summaryTotal && el.summaryPresent && typeof document.createTextNode === 'function') {
+      var parts = template.split(/(\{total\}|\{present\})/);
+      var nodes = [];
+      parts.forEach(function (part) {
+        if (!part) { return; }
+        if (part === '{total}') { nodes.push(el.summaryTotal); }
+        else if (part === '{present}') { nodes.push(el.summaryPresent); }
+        else { nodes.push(document.createTextNode(part)); }
+      });
+      el.desktopSummary.replaceChildren.apply(el.desktopSummary, nodes);
+    } else {
+      setText(el.desktopSummary, t('summary_progress', { total: total, present: present }));
+    }
+  }
+
   function renderBoard(board) {
     if (!board || typeof board !== 'object') { return; }
     if (board.meetingId && normalizeMeetingId(board.meetingId) !== currentMeetingId()) { return; }
@@ -1536,8 +1615,7 @@
 
     resetInvalidSelection(allScoped);
 
-    setText(el.summaryTotal, total);
-    setText(el.summaryPresent, present.length);
+    renderDesktopSummary(total, present.length);
     setText(el.phoneSummary, t('phone_summary', { present: present.length, total: total, absent: absent.length }));
     setText(el.summaryRate, total ? rate + '%' : '–');
     el.rateRing.style.setProperty('--rate', total ? rate : 0);
@@ -2308,7 +2386,8 @@
   function updateParsedCount() {
     var names = parseNames(el.snapshotNames.value);
     var lines = String(el.snapshotNames.value || '').split(/\r?\n/).filter(function (line) { return line.trim(); }).length;
-    setText(el.snapshotParsed, '입력 ' + lines + '줄 · 서로 다른 이름 ' + names.length + '개 · 중복 ' + (lines - names.length) + '줄' + (names.length > MAX_SNAPSHOT_NAMES ? ' · 최대 인원 초과' : ''));
+    setText(el.snapshotParsed, t('snapshot_parsed', { lines: lines, names: names.length, duplicates: lines - names.length })
+      + (names.length > MAX_SNAPSHOT_NAMES ? t('snapshot_parsed_over_limit') : ''));
     return names;
   }
   function submitSnapshot() {
@@ -2611,28 +2690,32 @@
 
   function describeUpdateStatus(info) {
     var target = info.latestVersion ? ' ' + info.latestVersion : '';
-    if (info.phase === 'unsupported') { return '이 설치 방식에서는 자동 업데이트를 사용하지 않습니다.'; }
-    if (info.phase === 'checking') { return '새 버전을 확인하는 중입니다…'; }
+    if (info.phase === 'unsupported') { return t('update_status_unsupported'); }
+    if (info.phase === 'checking') { return t('update_status_checking'); }
     if (info.phase === 'downloading') {
-      return '새 버전' + target + '을 내려받는 중입니다' + (info.progress === null ? '…' : ' · ' + info.progress + '%');
+      return t('update_status_downloading', { version: target, progress: info.progress === null ? '…' : ' · ' + info.progress + '%' });
     }
-    if (info.phase === 'verifying') { return '내려받은 파일' + target + '의 서명을 확인하는 중입니다…'; }
-    if (info.phase === 'ready') { return '새 버전' + target + ' 확인이 끝났습니다. 원하는 때에 설치하세요.'; }
-    if (info.phase === 'installing') { return '설치를 진행하는 중입니다. 앱이 곧 다시 시작됩니다.'; }
-    if (info.phase === 'available') { return '새 버전' + target + '을 찾았습니다. 백그라운드에서 준비합니다.'; }
-    if (info.phase === 'error') { return '업데이트 확인에 실패했습니다. 잠시 후 다시 시도하세요.'; }
+    if (info.phase === 'verifying') { return t('update_status_verifying', { version: target }); }
+    if (info.phase === 'ready') { return t('update_status_ready', { version: target }); }
+    if (info.phase === 'installing') { return t('update_status_installing'); }
+    if (info.phase === 'available') { return t('update_status_available', { version: target }); }
+    if (info.phase === 'error') { return t('update_status_error'); }
     if (info.phase === 'idle') {
-      return '최신 버전입니다.' + (info.lastCheckedAt ? ' 마지막 확인 ' + formatDateTime(info.lastCheckedAt) : '');
+      return t('update_status_idle', { checked: info.lastCheckedAt ? t('update_status_last_checked', { time: formatDateTime(info.lastCheckedAt) }) : '' });
     }
-    return '업데이트 상태를 아직 확인하지 못했습니다.';
+    return t('update_status_unknown');
   }
 
   function renderUpdate() {
     var info = state.update;
-    if (!info || !el.updateStatusText) { return; }
+    if (!info || !el.updateStatusText) {
+      if (!info && el.versionText) { setText(el.versionText, t('version_checking')); }
+      if (!info && el.updateCurrentVersion) { setText(el.updateCurrentVersion, t('checking') + '…'); }
+      return;
+    }
     var busy = UPDATE_BUSY_PHASES.indexOf(info.phase) >= 0;
 
-    setText(el.updateCurrentVersion, info.currentVersion || '알 수 없음');
+    setText(el.updateCurrentVersion, info.currentVersion || t('update_version_unknown'));
     setText(el.updateStatusText, describeUpdateStatus(info));
 
     if (el.updateProgress) {
@@ -2648,12 +2731,12 @@
     if (el.updateBadge) {
       var badge = '';
       var badgeClass = '';
-      if (info.phase === 'ready') { badge = '설치 준비 완료'; badgeClass = 'is-ready'; }
-      else if (info.phase === 'downloading' || info.phase === 'verifying' || info.phase === 'available') { badge = '준비 중'; }
-      else if (info.phase === 'installing') { badge = '설치 중'; }
-      else if (info.phase === 'error') { badge = '확인 실패'; badgeClass = 'is-bad'; }
-      else if (info.phase === 'unsupported') { badge = '사용 안 함'; badgeClass = 'is-warn'; }
-      else if (info.phase === 'idle') { badge = '최신'; badgeClass = 'is-ready'; }
+      if (info.phase === 'ready') { badge = t('update_badge_ready'); badgeClass = 'is-ready'; }
+      else if (info.phase === 'downloading' || info.phase === 'verifying' || info.phase === 'available') { badge = t('update_badge_preparing'); }
+      else if (info.phase === 'installing') { badge = t('update_badge_installing'); }
+      else if (info.phase === 'error') { badge = t('update_badge_error'); badgeClass = 'is-bad'; }
+      else if (info.phase === 'unsupported') { badge = t('update_badge_unsupported'); badgeClass = 'is-warn'; }
+      else if (info.phase === 'idle') { badge = t('update_badge_idle'); badgeClass = 'is-ready'; }
       el.updateBadge.hidden = !badge;
       el.updateBadge.className = 'update-badge' + (badgeClass ? ' ' + badgeClass : '');
       setText(el.updateBadge, badge);
@@ -2666,18 +2749,18 @@
 
     if (el.btnCheckUpdate) {
       el.btnCheckUpdate.disabled = busy || info.phase === 'unsupported';
-      setText(el.btnCheckUpdate, info.phase === 'checking' ? '확인 중…' : '업데이트 확인');
+      setText(el.btnCheckUpdate, info.phase === 'checking' ? t('btn_check_update_busy') : t('btn_check_update'));
     }
     if (el.btnInstallUpdate) {
       el.btnInstallUpdate.hidden = info.phase !== 'ready' && info.phase !== 'installing';
       el.btnInstallUpdate.disabled = info.phase === 'installing';
-      setText(el.btnInstallUpdate, info.phase === 'installing' ? '설치 중…' : '설치하고 다시 시작');
+      setText(el.btnInstallUpdate, info.phase === 'installing' ? t('btn_install_update_busy') : t('btn_install_update'));
     }
 
     if (el.versionText) {
-      var chipLabel = info.currentVersion ? 'v' + String(info.currentVersion).replace(/^v/i, '') : '버전 확인 중';
-      if (info.phase === 'ready') { chipLabel += ' · 업데이트 준비됨'; }
-      else if (info.phase === 'downloading' || info.phase === 'verifying' || info.phase === 'available') { chipLabel += ' · 업데이트 준비 중'; }
+      var chipLabel = info.currentVersion ? 'v' + String(info.currentVersion).replace(/^v/i, '') : t('version_checking');
+      if (info.phase === 'ready') { chipLabel += ' · ' + t('update_chip_ready'); }
+      else if (info.phase === 'downloading' || info.phase === 'verifying' || info.phase === 'available') { chipLabel += ' · ' + t('update_chip_preparing'); }
       setText(el.versionText, chipLabel);
     }
     if (el.versionDot) {
@@ -2869,11 +2952,15 @@
     }
 
     document.title = t('app_title');
+    renderHealthStatus();
+    renderZoomApiStatus();
     renderModeNote();
     renderRelaySettings();
     renderThemeControls();
     renderRosterNote();
     renderRosterFeedback();
+    renderUpdate();
+    if (el.snapshotNames) { updateParsedCount(); }
     if (el.tutorialSteps.length) { renderTutorial(); }
     if (state.board) {
       renderBoard(state.board);
@@ -2884,6 +2971,7 @@
       renderActivity([], []);
       setText(el.rosterSummary, t('roster_count', { count: state.roster.length }));
       var zeroPeople = t('count_people', { count: 0 });
+      renderDesktopSummary(0, 0);
       setText(el.phoneSummary, t('phone_summary', { present: 0, total: 0, absent: 0 }));
       setText(el.metricPresent, zeroPeople);
       setText(el.metricAbsent, zeroPeople);
@@ -2912,7 +3000,7 @@
       'snapshot-result','snapshot-result-summary','snapshot-result-details',
       'action-confirm','action-confirm-message','btn-confirm-cancel','btn-confirm-apply',
       'btn-sync-zoom','btn-toggle-lang','btn-toggle-theme','btn-open-settings','btn-open-tutorial','btn-health-detail','btn-api-detail','alert-bar','alert-dot','alert-title','alert-message','btn-alert-action','btn-dismiss-alert',
-      'summary-total','summary-present','phone-summary','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
+      'desktop-summary','summary-total','summary-present','phone-summary','summary-rate','summary-time','rate-ring','metric-present','metric-absent','metric-review','metric-duplicate',
       'participants-meta','btn-refresh','btn-export','btn-copy-status','status-text-dialog','status-text-title','status-text-note','status-text','btn-status-download','btn-status-close','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
       'count-all','count-present','count-absent','count-review','count-unmatched','activity-feed','activity-empty','activity-count',
       'duplicate-list','duplicate-empty','duplicate-count','sync-summary','roster-summary','settings-dialog','roster-file','btn-upload-roster',
