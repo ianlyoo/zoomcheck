@@ -1,7 +1,18 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Microsoft.AspNetCore.Mvc;
+using ZoomCheck.Backend;
 using ZoomCheck.Backend.Contracts;
 using ZoomCheck.Backend.Controllers;
 using ZoomCheck.Backend.Options;
@@ -434,6 +445,47 @@ public sealed class UpdateServiceStatusTests
         Assert.False(File.Exists(Path.Combine(harness.DownloadDirectory, "ZoomCheck-Setup-x64.exe")));
     }
 
+    [Fact]
+    public async Task ConcurrentChecksAndStatusReads_PreserveConsistentState()
+    {
+        var releaseRequests = 0;
+        using var harness = new UpdateServiceHarness(
+            new UpdateOptions
+            {
+                CurrentVersionOverride = "0.6.3",
+                AutomaticDownload = false
+            },
+            _ =>
+            {
+                Interlocked.Increment(ref releaseRequests);
+                return JsonResponse("""[{"tag_name":"v0.7.0","name":"v0.7.0","draft":false,"prerelease":false,"assets":[]}]""");
+            });
+
+        var checks = Enumerable.Range(0, 6)
+            .Select(_ => harness.Service.CheckAsync(manual: true, CancellationToken.None))
+            .ToArray();
+        var reads = Enumerable.Range(0, 12)
+            .Select(_ => Task.Run(() => harness.Service.GetStatus()))
+            .ToArray();
+
+        var checkResults = await Task.WhenAll(checks);
+        var readResults = await Task.WhenAll(reads);
+
+        Assert.Equal(6, releaseRequests);
+        Assert.All(checkResults, status =>
+        {
+            Assert.Equal(UpdateAvailability.UpdateAvailable, status.Availability);
+            Assert.Equal("0.7.0", status.LatestVersion);
+            Assert.NotNull(status.LastCheckedAt);
+        });
+        Assert.All(readResults, status => Assert.Equal("0.6.3", status.CurrentVersion));
+
+        var finalStatus = harness.Service.GetStatus();
+        Assert.Equal(UpdateAvailability.UpdateAvailable, finalStatus.Availability);
+        Assert.Equal("0.7.0", finalStatus.LatestVersion);
+        Assert.NotNull(finalStatus.LastCheckedAt);
+    }
+
     private static HttpResponseMessage JsonResponse(string json)
         => new(System.Net.HttpStatusCode.OK)
         {
@@ -453,6 +505,338 @@ public sealed class UpdateServiceStatusTests
         };
 }
 
+public sealed class UpdateServiceDependencyInjectionTests
+{
+    private static readonly JsonSerializerOptions StatusJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    private const string ReleaseFeedPayload = """
+    [
+      {
+        "tag_name": "v0.7.0",
+        "name": "ZoomCheck v0.7.0",
+        "body": "Release notes",
+        "draft": false,
+        "prerelease": false,
+        "published_at": "2026-11-20T04:00:00Z",
+        "assets": []
+      }
+    ]
+    """;
+
+    [Fact]
+    public async Task RealDiContainer_SharesOneUpdateServiceAcrossResolutionsHostedServiceAndController()
+    {
+        using var tempDir = new TempTestDirectory();
+        await using var app = BuildBackendTestApp(
+            tempDir.Path,
+            checkOnStartup: false,
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(ReleaseFeedPayload, System.Text.Encoding.UTF8, "application/json")
+            });
+        await app.StartAsync();
+
+        var first = app.Services.GetRequiredService<UpdateService>();
+        var second = app.Services.GetRequiredService<UpdateService>();
+        Assert.Same(first, second);
+
+        using var scopeA = app.Services.CreateScope();
+        using var scopeB = app.Services.CreateScope();
+        var controllerA = ActivatorUtilities.CreateInstance<UpdatesController>(scopeA.ServiceProvider);
+        var controllerB = ActivatorUtilities.CreateInstance<UpdatesController>(scopeB.ServiceProvider);
+        var hostedService = Assert.Single(app.Services.GetServices<IHostedService>().OfType<UpdateBackgroundService>());
+
+        Assert.Same(first, controllerA.UpdateService);
+        Assert.Same(first, controllerB.UpdateService);
+        Assert.Same(first, hostedService.UpdateService);
+
+        var checkResult = await first.CheckAsync(manual: true, CancellationToken.None);
+        Assert.Equal(UpdateAvailability.UpdateAvailable, checkResult.Availability);
+        Assert.Equal("0.7.0", checkResult.LatestVersion);
+        Assert.NotNull(checkResult.LastCheckedAt);
+
+        var secondStatus = second.GetStatus();
+        var controllerStatus = Assert.IsType<UpdateStatusResponse>(
+            Assert.IsType<OkObjectResult>(controllerB.GetStatus().Result).Value);
+
+        Assert.Equal(UpdateAvailability.UpdateAvailable, secondStatus.Availability);
+        Assert.Equal("0.7.0", secondStatus.LatestVersion);
+        Assert.Equal(checkResult.LastCheckedAt, secondStatus.LastCheckedAt);
+        Assert.Equal(UpdateAvailability.UpdateAvailable, controllerStatus.Availability);
+        Assert.Equal("0.7.0", controllerStatus.LatestVersion);
+        Assert.Equal(checkResult.LastCheckedAt, controllerStatus.LastCheckedAt);
+
+        var client = app.GetTestClient();
+        using var response = await client.GetAsync("/api/update/status");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var httpStatus = await response.Content.ReadFromJsonAsync<UpdateStatusResponse>(StatusJsonOptions);
+
+        Assert.NotNull(httpStatus);
+        Assert.Equal(UpdateAvailability.UpdateAvailable, httpStatus!.Availability);
+        Assert.Equal("0.7.0", httpStatus.LatestVersion);
+        Assert.Equal(checkResult.LastCheckedAt, httpStatus.LastCheckedAt);
+    }
+
+    [Fact]
+    public async Task BackgroundStartupCheck_ResultIsReturnedByGetStatusEndpoint()
+    {
+        using var tempDir = new TempTestDirectory();
+        var downloadDir = Path.Combine(tempDir.Path, "updates");
+        await using var app = BuildBackendTestApp(
+            tempDir.Path,
+            checkOnStartup: true,
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(ReleaseFeedPayload, System.Text.Encoding.UTF8, "application/json")
+            },
+            configureServices: services =>
+            {
+                // On non-Windows CI/dev hosts SupportedPlatform is false, so force it true here
+                // to exercise UpdateBackgroundService's full startup loop on every OS while keeping
+                // the singleton + named IHttpClientFactory wiring intact.
+                if (!OperatingSystem.IsWindows())
+                {
+                    services.Replace(ServiceDescriptor.Singleton(sp => new UpdateService(
+                        sp.GetRequiredService<IHttpClientFactory>(),
+                        sp.GetRequiredService<IOptions<UpdateOptions>>(),
+                        sp.GetRequiredService<IHostApplicationLifetime>(),
+                        sp.GetRequiredService<TimeProvider>(),
+                        sp.GetRequiredService<ILogger<UpdateService>>(),
+                        downloadDir,
+                        supportedPlatform: true)));
+                }
+            });
+
+        await app.StartAsync();
+
+        var client = app.GetTestClient();
+        UpdateStatusResponse? status = null;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            using var response = await client.GetAsync("/api/update/status");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            status = await response.Content.ReadFromJsonAsync<UpdateStatusResponse>(StatusJsonOptions);
+            if (status?.LastCheckedAt is not null)
+            {
+                break;
+            }
+
+            await Task.Delay(25);
+        }
+
+        Assert.NotNull(status);
+        Assert.True(status!.Enabled);
+        Assert.True(status.SupportedPlatform);
+        Assert.Equal("0.6.3", status.CurrentVersion);
+        Assert.Equal("0.7.0", status.LatestVersion);
+        Assert.Equal(UpdateAvailability.UpdateAvailable, status.Availability);
+        Assert.Equal(UpdateDownloadState.None, status.DownloadState);
+        Assert.NotNull(status.LastCheckedAt);
+    }
+
+    [Fact]
+    public async Task PostCheck_StatePersistsToSubsequentGetStatusRequest()
+    {
+        using var tempDir = new TempTestDirectory();
+        await using var app = BuildBackendTestApp(
+            tempDir.Path,
+            checkOnStartup: false,
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(ReleaseFeedPayload, System.Text.Encoding.UTF8, "application/json")
+            });
+        await app.StartAsync();
+
+        var client = app.GetTestClient();
+
+        using var checkResponse = await client.PostAsJsonAsync("/api/update/check", new { });
+        Assert.Equal(HttpStatusCode.OK, checkResponse.StatusCode);
+        var checkedStatus = await checkResponse.Content.ReadFromJsonAsync<UpdateStatusResponse>(StatusJsonOptions);
+        Assert.NotNull(checkedStatus);
+        Assert.Equal(UpdateAvailability.UpdateAvailable, checkedStatus!.Availability);
+        Assert.Equal("0.7.0", checkedStatus.LatestVersion);
+        Assert.NotNull(checkedStatus.LastCheckedAt);
+
+        using var statusResponse = await client.GetAsync("/api/update/status");
+        Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
+        var persistedStatus = await statusResponse.Content.ReadFromJsonAsync<UpdateStatusResponse>(StatusJsonOptions);
+        Assert.NotNull(persistedStatus);
+        Assert.Equal(UpdateAvailability.UpdateAvailable, persistedStatus!.Availability);
+        Assert.Equal("0.7.0", persistedStatus.LatestVersion);
+        Assert.Equal(checkedStatus.LastCheckedAt, persistedStatus.LastCheckedAt);
+    }
+
+    [Fact]
+    public async Task BackgroundStagedDownload_IsVisibleToGetStatusAcrossRequests()
+    {
+        using var tempDir = new TempTestDirectory();
+        var downloadDir = Path.Combine(tempDir.Path, "updates");
+        var installerBytes = new byte[] { 10, 20, 30, 40, 50 };
+        var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(installerBytes)).ToLowerInvariant();
+        var feedWithAssets = """
+        [
+          {
+            "tag_name": "v0.7.0",
+            "name": "ZoomCheck v0.7.0",
+            "draft": false,
+            "prerelease": false,
+            "assets": [
+              {
+                "name": "ZoomCheck-Setup-x64.exe",
+                "browser_download_url": "https://example.invalid/download/ZoomCheck-Setup-x64.exe",
+                "size": 5
+              },
+              {
+                "name": "SHA256SUMS.txt",
+                "browser_download_url": "https://example.invalid/download/SHA256SUMS.txt",
+                "size": 90
+              }
+            ]
+          }
+        ]
+        """;
+
+        await using var app = BuildBackendTestApp(
+            tempDir.Path,
+            checkOnStartup: true,
+            request =>
+            {
+                if (request.RequestUri!.AbsolutePath.EndsWith("/releases", StringComparison.Ordinal))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(feedWithAssets, System.Text.Encoding.UTF8, "application/json")
+                    };
+                }
+
+                if (request.RequestUri.AbsolutePath.EndsWith("SHA256SUMS.txt", StringComparison.Ordinal))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(digest + "  ZoomCheck-Setup-x64.exe\n", System.Text.Encoding.UTF8, "text/plain")
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(installerBytes)
+                };
+            },
+            automaticDownload: true,
+            configureServices: services =>
+            {
+                services.Replace(ServiceDescriptor.Singleton(sp => new UpdateService(
+                    sp.GetRequiredService<IHttpClientFactory>(),
+                    sp.GetRequiredService<IOptions<UpdateOptions>>(),
+                    sp.GetRequiredService<IHostApplicationLifetime>(),
+                    sp.GetRequiredService<TimeProvider>(),
+                    sp.GetRequiredService<ILogger<UpdateService>>(),
+                    downloadDir,
+                    supportedPlatform: true)));
+            });
+
+        await app.StartAsync();
+
+        var client = app.GetTestClient();
+        UpdateStatusResponse? status = null;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            using var response = await client.GetAsync("/api/update/status");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            status = await response.Content.ReadFromJsonAsync<UpdateStatusResponse>(StatusJsonOptions);
+            if (status?.InstallerReady == true)
+            {
+                break;
+            }
+
+            await Task.Delay(25);
+        }
+
+        Assert.NotNull(status);
+        Assert.Equal(UpdateAvailability.UpdateAvailable, status!.Availability);
+        Assert.Equal(UpdateDownloadState.Verified, status.DownloadState);
+        Assert.True(status.InstallerReady);
+        Assert.Equal("ZoomCheck-Setup-x64.exe", status.InstallerFileName);
+        Assert.Equal(installerBytes.Length, status.InstallerSizeBytes);
+    }
+
+    private static WebApplication BuildBackendTestApp(
+        string tempDirectory,
+        bool checkOnStartup,
+        Func<HttpRequestMessage, HttpResponseMessage> responder,
+        bool automaticDownload = false,
+        Action<IServiceCollection>? configureServices = null)
+    {
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+        {
+            ApplicationName = typeof(BackendApp).Assembly.GetName().Name,
+            EnvironmentName = Environments.Production,
+            ContentRootPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../src/ZoomCheck.Backend"))
+        });
+        builder.Logging.ClearProviders();
+        builder.WebHost.UseTestServer();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Storage:DatabasePath"] = Path.Combine(tempDirectory, "zoomcheck.db"),
+            ["Dashboard:OpenBrowserOnStart"] = "false",
+            ["ZoomRelay:Enabled"] = "false",
+            ["ZoomRecovery:Enabled"] = "false",
+            ["Update:Enabled"] = "true",
+            ["Update:CheckOnStartup"] = checkOnStartup ? "true" : "false",
+            ["Update:StartupDelaySeconds"] = "0",
+            ["Update:CheckIntervalHours"] = "0",
+            ["Update:AutomaticDownload"] = automaticDownload ? "true" : "false",
+            ["Update:CurrentVersionOverride"] = "0.6.3"
+        });
+
+        var handler = new DelegateHttpMessageHandler(responder);
+        return BackendApp.Build(builder, services =>
+        {
+            services.AddHttpClient(UpdateService.HttpClientName)
+                .ConfigurePrimaryHttpMessageHandler(() => handler);
+            configureServices?.Invoke(services);
+        });
+    }
+
+    private sealed class DelegateHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
+
+        public DelegateHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)
+        {
+            _responder = responder;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(_responder(request));
+    }
+
+    private sealed class TempTestDirectory : IDisposable
+    {
+        private readonly DirectoryInfo _directory = Directory.CreateTempSubdirectory("zoomcheck-di-tests");
+
+        public string Path => _directory.FullName;
+
+        public void Dispose()
+        {
+            try
+            {
+                _directory.Delete(recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+}
+
 internal sealed class UpdateServiceHarness : IDisposable
 {
     private readonly DirectoryInfo _directory;
@@ -467,7 +851,7 @@ internal sealed class UpdateServiceHarness : IDisposable
             Content = new StringContent("[]", System.Text.Encoding.UTF8, "application/json")
         }));
         Service = new UpdateService(
-            new HttpClient(handler),
+            new StubHttpClientFactory(handler),
             Options.Create(options),
             new StubLifetime(),
             TimeProvider.System,
@@ -515,6 +899,19 @@ internal sealed class UpdateServiceHarness : IDisposable
         {
             // Temporary directory cleanup is best effort.
         }
+    }
+
+    private sealed class StubHttpClientFactory : IHttpClientFactory
+    {
+        private readonly HttpMessageHandler _handler;
+
+        public StubHttpClientFactory(HttpMessageHandler handler)
+        {
+            _handler = handler;
+        }
+
+        public HttpClient CreateClient(string name)
+            => new(_handler, disposeHandler: false);
     }
 
     private sealed class StubHandler : HttpMessageHandler
