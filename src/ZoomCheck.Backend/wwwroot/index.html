@@ -213,6 +213,12 @@
           <div class="settings-control">
             <input type="file" id="roster-file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
             <div class="button-row"><button type="button" class="btn primary" id="btn-upload-roster" data-i18n="btn_upload_roster">명단 올리기</button><button type="button" class="btn secondary" id="btn-reload-roster" data-i18n="btn_reload_roster">다시 읽기</button></div>
+            <div class="roster-feedback" id="roster-feedback" role="status" aria-live="polite" hidden>
+              <strong id="roster-feedback-title"></strong>
+              <p id="roster-feedback-message"></p>
+              <p class="roster-feedback-hint" id="roster-feedback-hint" hidden></p>
+              <ul class="roster-feedback-list" id="roster-feedback-list" hidden></ul>
+            </div>
             <p class="setting-status" id="roster-note">명단 상태 확인 중…</p>
           </div>
         </section>

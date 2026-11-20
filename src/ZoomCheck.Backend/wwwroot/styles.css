@@ -472,6 +472,18 @@ body:has(.alert-bar:not([hidden])) .dashboard { height: calc(100vh - 110px); }
 .settings-control input[type="number"] { width: 78px; }
 .settings-control code { display: block; padding: 8px 10px; border-radius: 6px; background: var(--code-bg); color: var(--code-text); overflow-wrap: anywhere; font-size: 11px; }
 .setting-status { margin: 0; color: var(--muted); font-size: 11px; }
+.roster-feedback { display: grid; gap: 4px; padding: 11px 13px; border: 1px solid var(--line); border-left: 3px solid var(--blue); border-radius: 7px; background: var(--surface-subtle); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.roster-feedback strong { font-size: 13px; font-weight: 750; color: var(--text); }
+.roster-feedback p { margin: 0; color: var(--text); font-size: 12px; }
+.roster-feedback .roster-feedback-hint { color: var(--muted); }
+.roster-feedback.is-bad { background: var(--red-soft); border-color: var(--line); border-left-color: var(--red); }
+.roster-feedback.is-bad strong { color: var(--danger-strong); }
+.roster-feedback.is-warn { background: var(--amber-soft); border-color: var(--line); border-left-color: var(--amber); }
+.roster-feedback.is-warn strong { color: var(--warning-strong); }
+.roster-feedback.is-ok { background: var(--green-soft); border-color: var(--line); border-left-color: var(--green); }
+.roster-feedback.is-ok strong { color: var(--success-strong); }
+.roster-feedback-list { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 3px; font-size: 12px; color: var(--text); }
+.roster-feedback-list li { overflow-wrap: anywhere; }
 .inline-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
 .inline-settings label { display: flex; align-items: center; gap: 7px; font-size: 12px; }
 .mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

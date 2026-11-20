@@ -159,8 +159,134 @@ public sealed class ExcelRosterParserTests : IDisposable
             new string?[] { "1", "2" }
         });
 
-        var exception = Assert.Throws<InvalidOperationException>(() => _parser.Parse(path));
+        var exception = Assert.Throws<RosterImportException>(() => _parser.Parse(path));
+        Assert.IsAssignableFrom<InvalidOperationException>(exception);
+        Assert.Equal(RosterImportErrorCode.MissingHeaders, exception.ErrorCode);
+        Assert.Equal("ROSTER_MISSING_HEADERS", exception.ErrorCodeName);
+        Assert.Equal("roster_err_missing_headers", exception.MessageKey);
+        Assert.Equal(new[] { "foo", "bar" }, exception.FoundHeaders);
+        Assert.Equal(new[] { "name", "sequence" }, exception.MissingColumns);
         Assert.Contains("성명", exception.Message);
+    }
+
+    [Fact]
+    public void Parse_ThrowsNotExcel_WhenFileContainsPlainText()
+    {
+        Directory.CreateDirectory(_workDirectory);
+        var path = Path.Combine(_workDirectory, "not-excel.xlsx");
+        File.WriteAllText(path, "this is not an excel workbook");
+
+        var exception = Assert.Throws<RosterImportException>(() => _parser.Parse(path));
+        Assert.Equal(RosterImportErrorCode.NotExcel, exception.ErrorCode);
+        Assert.Equal("ROSTER_NOT_EXCEL", exception.ErrorCodeName);
+        Assert.Equal("roster_err_not_excel", exception.MessageKey);
+    }
+
+    [Fact]
+    public void Parse_ThrowsEmptySheet_WhenWorkbookHasNoData()
+    {
+        var path = WriteRoster("empty.xlsx", Array.Empty<string?[]>());
+
+        var exception = Assert.Throws<RosterImportException>(() => _parser.Parse(path));
+        Assert.Equal(RosterImportErrorCode.EmptySheet, exception.ErrorCode);
+        Assert.Equal("ROSTER_EMPTY_SHEET", exception.ErrorCodeName);
+        Assert.Equal("roster_err_empty_sheet", exception.MessageKey);
+    }
+
+    [Fact]
+    public void Parse_ThrowsNoRosterRows_WhenOnlyHeaderRowPresent()
+    {
+        var path = WriteRoster("header-only.xlsx", new List<string?[]>
+        {
+            Header(),
+            new string?[] { "1", "   ", "", "", "" }
+        });
+
+        var exception = Assert.Throws<RosterImportException>(() => _parser.Parse(path));
+        Assert.Equal(RosterImportErrorCode.NoRosterRows, exception.ErrorCode);
+        Assert.Equal("ROSTER_NO_ROWS", exception.ErrorCodeName);
+        Assert.Equal("roster_err_no_rows", exception.MessageKey);
+        Assert.Equal("명단", exception.SheetName);
+    }
+
+    [Fact]
+    public void Parse_ReportsMissingSequenceColumn_WhenOnlyNameHeaderIsPresent()
+    {
+        var path = WriteRoster("missing-sequence.xlsx", new List<string?[]>
+        {
+            new string?[] { "성명", "이메일" },
+            new string?[] { "학생001", "student001@example.com" }
+        });
+
+        var exception = Assert.Throws<RosterImportException>(() => _parser.Parse(path));
+        Assert.Equal(RosterImportErrorCode.MissingHeaders, exception.ErrorCode);
+        Assert.Equal(new[] { "성명", "이메일" }, exception.FoundHeaders);
+        Assert.Equal(new[] { "sequence" }, exception.MissingColumns);
+    }
+
+    [Fact]
+    public void Parse_ReportsMissingNameColumn_WhenOnlySequenceHeaderIsPresent()
+    {
+        var path = WriteRoster("missing-name.xlsx", new List<string?[]>
+        {
+            new string?[] { "번호", "이메일" },
+            new string?[] { "1", "student001@example.com" }
+        });
+
+        var exception = Assert.Throws<RosterImportException>(() => _parser.Parse(path));
+        Assert.Equal(RosterImportErrorCode.MissingHeaders, exception.ErrorCode);
+        Assert.Equal(new[] { "번호", "이메일" }, exception.FoundHeaders);
+        Assert.Equal(new[] { "name" }, exception.MissingColumns);
+    }
+
+    [Fact]
+    public void Parse_ReportsDuplicateRosterNumbers_WithoutDroppingRows()
+    {
+        var path = WriteRoster("duplicate-numbers.xlsx", new List<string?[]>
+        {
+            Header(),
+            new string?[] { "5", "학생005", "student005@example.com", "", "" },
+            new string?[] { "6", "학생006", "student006@example.com", "", "" },
+            new string?[] { "5", "학생005", "student005@example.com", "", "" },
+            new string?[] { "7", "학생007", "", "", "" },
+            new string?[] { "7", "학생008", "", "", "" },
+            new string?[] { "31", "학생005", "student005b@example.com", "", "" }
+        });
+
+        var result = _parser.Parse(path);
+
+        Assert.Equal(6, result.People.Count);
+        Assert.NotNull(result.DuplicateNumbers);
+        Assert.Equal(2, result.DuplicateNumbers!.Count);
+
+        var dup5 = result.DuplicateNumbers[0];
+        Assert.Equal("5", dup5.Sequence);
+        Assert.Equal(2, dup5.Count);
+        Assert.Equal(new[] { "학생005" }, dup5.Names);
+        Assert.Equal(new[] { 2, 4 }, dup5.RowNumbers);
+
+        var dup7 = result.DuplicateNumbers[1];
+        Assert.Equal("7", dup7.Sequence);
+        Assert.Equal(2, dup7.Count);
+        Assert.Equal(new[] { "학생007", "학생008" }, dup7.Names);
+        Assert.Equal(new[] { 5, 6 }, dup7.RowNumbers);
+    }
+
+    [Fact]
+    public void Parse_DoesNotReportBlankSequencesAsDuplicates()
+    {
+        var path = WriteRoster("blank-sequences.xlsx", new List<string?[]>
+        {
+            Header(),
+            new string?[] { "", "학생001", "", "", "" },
+            new string?[] { "  ", "학생002", "", "", "" }
+        });
+
+        var result = _parser.Parse(path);
+
+        Assert.Equal(2, result.People.Count);
+        Assert.NotNull(result.DuplicateNumbers);
+        Assert.Empty(result.DuplicateNumbers!);
     }
 
     [Fact]
