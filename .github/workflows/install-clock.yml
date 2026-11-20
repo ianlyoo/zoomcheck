@@ -1,8 +1,16 @@
 name: Install clock
 on:
   workflow_dispatch:
-  push:
-    branches: [audit/install-clock]
+    inputs:
+      artifact_run_id:
+        description: Optional Build Windows Installer run ID to measure instead of v0.6.3 release
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
 jobs:
   clock:
     runs-on: windows-latest
@@ -13,16 +21,29 @@ jobs:
     steps:
       - name: Measure download, install and startup
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $base = 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3'
           $name = if ('${{ matrix.package }}' -eq 'setup') { 'ZoomCheck-Setup-x64.exe' } else { 'ZoomCheck-portable-win-x64.zip' }
+          $artifactName = if ('${{ matrix.package }}' -eq 'setup') { 'ZoomCheck-Setup-x64' } else { 'ZoomCheck-portable-win-x64' }
           $clock = [Diagnostics.Stopwatch]::StartNew()
           Write-Host "download_start_utc=$([DateTime]::UtcNow.ToString('o'))"
-          Invoke-WebRequest "$base/$name" -OutFile $name
-          $download = $clock.Elapsed.TotalSeconds
-          Write-Host "download_end_utc=$([DateTime]::UtcNow.ToString('o')) download_seconds=$download"
-          Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+          if (-not [string]::IsNullOrWhiteSpace($env:ARTIFACT_RUN_ID)) {
+            gh run download $env:ARTIFACT_RUN_ID -R ianlyoo/zoomcheck -n $artifactName -D .
+            if ($LASTEXITCODE -ne 0) { throw "gh run download $artifactName failed" }
+            $download = $clock.Elapsed.TotalSeconds
+            Write-Host "download_end_utc=$([DateTime]::UtcNow.ToString('o')) download_seconds=$download"
+            gh run download $env:ARTIFACT_RUN_ID -R ianlyoo/zoomcheck -n ZoomCheck-SHA256SUMS -D .
+            if ($LASTEXITCODE -ne 0) { throw "gh run download checksum failed" }
+          } else {
+            $base = 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3'
+            Invoke-WebRequest "$base/$name" -OutFile $name
+            $download = $clock.Elapsed.TotalSeconds
+            Write-Host "download_end_utc=$([DateTime]::UtcNow.ToString('o')) download_seconds=$download"
+            Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+          }
           $expected = ((Get-Content SHA256SUMS.txt | Where-Object { $_ -match [regex]::Escape($name) }) -split '\s+')[0]
           if (-not $expected -or (Get-FileHash $name -Algorithm SHA256).Hash -ne $expected) { throw 'SHA256 mismatch' }
           Write-Host "verified_utc=$([DateTime]::UtcNow.ToString('o'))"
@@ -55,15 +76,26 @@ jobs:
           $end = $clock.Elapsed.TotalSeconds
           Write-Host "http_200_utc=$([DateTime]::UtcNow.ToString('o')) poll_seconds=$($end - $launch) total_seconds=$end"
           Write-Host 'Setup launches during installation; its poll_seconds excludes any overlapping startup.'
+
   walkthrough:
     runs-on: windows-latest
     timeout-minutes: 8
     steps:
       - name: Prepare installer and tools
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
         run: |
+          $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path screenshots | Out-Null
-          Invoke-WebRequest 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3/ZoomCheck-Setup-x64.exe' -OutFile setup.exe
+          if (-not [string]::IsNullOrWhiteSpace($env:ARTIFACT_RUN_ID)) {
+            gh run download $env:ARTIFACT_RUN_ID -R ianlyoo/zoomcheck -n ZoomCheck-Setup-x64 -D .
+            if ($LASTEXITCODE -ne 0) { throw "gh run download ZoomCheck-Setup-x64 failed" }
+            Move-Item -Force ZoomCheck-Setup-x64.exe setup.exe
+          } else {
+            Invoke-WebRequest 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3/ZoomCheck-Setup-x64.exe' -OutFile setup.exe
+          }
           Set-Content -Path setup.exe -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
           Get-AuthenticodeSignature setup.exe | Format-List Status,StatusMessage,SignerCertificate
           python -m pip install pywinauto pillow
@@ -79,6 +111,8 @@ jobs:
           start = time.monotonic()
           subprocess.Popen([str(pathlib.Path('setup.exe').resolve())])
           last = None
+          clicks = 0
+          screens = 0
           try:
               for i in range(1, 15):
                   deadline = time.monotonic() + 45
@@ -95,6 +129,7 @@ jobs:
                   else:
                       raise RuntimeError('Installer screen not found or did not advance')
                   time.sleep(.5)
+                  screens += 1
                   ImageGrab.grab(all_screens=True).save(out / f'{i:02d}-installer.png')
                   print(f'SCREEN {i}: {key}', flush=True)
                   last = key
@@ -103,13 +138,14 @@ jobs:
                       print('WAIT for installation', flush=True)
                       continue
                   label, button = choices[-1]
-                  print(f'CLICK {label}', flush=True)
+                  clicks += 1
+                  print(f'CLICK {clicks}: {label}', flush=True)
                   button.click()
                   if 'finish' in label.lower():
                       break
               else:
                   raise RuntimeError('Too many screens')
-              print(f'INSTALLER_SECONDS={time.monotonic()-start}', flush=True)
+              print(f'INSTALLER_SCREENS={screens} INSTALLER_CLICKS={clicks} INSTALLER_SECONDS={time.monotonic()-start}', flush=True)
               time.sleep(5)
               ImageGrab.grab(all_screens=True).save(out / 'app-and-tray.png')
           except Exception:
@@ -130,8 +166,6 @@ jobs:
           $chrome = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
           Start-Process $chrome -Wait -ArgumentList @("--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--window-size=1440,1000", "--user-data-dir=$env:RUNNER_TEMP\capture-profile", "--screenshot=$PWD\screenshots\dashboard.png", "http://127.0.0.1:5078/")
           if (-not (Test-Path screenshots/dashboard.png)) { throw 'Dashboard screenshot missing' }
-          Start-Process $chrome -Wait -ArgumentList @("--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--window-size=1440,1000", "--user-data-dir=$env:RUNNER_TEMP\release-profile", "--screenshot=$PWD\screenshots\release.png", "https://github.com/ianlyoo/zoomcheck/releases/tag/v0.6.3")
-          if (-not (Test-Path screenshots/release.png)) { throw 'Release screenshot missing' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
