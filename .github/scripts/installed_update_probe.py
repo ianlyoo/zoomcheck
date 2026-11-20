@@ -16,8 +16,8 @@ def status():
 def summary(page,label):
     section=page.locator('#settings-update'); section.scroll_into_view_if_needed()
     info={'label':label,'current':page.locator('#update-current-version').inner_text(),'status':page.locator('#update-status-text').inner_text(),'install_visible':page.locator('#btn-install-update').is_visible(),'install_enabled':page.locator('#btn-install-update').is_enabled()}
-    print('UI='+json.dumps(info,ensure_ascii=False),flush=True)
     page.screenshot(path=str(out/(label+'.png')),full_page=True)
+    print('UI='+json.dumps(info,ensure_ascii=True),flush=True)
     return info
 
 def main():
@@ -35,7 +35,7 @@ def main():
         with page.expect_response(lambda r:'/api/update/check' in r.url and r.request.method=='POST',timeout=120000) as first_wait:
             page.locator('#btn-check-update').click()
         first=first_wait.value; first_payload=compact(first)
-        print('FIRST_CHECK_HTTP='+str(first.status)+' JSON='+json.dumps(first_payload,ensure_ascii=False),flush=True)
+        print('FIRST_CHECK_HTTP='+str(first.status)+' JSON='+json.dumps(first_payload,ensure_ascii=True),flush=True)
         page.wait_for_timeout(300)
         first_ui=summary(page,'02-first-check')
         page.wait_for_timeout(20000)
@@ -43,7 +43,7 @@ def main():
         with page.expect_response(lambda r:'/api/update/check' in r.url and r.request.method=='POST',timeout=120000) as second_wait:
             page.locator('#btn-check-update').click()
         second=second_wait.value; second_payload=compact(second)
-        print('SECOND_CHECK_HTTP='+str(second.status)+' JSON='+json.dumps(second_payload,ensure_ascii=False),flush=True)
+        print('SECOND_CHECK_HTTP='+str(second.status)+' JSON='+json.dumps(second_payload,ensure_ascii=True),flush=True)
         install=page.locator('#btn-install-update')
         try:
             install.wait_for(state='visible',timeout=3000)
@@ -52,7 +52,7 @@ def main():
             page.screenshot(path=str(out/'04-install-confirmation.png'),full_page=True)
             with page.expect_response(lambda r:'/api/update/install' in r.url and r.request.method=='POST',timeout=30000) as install_wait:
                 page.locator('#btn-confirm-apply').click()
-            answer=install_wait.value; print('INSTALL_POST_HTTP='+str(answer.status)+' JSON='+json.dumps(compact(answer),ensure_ascii=False),flush=True)
+            answer=install_wait.value; print('INSTALL_POST_HTTP='+str(answer.status)+' JSON='+json.dumps(compact(answer),ensure_ascii=True),flush=True)
             accepted=answer.status==202
         except PlaywrightTimeout as ex:
             print('INSTALL_BUTTON_OR_REQUEST_UNAVAILABLE='+str(ex).splitlines()[0],flush=True)
@@ -68,10 +68,10 @@ def main():
                 if (accepted and restarted) or (not accepted): break
             except Exception: pass
             time.sleep(1)
-        print('FINAL_STATUS='+json.dumps(final,ensure_ascii=False),flush=True)
+        print('FINAL_STATUS='+json.dumps(final,ensure_ascii=True),flush=True)
         print('FINAL_BACKEND_PIDS='+json.dumps(backend_pids()),flush=True)
         print('RESTART_OBSERVED='+str(restarted).lower(),flush=True)
-        print('OUTCOME='+json.dumps({'first_check':first_payload,'first_ui':first_ui,'after_20s_ui':after_ui,'second_check':second_payload,'install_accepted':accepted,'restart_observed':restarted,'current_version':final.get('currentVersion') if final else None},ensure_ascii=False),flush=True)
+        print('OUTCOME='+json.dumps({'first_check':first_payload,'first_ui':first_ui,'after_20s_ui':after_ui,'second_check':second_payload,'install_accepted':accepted,'restart_observed':restarted,'current_version':final.get('currentVersion') if final else None},ensure_ascii=True),flush=True)
         try:
             page.goto(url,wait_until='domcontentloaded',timeout=15000)
             page.screenshot(path=str(out/'06-final-dashboard.png'),full_page=True)
