@@ -131,6 +131,7 @@
     connectionDrafts: Object.create(null),
     rosterLoaded: false,
     rosterError: false,
+    rosterFeedback: null,
     readinessAction: null,
     sessionLog: [],
     alertAction: null,
@@ -861,23 +862,169 @@
     });
   }
 
+  var ROSTER_ERROR_KEY_BY_CODE = {
+    ROSTER_FILE_REQUIRED: 'roster_err_file_required',
+    ROSTER_UNSUPPORTED_EXTENSION: 'roster_err_unsupported_extension',
+    ROSTER_FILE_TOO_LARGE: 'roster_err_file_too_large',
+    ROSTER_NOT_EXCEL: 'roster_err_not_excel',
+    ROSTER_PASSWORD_PROTECTED: 'roster_err_password_protected',
+    ROSTER_EMPTY_SHEET: 'roster_err_empty_sheet',
+    ROSTER_MISSING_HEADERS: 'roster_err_missing_headers',
+    ROSTER_NO_ROWS: 'roster_err_no_rows',
+    ROSTER_READ_FAILED: 'roster_err_read_failed',
+    ROSTER_INVALID: 'roster_err_server'
+  };
+  var MAX_ROSTER_DUPLICATE_ITEMS = 10;
+
+  function resolveRosterErrorKey(problem, status) {
+    if (status === 0) { return 'roster_err_offline'; }
+    var key = problem && typeof problem.messageKey === 'string' ? problem.messageKey : '';
+    if (key && t(key + '_title') !== key + '_title') { return key; }
+    var code = problem && typeof problem.errorCode === 'string' ? problem.errorCode : '';
+    if (code && ROSTER_ERROR_KEY_BY_CODE[code]) { return ROSTER_ERROR_KEY_BY_CODE[code]; }
+    if (status === 413) { return 'roster_err_file_too_large'; }
+    return 'roster_err_server';
+  }
+
+  function formatRosterDuplicateItem(item) {
+    var sequence = String(item && item.sequence !== undefined ? item.sequence : '').trim();
+    var names = asArray(item && item.names).filter(Boolean).join(', ');
+    var personKey = /^\d+$/.test(sequence) ? 'roster_import_dup_person_numeric' : 'roster_import_dup_person_other';
+    var person = t(personKey, { number: sequence, names: names }).trim();
+    var rows = asArray(item && item.rowNumbers).join(', ');
+    return t('roster_import_dup_item', { count: item.count, person: person, rows: rows });
+  }
+
+  function buildRosterFeedbackContent(feedback) {
+    if (!feedback) { return null; }
+    if (feedback.kind === 'bad') {
+      var problem = feedback.problem || null;
+      var key = feedback.messageKey || resolveRosterErrorKey(problem, feedback.status);
+      var title = t(key + '_title');
+      var message = t(key + '_message');
+      var hint = t(key + '_hint');
+      if (hint === key + '_hint') { hint = ''; }
+      var items = [];
+      if (key === 'roster_err_missing_headers') {
+        var missing = asArray(problem && problem.missingColumns);
+        if (missing.length === 1 && missing[0] === 'name') {
+          message = t('roster_err_missing_headers_name');
+        } else if (missing.length === 1 && missing[0] === 'sequence') {
+          message = t('roster_err_missing_headers_sequence');
+        }
+        var found = asArray(problem && problem.foundHeaders).filter(Boolean);
+        if (found.length) {
+          items.push(t('roster_err_found_headers', { headers: found.join(', ') }));
+        }
+      }
+      return { kind: 'bad', title: title, message: message, hint: hint, items: items };
+    }
+    if (feedback.kind === 'warn') {
+      var duplicates = asArray(feedback.duplicateNumbers);
+      var shown = duplicates.slice(0, MAX_ROSTER_DUPLICATE_ITEMS).map(formatRosterDuplicateItem);
+      if (duplicates.length > MAX_ROSTER_DUPLICATE_ITEMS) {
+        shown.push(t('roster_import_dup_more', { count: duplicates.length - MAX_ROSTER_DUPLICATE_ITEMS }));
+      }
+      return {
+        kind: 'warn',
+        title: t('roster_import_dup_title', { count: feedback.count, groups: duplicates.length }),
+        message: t('roster_import_dup_message'),
+        hint: '',
+        items: shown
+      };
+    }
+    return {
+      kind: 'ok',
+      title: t('roster_import_ok_title'),
+      message: feedback.fileName
+        ? t('roster_import_ok_message', { file: feedback.fileName, count: feedback.count })
+        : t('roster_import_ok_message_nofile', { count: feedback.count }),
+      hint: '',
+      items: []
+    };
+  }
+
+  function renderRosterFeedback() {
+    if (!el.rosterFeedback) { return; }
+    var content = buildRosterFeedbackContent(state.rosterFeedback);
+    if (!content) {
+      el.rosterFeedback.hidden = true;
+      el.rosterFeedback.className = 'roster-feedback';
+      setText(el.rosterFeedbackTitle, '');
+      setText(el.rosterFeedbackMessage, '');
+      if (el.rosterFeedbackHint) { el.rosterFeedbackHint.hidden = true; setText(el.rosterFeedbackHint, ''); }
+      if (el.rosterFeedbackList) { el.rosterFeedbackList.hidden = true; el.rosterFeedbackList.textContent = ''; }
+      return;
+    }
+    el.rosterFeedback.hidden = false;
+    el.rosterFeedback.className = 'roster-feedback is-' + content.kind;
+    el.rosterFeedback.setAttribute('role', content.kind === 'bad' ? 'alert' : 'status');
+    el.rosterFeedback.setAttribute('aria-live', content.kind === 'bad' ? 'assertive' : 'polite');
+    setText(el.rosterFeedbackTitle, content.title);
+    setText(el.rosterFeedbackMessage, content.message);
+    if (el.rosterFeedbackHint) {
+      el.rosterFeedbackHint.hidden = !content.hint;
+      setText(el.rosterFeedbackHint, content.hint || '');
+    }
+    if (el.rosterFeedbackList) {
+      el.rosterFeedbackList.textContent = '';
+      el.rosterFeedbackList.hidden = content.items.length === 0;
+      content.items.forEach(function (text) {
+        var li = document.createElement('li');
+        li.textContent = text;
+        el.rosterFeedbackList.appendChild(li);
+      });
+    }
+  }
+
+  function setRosterFeedback(feedback, options) {
+    state.rosterFeedback = feedback;
+    renderRosterFeedback();
+    var content = buildRosterFeedbackContent(feedback);
+    if (content && (!options || options.log !== false)) {
+      var detail = [content.message, content.items.join(' · '), content.hint].filter(Boolean).join(' ');
+      logSession(content.kind, content.title, detail);
+    }
+  }
+
   function uploadRoster() {
     var file = el.rosterFile.files && el.rosterFile.files[0];
-    if (!file) { toast('warn', t('roster_select_file'), t('roster_file_required')); return; }
-    var lower = file.name.toLowerCase();
-    if (lower.slice(-5) !== '.xlsx' && lower.slice(-4) !== '.xls') { toast('warn', t('roster_invalid_file'), t('roster_allowed_files')); return; }
-    if (file.size > MAX_ROSTER_BYTES) { toast('warn', t('roster_file_too_large'), t('roster_file_size')); return; }
+    if (!file || file.size === 0) {
+      setRosterFeedback({ kind: 'bad', messageKey: 'roster_err_file_required' });
+      return Promise.resolve(null);
+    }
+    var lower = String(file.name || '').toLowerCase();
+    if (lower.slice(-5) !== '.xlsx' && lower.slice(-4) !== '.xls') {
+      setRosterFeedback({ kind: 'bad', messageKey: 'roster_err_unsupported_extension' });
+      return Promise.resolve(null);
+    }
+    if (file.size > MAX_ROSTER_BYTES) {
+      setRosterFeedback({ kind: 'bad', messageKey: 'roster_err_file_too_large' });
+      return Promise.resolve(null);
+    }
     var form = new FormData();
     form.append('file', file, file.name);
     var busy = beginBusy(t('roster_uploading'));
-    request('/api/roster/upload', { method: 'POST', headers: { Accept: 'application/json' }, body: form }).then(function (result) {
+    return request('/api/roster/upload', { method: 'POST', headers: { Accept: 'application/json' }, body: form }).then(function (result) {
       endBusy(busy);
       el.rosterFile.value = '';
-      toast('ok', t('roster_uploaded'), (result && result.count !== undefined ? result.count : '') + '명');
-      return Promise.all([loadRoster(false), refreshBoard({ silent: true })]);
+      var count = result && result.count !== undefined ? result.count : 0;
+      var fileName = (result && result.displayName) || file.name;
+      var duplicateNumbers = asArray(result && result.warnings && result.warnings.duplicateNumbers);
+      if (duplicateNumbers.length) {
+        setRosterFeedback({ kind: 'warn', count: count, fileName: fileName, duplicateNumbers: duplicateNumbers });
+      } else {
+        setRosterFeedback({ kind: 'ok', count: count, fileName: fileName });
+      }
+      return Promise.all([loadRoster(false), refreshBoard({ silent: true })]).then(function () { return result; });
     }, function (error) {
       endBusy(busy);
-      toast('bad', t('roster_upload_failed'), error.message);
+      setRosterFeedback({
+        kind: 'bad',
+        status: error ? error.status : 0,
+        problem: error && error.problem ? error.problem : null
+      });
+      return null;
     });
   }
 
@@ -2575,6 +2722,7 @@
     renderModeNote();
     renderThemeControls();
     renderRosterNote();
+    renderRosterFeedback();
     if (el.tutorialSteps.length) { renderTutorial(); }
     if (state.board) {
       renderBoard(state.board);
@@ -2617,7 +2765,7 @@
       'participants-meta','btn-refresh','btn-export','btn-copy-status','status-text-dialog','status-text-title','status-text-note','status-text','btn-status-download','btn-status-close','participant-search','group-filter','participant-table-wrap','participant-rows','participants-empty','visible-count',
       'count-all','count-present','count-absent','count-review','count-unmatched','activity-feed','activity-empty','activity-count',
       'duplicate-list','duplicate-empty','duplicate-count','sync-summary','roster-summary','settings-dialog','roster-file','btn-upload-roster',
-      'btn-reload-roster','roster-note','api-settings-status','btn-check-zoom','settings-autorefresh','autorefresh-interval','snapshot-names',
+      'btn-reload-roster','roster-note','roster-feedback','roster-feedback-title','roster-feedback-message','roster-feedback-hint','roster-feedback-list','api-settings-status','btn-check-zoom','settings-autorefresh','autorefresh-interval','snapshot-names',
       'snapshot-parsed','chk-empty-ok','btn-submit-snapshot','btn-clear-snapshot','session-log','session-log-empty','btn-clear-log',
       'toast-region','busy','busy-text',
       'zoom-app-dot','zoom-app-status','btn-zoom-app-detail','mode-note','zoom-app-settings-status','pairing-code','pairing-expiry',
@@ -2722,6 +2870,11 @@
       });
     }
     el.btnUploadRoster.addEventListener('click', uploadRoster);
+    el.rosterFile.addEventListener('change', function () {
+      if (el.rosterFile.files && el.rosterFile.files.length && state.rosterFeedback && state.rosterFeedback.kind === 'bad') {
+        setRosterFeedback(null, { log: false });
+      }
+    });
     el.btnReloadRoster.addEventListener('click', function () { loadRoster(true); });
     el.btnSubmitSnapshot.addEventListener('click', submitSnapshot);
     el.btnClearSnapshot.addEventListener('click', function () { el.snapshotNames.value = ''; updateParsedCount(); });
