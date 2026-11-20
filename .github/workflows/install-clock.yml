@@ -1,174 +1,111 @@
 name: Install clock
 on:
   workflow_dispatch:
-    inputs:
-      artifact_run_id:
-        description: Optional Build Windows Installer run ID to measure instead of v0.6.3 release
-        required: false
-        type: string
-
 permissions:
   actions: read
   contents: read
-
 jobs:
-  clock:
+  stage-baseline:
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        package: [setup, portable]
     steps:
-      - name: Measure download, install and startup
+      - name: Fetch v0.6.3 release assets
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $name = if ('${{ matrix.package }}' -eq 'setup') { 'ZoomCheck-Setup-x64.exe' } else { 'ZoomCheck-portable-win-x64.zip' }
-          $artifactName = if ('${{ matrix.package }}' -eq 'setup') { 'ZoomCheck-Setup-x64' } else { 'ZoomCheck-portable-win-x64' }
-          $clock = [Diagnostics.Stopwatch]::StartNew()
-          Write-Host "download_start_utc=$([DateTime]::UtcNow.ToString('o'))"
-          if (-not [string]::IsNullOrWhiteSpace($env:ARTIFACT_RUN_ID)) {
-            gh run download $env:ARTIFACT_RUN_ID -R ianlyoo/zoomcheck -n $artifactName -D .
-            if ($LASTEXITCODE -ne 0) { throw "gh run download $artifactName failed" }
-            $download = $clock.Elapsed.TotalSeconds
-            Write-Host "download_end_utc=$([DateTime]::UtcNow.ToString('o')) download_seconds=$download"
-            gh run download $env:ARTIFACT_RUN_ID -R ianlyoo/zoomcheck -n ZoomCheck-SHA256SUMS -D .
-            if ($LASTEXITCODE -ne 0) { throw "gh run download checksum failed" }
-          } else {
-            $base = 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3'
-            Invoke-WebRequest "$base/$name" -OutFile $name
-            $download = $clock.Elapsed.TotalSeconds
-            Write-Host "download_end_utc=$([DateTime]::UtcNow.ToString('o')) download_seconds=$download"
-            Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+          New-Item -ItemType Directory -Path base-setup,base-portable | Out-Null
+          $base = 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3'
+          Invoke-WebRequest "$base/ZoomCheck-Setup-x64.exe" -OutFile base-setup/ZoomCheck-Setup-x64.exe
+          Invoke-WebRequest "$base/ZoomCheck-portable-win-x64.zip" -OutFile base-portable/ZoomCheck-portable-win-x64.zip
+          Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+          foreach ($asset in @('ZoomCheck-Setup-x64.exe','ZoomCheck-portable-win-x64.zip')) {
+            $dir = if ($asset -like '*Setup*') { 'base-setup' } else { 'base-portable' }
+            $expected = ((Get-Content SHA256SUMS.txt | Where-Object { $_ -match [regex]::Escape($asset) }) -split '\s+')[0]
+            if (-not $expected -or (Get-FileHash "$dir/$asset" -Algorithm SHA256).Hash -ne $expected) { throw "checksum mismatch: $asset" }
           }
-          $expected = ((Get-Content SHA256SUMS.txt | Where-Object { $_ -match [regex]::Escape($name) }) -split '\s+')[0]
-          if (-not $expected -or (Get-FileHash $name -Algorithm SHA256).Hash -ne $expected) { throw 'SHA256 mismatch' }
-          Write-Host "verified_utc=$([DateTime]::UtcNow.ToString('o'))"
-          $installStart = $clock.Elapsed.TotalSeconds
-          if ('${{ matrix.package }}' -eq 'setup') {
-            $p = Start-Process -FilePath (Resolve-Path $name) -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -PassThru
-            $p.WaitForExit()
-            if ($p.ExitCode -ne 0) { throw "Installer exit code $($p.ExitCode)" }
-          } else {
-            Expand-Archive $name -DestinationPath portable
-          }
-          $installEnd = $clock.Elapsed.TotalSeconds
-          Write-Host "install_end_utc=$([DateTime]::UtcNow.ToString('o')) install_seconds=$($installEnd - $installStart)"
-          if ('${{ matrix.package }}' -eq 'portable') {
-            $exe = Get-ChildItem portable -Filter ZoomCheck.Backend.exe -Recurse | Select-Object -First 1
-            if (-not $exe) { throw 'Portable executable missing' }
-            Start-Process $exe.FullName -WorkingDirectory $exe.DirectoryName
-          }
-          $launch = $clock.Elapsed.TotalSeconds
-          Write-Host "poll_start_utc=$([DateTime]::UtcNow.ToString('o'))"
-          $deadline = $clock.Elapsed.TotalSeconds + 120
-          do {
-            try {
-              $health = Invoke-WebRequest 'http://127.0.0.1:5078/health' -TimeoutSec 2
-              $page = Invoke-WebRequest 'http://127.0.0.1:5078/' -TimeoutSec 2
-              if ($health.StatusCode -eq 200 -and $page.StatusCode -eq 200) { break }
-            } catch { Start-Sleep -Milliseconds 250 }
-          } while ($clock.Elapsed.TotalSeconds -lt $deadline)
-          if (-not $health -or $health.StatusCode -ne 200 -or -not $page -or $page.StatusCode -ne 200) { throw 'Dashboard did not answer' }
-          $end = $clock.Elapsed.TotalSeconds
-          Write-Host "http_200_utc=$([DateTime]::UtcNow.ToString('o')) poll_seconds=$($end - $launch) total_seconds=$end"
-          Write-Host 'Setup launches during installation; its poll_seconds excludes any overlapping startup.'
-
-  walkthrough:
-    runs-on: windows-latest
-    timeout-minutes: 8
-    steps:
-      - name: Prepare installer and tools
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path screenshots | Out-Null
-          if (-not [string]::IsNullOrWhiteSpace($env:ARTIFACT_RUN_ID)) {
-            gh run download $env:ARTIFACT_RUN_ID -R ianlyoo/zoomcheck -n ZoomCheck-Setup-x64 -D .
-            if ($LASTEXITCODE -ne 0) { throw "gh run download ZoomCheck-Setup-x64 failed" }
-            Move-Item -Force ZoomCheck-Setup-x64.exe setup.exe
-          } else {
-            Invoke-WebRequest 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3/ZoomCheck-Setup-x64.exe' -OutFile setup.exe
-          }
-          Set-Content -Path setup.exe -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
-          Get-AuthenticodeSignature setup.exe | Format-List Status,StatusMessage,SignerCertificate
-          python -m pip install pywinauto pillow
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Capture installer screens
-        shell: pwsh
-        run: |
-          @'
-          import time, subprocess, pathlib, traceback
-          from PIL import ImageGrab
-          from pywinauto import Desktop
-          out = pathlib.Path('screenshots')
-          start = time.monotonic()
-          subprocess.Popen([str(pathlib.Path('setup.exe').resolve())])
-          last = None
-          clicks = 0
-          screens = 0
-          try:
-              for i in range(1, 15):
-                  deadline = time.monotonic() + 45
-                  while time.monotonic() < deadline:
-                      windows = [w for w in Desktop(backend='win32').windows() if 'Setup' in w.window_text() and w.is_visible()]
-                      if windows:
-                          win = windows[0]
-                          buttons = [b for b in win.descendants(class_name='TNewButton') if b.is_visible() and b.is_enabled()]
-                          texts = [(b.window_text(), b) for b in buttons]
-                          key = (win.window_text(), tuple(t for t, b in texts), tuple(c.window_text() for c in win.descendants() if c.window_text())[:2])
-                          if key != last and texts:
-                              break
-                      time.sleep(.5)
-                  else:
-                      raise RuntimeError('Installer screen not found or did not advance')
-                  time.sleep(.5)
-                  screens += 1
-                  ImageGrab.grab(all_screens=True).save(out / f'{i:02d}-installer.png')
-                  print(f'SCREEN {i}: {key}', flush=True)
-                  last = key
-                  choices = [(t,b) for t,b in texts if any(s in t.replace('&','').lower() for s in ('next', 'install', 'finish'))]
-                  if not choices:
-                      print('WAIT for installation', flush=True)
-                      continue
-                  label, button = choices[-1]
-                  clicks += 1
-                  print(f'CLICK {clicks}: {label}', flush=True)
-                  button.click()
-                  if 'finish' in label.lower():
-                      break
-              else:
-                  raise RuntimeError('Too many screens')
-              print(f'INSTALLER_SCREENS={screens} INSTALLER_CLICKS={clicks} INSTALLER_SECONDS={time.monotonic()-start}', flush=True)
-              time.sleep(5)
-              ImageGrab.grab(all_screens=True).save(out / 'app-and-tray.png')
-          except Exception:
-              ImageGrab.grab(all_screens=True).save(out / 'failure.png')
-              traceback.print_exc()
-              raise
-          '@ | Set-Content -Encoding utf8 walkthrough.py
-          python walkthrough.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Capture dashboard
-        shell: pwsh
-        run: |
-          $deadline = (Get-Date).AddMinutes(2)
-          do {
-            try { $page = Invoke-WebRequest http://127.0.0.1:5078/health -TimeoutSec 2 } catch { Start-Sleep -Seconds 1 }
-          } until (($page -and $page.StatusCode -eq 200) -or (Get-Date) -gt $deadline)
-          if (-not $page -or $page.StatusCode -ne 200) { throw 'Dashboard health unavailable' }
-          $chrome = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
-          Start-Process $chrome -Wait -ArgumentList @("--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--window-size=1440,1000", "--user-data-dir=$env:RUNNER_TEMP\capture-profile", "--screenshot=$PWD\screenshots\dashboard.png", "http://127.0.0.1:5078/")
-          if (-not (Test-Path screenshots/dashboard.png)) { throw 'Dashboard screenshot missing' }
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: install-walkthrough
-          path: screenshots/
-          if-no-files-found: warn
+          name: baseline-setup
+          path: base-setup/ZoomCheck-Setup-x64.exe
+          retention-days: 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baseline-portable
+          path: base-portable/ZoomCheck-portable-win-x64.zip
+          retention-days: 2
+  compare:
+    needs: stage-baseline
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Alternate five clean runs of each version and package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_RUN: ${{ github.run_id }}
+          ZOOMCHECK_Dashboard__OpenBrowserOnStart: 'false'
+          ZOOMCHECK_Update__Enabled: 'false'
+          ZOOMCHECK_ZoomRecovery__Enabled: 'false'
+          ZOOMCHECK_ZoomRelay__Enabled: 'false'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $old = (gh api repos/ianlyoo/zoomcheck/releases/tags/v0.6.3 | ConvertFrom-Json).assets
+          $meta = gh api repos/ianlyoo/zoomcheck/actions/runs/44648840889 | ConvertFrom-Json
+          if ($meta.head_sha -ne '30307869c52ed537dbf5e22f28727a968b7510db' -or $meta.conclusion -ne 'success') { throw 'wrong main build' }
+          $mainArtifacts = gh api repos/ianlyoo/zoomcheck/actions/runs/44648840889/artifacts | ConvertFrom-Json
+          foreach ($a in $old) { if ($a.name -like 'ZoomCheck*') { Write-Host "RELEASE_ASSET name=$($a.name) bytes=$($a.size)" } }
+          foreach ($a in $mainArtifacts.artifacts) { Write-Host "BUILD_ARTIFACT name=$($a.name) zip_bytes=$($a.size_in_bytes)" }
+          for ($i=1; $i -le 5; $i++) {
+            $versions = if ($i % 2) { @('base','main') } else { @('main','base') }
+            foreach ($package in @('setup','portable')) {
+              foreach ($version in $versions) {
+                $dir = Join-Path $env:RUNNER_TEMP "clock-$i-$package-$version"
+                New-Item -ItemType Directory -Path $dir | Out-Null
+                $env:ZOOMCHECK_Storage__DatabasePath = Join-Path $dir 'fresh.sqlite'
+                $asset = if ($package -eq 'setup') { 'ZoomCheck-Setup-x64.exe' } else { 'ZoomCheck-portable-win-x64.zip' }
+                $artifact = if ($version -eq 'base') { "baseline-$package" } elseif ($package -eq 'setup') { 'ZoomCheck-Setup-x64' } else { 'ZoomCheck-portable-win-x64' }
+                $run = if ($version -eq 'base') { $env:BASE_RUN } else { '44648840889' }
+                $t = [Diagnostics.Stopwatch]::StartNew()
+                gh run download $run -R ianlyoo/zoomcheck -n $artifact -D $dir
+                if ($LASTEXITCODE -ne 0) { throw "artifact download failed: $version $package" }
+                $download = $t.Elapsed.TotalSeconds
+                $file = Join-Path $dir $asset
+                if (-not (Test-Path $file)) { throw "missing $file" }
+                $bytes = (Get-Item $file).Length
+                $start = $t.Elapsed.TotalSeconds
+                if ($package -eq 'setup') {
+                  $destination = Join-Path $dir 'app'
+                  $p = Start-Process -FilePath $file -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$destination" -PassThru
+                  $p.WaitForExit()
+                  if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
+                } else {
+                  Expand-Archive $file -DestinationPath (Join-Path $dir 'app')
+                }
+                $end = $t.Elapsed.TotalSeconds
+                if ($package -eq 'portable') {
+                  $exe = Get-ChildItem (Join-Path $dir 'app') -Filter ZoomCheck.Backend.exe -Recurse | Select-Object -First 1
+                  if (-not $exe) { throw 'portable backend missing' }
+                  Start-Process $exe.FullName -WorkingDirectory $exe.DirectoryName
+                }
+                $poll = $t.Elapsed.TotalSeconds
+                $deadline = $poll + 120
+                $h = $null; $page = $null
+                do {
+                  try {
+                    $h = Invoke-WebRequest 'http://127.0.0.1:5078/health' -TimeoutSec 2
+                    $page = Invoke-WebRequest 'http://127.0.0.1:5078/' -TimeoutSec 2
+                    if ($h.StatusCode -eq 200 -and $page.StatusCode -eq 200) { break }
+                  } catch { Start-Sleep -Milliseconds 50 }
+                } while ($t.Elapsed.TotalSeconds -lt $deadline)
+                if (-not $h -or $h.StatusCode -ne 200 -or -not $page -or $page.StatusCode -ne 200) { throw 'health timeout' }
+                $ready = $t.Elapsed.TotalSeconds
+                $proc = Get-Process -Name 'ZoomCheck.Backend' -ErrorAction Stop
+                if (@($proc).Count -ne 1) { throw 'expected one backend process' }
+                $launchToReady = ([DateTime]::Now - $proc.StartTime).TotalSeconds
+                $database = Get-Item $env:ZOOMCHECK_Storage__DatabasePath -ErrorAction Stop
+                $dbCreatedFromLaunch = ($database.CreationTime - $proc.StartTime).TotalSeconds
+                Write-Host "TRACE version=$version package=$package round=$i process_started_utc=$($proc.StartTime.ToUniversalTime().ToString('o')) db_created_utc=$($database.CreationTimeUtc.ToString('o')) health_utc=$([DateTime]::UtcNow.ToString('o')) db_created_from_launch_seconds=$dbCreatedFromLaunch db_bytes=$($database.Length)"
+                Write-Host "CLOCK version=$version package=$package round=$i bytes=$bytes download_seconds=$download install_seconds=$($end-$start) poll_seconds=$($ready-$poll) install_plus_poll_seconds=$($ready-$start) launch_to_ready_seconds=$launchToReady"
+                $proc | Stop-Process -PassThru | Wait-Process
+              }
+            }
+          }
