@@ -15,7 +15,7 @@
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
-    [string]$Version = "0.6.3",
+    [string]$Version = "0.7.0",
     [string]$RelayBaseUrl = "",
     [switch]$SkipInstaller
 )
