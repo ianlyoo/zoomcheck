@@ -1,11 +1,18 @@
 name: Install clock
 on:
   workflow_dispatch:
+    inputs:
+      update_probe:
+        description: Check the v0.6.3 portable app for a newer release
+        type: boolean
+        required: false
+        default: false
 permissions:
   actions: read
   contents: read
 jobs:
   stage-baseline:
+    if: ${{ !inputs.update_probe }}
     runs-on: windows-latest
     steps:
       - name: Fetch v0.6.3 release assets
@@ -162,3 +169,46 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw "initialization failed for $v round $i" }
             }
           }
+  update-probe:
+    if: ${{ inputs.update_probe }}
+    runs-on: windows-latest
+    timeout-minutes: 6
+    steps:
+      - name: Check v0.6.3 portable update status
+        shell: pwsh
+        env:
+          ZOOMCHECK_Update__Enabled: 'true'
+          ZOOMCHECK_Update__CheckOnStartup: 'true'
+          ZOOMCHECK_Update__AutomaticDownload: 'false'
+          ZOOMCHECK_Dashboard__OpenBrowserOnStart: 'false'
+          ZOOMCHECK_ZoomRecovery__Enabled: 'false'
+          ZOOMCHECK_ZoomRelay__Enabled: 'false'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = 'https://github.com/ianlyoo/zoomcheck/releases/download/v0.6.3'
+          $zip = 'ZoomCheck-portable-win-x64.zip'
+          Invoke-WebRequest "$base/$zip" -OutFile $zip
+          Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+          $expected = ((Get-Content SHA256SUMS.txt | Where-Object { $_ -match [regex]::Escape($zip) }) -split '\s+')[0]
+          if (-not $expected -or (Get-FileHash $zip -Algorithm SHA256).Hash -ne $expected) { throw 'portable checksum mismatch' }
+          Expand-Archive $zip -DestinationPath portable
+          $exe = Get-ChildItem portable -Filter ZoomCheck.Backend.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'Portable executable missing' }
+          Start-Process $exe.FullName -WorkingDirectory $exe.DirectoryName
+          $deadline = (Get-Date).AddMinutes(3)
+          $status = $null; $raw = $null
+          do {
+            try {
+              $response = Invoke-WebRequest 'http://127.0.0.1:5078/api/update/status' -TimeoutSec 3
+              $raw = $response.Content
+              $status = $raw | ConvertFrom-Json
+              if ($status.lastCheckedAt) { break }
+            } catch { Write-Host 'Waiting for update status endpoint.' }
+            Start-Sleep -Seconds 2
+          } while ((Get-Date) -lt $deadline)
+          if (-not $status -or -not $status.lastCheckedAt) { throw 'Update check did not complete before deadline.' }
+          Write-Host "UPDATE_STATUS_JSON=$raw"
+          if ($status.availability -ne 'UpdateAvailable') { Write-Host 'UPDATE_RESULT=not-update-available'; exit 0 }
+          if ($status.currentVersion -ne '0.6.3' -or $status.latestVersion -ne '0.7.0') { Write-Host 'UPDATE_RESULT=unexpected-version'; exit 0 }
+          if ($status.downloadState -ne 'None' -or $status.installerReady) { throw 'Unexpected installer download or staged installer.' }
+          Write-Host 'UPDATE_RESULT=expected'
