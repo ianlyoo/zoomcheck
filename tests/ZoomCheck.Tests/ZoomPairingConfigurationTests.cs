@@ -77,6 +77,41 @@ public sealed class ZoomPairingConfigurationTests
     }
 
     [Fact]
+    public async Task ClearingRelayUrlViaPut_ReturnsUnconfiguredAndClearsActiveRelayState()
+    {
+        using var fixture = new PairingFixture("https://relay.example/", true);
+
+        var created = await fixture.Controller.CreatePairingCode(CancellationToken.None);
+        Assert.IsType<OkObjectResult>(created.Result);
+        Assert.NotNull(fixture.Relay.GetStatus().PairingCodeExpiresAt);
+
+        var clearedResponse = await fixture.SettingsController.Put(
+            new UpdateZoomRelaySettingsRequest(""), CancellationToken.None);
+        var cleared = Assert.IsType<ZoomRelaySettingsResponse>(
+            Assert.IsType<OkObjectResult>(clearedResponse.Result).Value);
+        Assert.False(cleared.Configured);
+        Assert.Equal(string.Empty, cleared.BaseUrl);
+        Assert.False(cleared.RestartRequired);
+
+        var readBack = Assert.IsType<ZoomRelaySettingsResponse>(
+            Assert.IsType<OkObjectResult>(fixture.SettingsController.Get().Result).Value);
+        Assert.Equal(cleared, readBack);
+        Assert.False(fixture.Relay.IsConfigured);
+        Assert.Null(fixture.Relay.GetStatus().PairingCodeExpiresAt);
+        Assert.Null(fixture.Relay.GetStatus().HomeUrl);
+
+        var pairingAfterClear = await fixture.Controller.CreatePairingCode(CancellationToken.None);
+        Assert.Equal(StatusCodes.Status409Conflict,
+            Assert.IsType<ObjectResult>(pairingAfterClear.Result).StatusCode);
+
+        var healthAfterClear = Assert.IsType<ZoomRelayHealthResponse>(
+            Assert.IsType<OkObjectResult>((await fixture.SettingsController.CheckHealth(
+                new CheckZoomRelayHealthRequest(null), CancellationToken.None)).Result).Value);
+        Assert.False(healthAfterClear.Ok);
+        Assert.Equal("not_configured", healthAfterClear.ErrorCode);
+    }
+
+    [Fact]
     public async Task HealthCheck_ReportsHealthyRelayAndClearFailureReasons()
     {
         using var fixture = new PairingFixture("https://relay.example/", true);

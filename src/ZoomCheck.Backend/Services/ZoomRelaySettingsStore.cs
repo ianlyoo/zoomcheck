@@ -81,7 +81,9 @@ public sealed class ZoomRelaySettingsStore
         string? baseUrl,
         CancellationToken cancellationToken)
     {
-        if (!ZoomRelayOptions.TryNormalizeBaseUrl(baseUrl, out var normalized))
+        var clearing = string.IsNullOrWhiteSpace(baseUrl);
+        var normalized = string.Empty;
+        if (!clearing && !ZoomRelayOptions.TryNormalizeBaseUrl(baseUrl, out normalized))
         {
             throw new ArgumentException("A clean HTTPS relay root URL is required.", nameof(baseUrl));
         }
@@ -117,11 +119,13 @@ public sealed class ZoomRelaySettingsStore
             File.Move(temporaryPath, _path, overwrite: true);
             lock (_stateLock)
             {
-                changed = !_activeEnabled
+                var wasConfigured = _activeEnabled && !string.IsNullOrEmpty(_activeBaseUrl);
+                var nowConfigured = !clearing;
+                changed = wasConfigured != nowConfigured
                     || !string.Equals(_activeBaseUrl, normalized, StringComparison.OrdinalIgnoreCase);
                 _activeBaseUrl = normalized;
                 _activeEnabled = true;
-                snapshot = (true, _activeBaseUrl, false);
+                snapshot = (nowConfigured, _activeBaseUrl, false);
             }
         }
         finally
@@ -147,8 +151,18 @@ public sealed class ZoomRelaySettingsStore
                 || !document.RootElement.TryGetProperty(ZoomRelayOptions.SectionName, out var relay)
                 || relay.ValueKind != JsonValueKind.Object
                 || !relay.TryGetProperty(nameof(ZoomRelayOptions.BaseUrl), out var baseUrl)
-                || baseUrl.ValueKind != JsonValueKind.String
-                || !ZoomRelayOptions.TryNormalizeBaseUrl(baseUrl.GetString(), out var normalized))
+                || baseUrl.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            var rawBaseUrl = baseUrl.GetString();
+            string normalized;
+            if (string.IsNullOrWhiteSpace(rawBaseUrl))
+            {
+                normalized = string.Empty;
+            }
+            else if (!ZoomRelayOptions.TryNormalizeBaseUrl(rawBaseUrl, out normalized))
             {
                 return null;
             }

@@ -89,6 +89,7 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
       return elements.get(id);
     },
     createElement: tag => new Element(tag, document),
+    createTextNode: text => ({ textContent: String(text) }),
     querySelectorAll: selector => selector === '[data-filter]' ? filters : selector === '[data-sort]' ? sortButtons : [],
     addEventListener(name, handler) { (docListeners[name] ||= []).push(handler); },
     dispatch(name, event = {}) {
@@ -128,7 +129,7 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
       renderFreshness, renderReadiness, renderModeControls, applyAutoRefresh, applyConnectionMode,
       updateParsedCount, confidenceInfo, exportCsv, renderGroupOptions, applyGroup, installUpdate,
       loadRelaySettings, saveRelaySettings, checkRelayHealth, pairingDisabledReason, renderRelayHealth,
-      createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy,
+      createPairingCode, checkHealth, checkZoomConnection, renderZoomAppStrip, renderUpdate, applyUpdateStatus,
       applyLanguage, toggleLanguage, restoreState, t,
       uploadRoster, renderRosterFeedback,
       applySort, buildStatusText, copyMeetingStatus, downloadStatusText };
@@ -948,6 +949,31 @@ test('client-invalid save leaves previous relay and code state intact without a 
   assert.equal(h.state.pairing.code, '123456');
 });
 
+test('saving an empty relay URL clears it back to the unconfigured state', async () => {
+  const h = harness();
+  await loadRelay(h, activeRelay);
+  assert.equal(h.el.zoomAppHomeUrl.textContent, 'https://old.example/zoom-app/');
+  h.state.pairing = { code: '123456' };
+  h.el.relayBaseUrl.value = '   ';
+  const clear = h.saveRelaySettings();
+  assert.equal(h.requests.at(-1).url, '/api/settings/zoom-relay');
+  assert.equal(h.requests.at(-1).options.method, 'PUT');
+  assert.deepEqual(JSON.parse(h.requests.at(-1).options.body), { baseUrl: '' });
+  await respond(h.requests.at(-1), { configured: false, baseUrl: '', restartRequired: false });
+  await clear;
+
+  assert.equal(h.state.relaySettings.configured, false);
+  assert.equal(h.state.relaySettings.baseUrl, '');
+  assert.equal(h.el.relayBaseUrl.value, '');
+  assert.equal(h.state.pairing, null);
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.equal(h.el.pairingDisabledReason.hidden, false);
+  assert.match(h.el.pairingDisabledReason.textContent, /HTTPS 릴레이 주소를 입력하고 저장/);
+  assert.match(h.el.zoomAppHomeUrl.textContent, /릴레이 주소 미설정/);
+  assert.equal(h.el.btnCopyHomeUrl.disabled, true);
+  assert.match(h.el.toastRegion.textContent, /릴레이 주소를 지웠습니다/);
+});
+
 test('pairing response started before endpoint save cannot redisplay an obsolete code', async () => {
   const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl }; await loadRelay(h);
   const code = h.createPairingCode(); const codeRequest = h.requests.at(-1);
@@ -1002,7 +1028,7 @@ test('language switching: translates participant status badges in English and Sp
   assert.equal(h.confidenceInfo(unmatchedRow).label, 'No emparejado');
 });
 
-test('language switching translates rendered attendance controls and activity in English and Spanish', () => {
+test('language switching translates rendered attendance controls, headline, status chips and duplicates in English and Spanish', async () => {
   const h = harness();
   const bindings = [...markup.matchAll(/<(\w+)\b([^>]*\bdata-i18n="[^"]+"[^>]*)>/g)].map(([, tag, attrs]) => {
     const id = attrs.match(/\bid="([^"]+)"/)?.[1];
@@ -1019,30 +1045,64 @@ test('language switching translates rendered attendance controls and activity in
   boardData.recentEvents = [{
     eventType: 'Joined', participantName: 'Alice', source: 'manual-snapshot', occurredAt: '2026-09-05T01:00:00Z'
   }];
+  boardData.duplicateConnectionGroups = [{
+    rosterPersonId: 'a', rosterPersonName: 'Alice', connectionCount: 2,
+    connections: [
+      { presenceKey: 'alice-1', source: 'zoom-app', rawName: 'Alice', firstSeenAt: '2026-09-05T01:00:00Z' },
+      { presenceKey: 'alice-2', source: 'zoom-app', rawName: 'Alice iPad', firstSeenAt: '2026-09-05T01:01:00Z' }
+    ]
+  }];
   h.el.tutorialSteps = [...markup.matchAll(/\bdata-tutorial-step="/g)].map(() => h.document.createElement('section'));
   assert.ok(h.el.tutorialSteps.length > 1);
   h.state.rosterLoaded = true;
+  const healthCheck = h.checkHealth();
+  await respond(h.requests.at(-1), { status: 'ok' });
+  await healthCheck;
+  const zoomCheck = h.checkZoomConnection(false);
+  await respond(h.requests.at(-1), {
+    configured: false,
+    recommendedMode: 'zoomApp',
+    zoomApp: { connected: true, sessionActive: true, role: 'host', meetingId: '111', lastSeenAt: '2026-09-05T01:00:00Z' }
+  });
+  await zoomCheck;
+  h.applyUpdateStatus({ currentVersion: '0.6.3', availability: 'UpToDate', downloadState: 'None', supportedPlatform: true, enabled: true });
   h.renderBoard(boardData);
+
+  assert.equal(h.el.desktopSummary.textContent, '2명 중 1명 출석');
+  assert.equal(h.el.healthText.textContent, '연결됨');
+  assert.equal(h.el.zoomStatus.textContent, '미설정');
+  assert.equal(h.el.zoomAppStatus.textContent, '호스트 연결');
 
   for (const [lang, expected] of Object.entries({
     en: {
       sync: 'Sync now', readiness: "1. Upload today's roster", step: 'Upload roster',
       prompt: /upload the Excel roster/i,
       allGroups: 'All groups', groupLabel: 'Group filter', totals: /Roster present: 1 \/ 2/,
-      activity: /AliceJoinedManual entry/, activityCount: 'Recent: 1', mode: 'Selected: Manual entry',
+      desktopSummary: '1 of 2 present', health: 'Connected', zoomStatus: 'Not set', zoomApp: 'Host connected',
+      dupReason: /Multiple connections matched to the same roster person/,
+      activity: /AliceJoinedManual entry/, activityCount: 'Recent: 2', mode: 'Selected: Manual entry',
       next: 'Next', finish: 'Get started', manual: 'Enter participant list'
     },
     es: {
       sync: 'Sincronizar ahora', readiness: '1. Sube la lista de hoy', step: 'Subir lista',
       prompt: /sube la lista de Excel/i,
       allGroups: 'Todos los grupos', groupLabel: 'Filtro de grupo', totals: /Presentes: 1 de 2/,
-      activity: /AliceEntróEntrada manual/, activityCount: 'Recientes: 1', mode: 'Seleccionado: Entrada manual',
+      desktopSummary: '1 de 2 presentes', health: 'Conectado', zoomStatus: 'Sin configurar', zoomApp: 'Anfitrión conectado',
+      dupReason: /Varias conexiones vinculadas a la misma persona del padrón/,
+      activity: /AliceEntróEntrada manual/, activityCount: 'Recientes: 2', mode: 'Seleccionado: Entrada manual',
       next: 'Siguiente', finish: 'Empezar', manual: 'Introducir lista de participantes'
     }
   })) {
     h.applyConnectionMode('auto');
     h.state.tutorialStep = 0;
     h.applyLanguage(lang);
+    assert.equal(h.el.desktopSummary.textContent, expected.desktopSummary);
+    assert.equal(h.el.summaryTotal.textContent, '2');
+    assert.equal(h.el.summaryPresent.textContent, '1');
+    assert.equal(h.el.healthText.textContent, expected.health);
+    assert.equal(h.el.zoomStatus.textContent, expected.zoomStatus);
+    assert.equal(h.el.zoomAppStatus.textContent, expected.zoomApp);
+    assert.match(h.el.duplicateList.textContent, expected.dupReason);
     assert.equal(h.el.btnSyncZoom.textContent, expected.sync);
     assert.equal(h.el.readinessTitle.textContent, expected.readiness);
     assert.match(h.el.readinessNote.textContent, expected.prompt);
@@ -1054,6 +1114,22 @@ test('language switching translates rendered attendance controls and activity in
     assert.equal(h.el.activityCount.textContent, expected.activityCount);
     assert.equal(h.el.btnTutorialNext.textContent, expected.next);
     assert.equal(guide.children.length, 0);
+
+    // Every visible rendered element on the main dashboard & settings must be free of Hangul in en/es.
+    const visibleIds = [
+      'desktop-summary', 'phone-summary', 'health-text', 'zoom-status', 'zoom-app-status', 'auto-status',
+      'summary-time', 'source-status', 'metric-present', 'metric-absent', 'metric-review', 'metric-duplicate',
+      'participants-meta', 'scope-note', 'export-scope', 'btn-export', 'btn-next-step', 'visible-count',
+      'activity-mode', 'activity-count', 'duplicate-list', 'roster-summary', 'version-text',
+      'roster-note', 'mode-note', 'zoom-app-settings-status', 'relay-settings-note', 'pairing-code',
+      'pairing-expiry', 'pairing-session', 'zoom-app-home-url', 'api-settings-status', 'snapshot-parsed',
+      'update-current-version', 'update-status-text', 'update-badge'
+    ];
+    for (const id of visibleIds) {
+      const text = h.document.getElementById(id).textContent;
+      assert.doesNotMatch(text, /[가-힣]/, `${lang}: #${id} still contains Korean: "${text}"`);
+    }
+
     h.applyConnectionMode('manual');
     h.state.tutorialStep = h.el.tutorialSteps.length - 1;
     h.applyLanguage(lang);
@@ -1062,8 +1138,67 @@ test('language switching translates rendered attendance controls and activity in
     assert.equal(h.el.btnTutorialNext.textContent, expected.finish);
   }
   h.applyLanguage('ko');
+  assert.equal(h.el.desktopSummary.textContent, '2명 중 1명 출석');
   assert.equal(guide.children[0], emphasis);
   assert.equal(h.el.btnSyncZoom.textContent, '참가자 목록 입력');
+});
+
+test('every locale key exists in ko, en and es and every Hangul element in index.html is wired for i18n', () => {
+  const locales = require('../src/ZoomCheck.Backend/wwwroot/locales.js');
+  const koKeys = Object.keys(locales.ko).sort();
+  assert.deepEqual(Object.keys(locales.en).sort(), koKeys, 'en locale keys must match ko');
+  assert.deepEqual(Object.keys(locales.es).sort(), koKeys, 'es locale keys must match ko');
+
+  const placeholders = text => [...String(text).matchAll(/\{(\w+)(?:\|으로)?\}/g)].map(m => m[1]).sort();
+  for (const key of koKeys) {
+    for (const lang of ['ko', 'en', 'es']) {
+      assert.equal(typeof locales[lang][key], 'string', `${lang}.${key} must be a string`);
+      assert.ok(locales[lang][key].length > 0, `${lang}.${key} must be non-empty`);
+    }
+    assert.deepEqual(placeholders(locales.en[key]), placeholders(locales.ko[key]), `en.${key} placeholders`);
+    assert.deepEqual(placeholders(locales.es[key]), placeholders(locales.ko[key]), `es.${key} placeholders`);
+  }
+
+  // Every data-i18n / placeholder / aria key in index.html must exist in all three locales.
+  for (const [, key] of markup.matchAll(/\bdata-i18n(?:-(?:placeholder|aria))?="([^"]+)"/g)) {
+    assert.ok(Object.prototype.hasOwnProperty.call(locales.ko, key), `index.html key ${key} missing from ko`);
+    assert.ok(Object.prototype.hasOwnProperty.call(locales.en, key), `index.html key ${key} missing from en`);
+    assert.ok(Object.prototype.hasOwnProperty.call(locales.es, key), `index.html key ${key} missing from es`);
+  }
+
+  // Every element in index.html containing Hangul text outside <script> and comments must either
+  // carry data-i18n or be explicitly driven by applyLanguage() via its id (or <title>).
+  const dynamicRenderedIds = new Set([
+    'health-text', 'zoom-status', 'zoom-app-status', 'auto-status', 'phone-summary', 'desktop-summary',
+    'btn-next-step', 'visible-count', 'activity-mode', 'activity-count', 'roster-summary', 'version-text',
+    'roster-note', 'snapshot-parsed', 'mode-note', 'zoom-app-settings-status', 'relay-settings-note',
+    'pairing-expiry', 'pairing-session', 'zoom-app-home-url', 'api-settings-status', 'update-current-version',
+    'metric-present', 'metric-absent', 'metric-review', 'metric-duplicate'
+  ]);
+  const stripped = markup
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+  const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+  const stack = [];
+  for (const token of stripped.matchAll(/<\/?([a-zA-Z0-9-]+)([^>]*)>|([^<]+)/g)) {
+    const [raw, tagName, attrs, text] = token;
+    if (tagName) {
+      const lower = tagName.toLowerCase();
+      if (raw.startsWith('</')) {
+        while (stack.length && stack[stack.length - 1].tag !== lower) { stack.pop(); }
+        stack.pop();
+      } else if (!voidTags.has(lower) && !raw.endsWith('/>')) {
+        const id = attrs.match(/\bid="([^"]+)"/)?.[1] || '';
+        const hasI18n = /\bdata-i18n=/.test(attrs) || lower === 'title';
+        stack.push({ tag: lower, id, translated: hasI18n || (id && dynamicRenderedIds.has(id)) });
+      }
+    } else if (text && /[가-힣]/.test(text)) {
+      const covered = stack.some(frame => frame.translated);
+      const top = stack[stack.length - 1];
+      assert.ok(covered,
+        `index.html <${top?.tag}${top?.id ? ` id="${top.id}"` : ''}> has untranslated Korean text "${text.trim()}" without data-i18n or a dynamic renderer`);
+    }
+  }
 });
 
 test('language preference is restored in a fresh dashboard session', () => {
