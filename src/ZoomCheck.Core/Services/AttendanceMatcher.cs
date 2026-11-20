@@ -38,14 +38,28 @@ public sealed class AttendanceMatcher
             return new MatchCandidate(nameMatch, MatchConfidence.NameOnly, 0.9, "Normalized name exact match");
         }
 
-        var bestPossible = roster
-            .Select(person => new { Person = person, Score = CalculateNameScore(normalizedName, person.NormalizedName) })
-            .OrderByDescending(candidate => candidate.Score)
-            .FirstOrDefault();
+        return FindBestPossibleMatch(roster, normalizedName);
+    }
 
-        if (bestPossible is not null && bestPossible.Score >= 0.72)
+    internal static MatchCandidate FindBestPossibleMatch(IReadOnlyList<RosterPerson> roster, string normalizedName)
+    {
+        RosterPerson? bestPerson = null;
+        var bestScore = double.NegativeInfinity;
+
+        for (var i = 0; i < roster.Count; i++)
         {
-            return new MatchCandidate(bestPossible.Person, MatchConfidence.Possible, bestPossible.Score, $"Similarity score {bestPossible.Score:F2}");
+            var person = roster[i];
+            var score = CalculateNameScore(normalizedName, person.NormalizedName);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestPerson = person;
+            }
+        }
+
+        if (bestPerson is not null && bestScore >= 0.72)
+        {
+            return new MatchCandidate(bestPerson, MatchConfidence.Possible, bestScore, $"Similarity score {bestScore:F2}");
         }
 
         return MatchCandidate.Unmatched("No roster candidate exceeded threshold");
