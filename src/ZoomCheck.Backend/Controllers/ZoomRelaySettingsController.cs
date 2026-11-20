@@ -9,10 +9,12 @@ namespace ZoomCheck.Backend.Controllers;
 public sealed class ZoomRelaySettingsController : ControllerBase
 {
     private readonly ZoomRelaySettingsStore _store;
+    private readonly ZoomRelayClient _client;
 
-    public ZoomRelaySettingsController(ZoomRelaySettingsStore store)
+    public ZoomRelaySettingsController(ZoomRelaySettingsStore store, ZoomRelayClient client)
     {
         _store = store;
+        _client = client;
     }
 
     [HttpGet]
@@ -39,5 +41,14 @@ public sealed class ZoomRelaySettingsController : ControllerBase
                 detail: ex.Message,
                 statusCode: StatusCodes.Status400BadRequest);
         }
+    }
+
+    [HttpPost("health")]
+    public async Task<ActionResult<ZoomRelayHealthResponse>> CheckHealth(
+        [FromBody] CheckZoomRelayHealthRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _client.CheckHealthAsync(request?.BaseUrl, cancellationToken);
+        return Ok(result);
     }
 }

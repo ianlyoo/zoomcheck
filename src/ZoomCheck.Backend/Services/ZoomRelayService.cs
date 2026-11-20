@@ -13,21 +13,26 @@ public sealed class ZoomRelayService : IDisposable
     private readonly ZoomRelayClient _client;
     private readonly ZoomAppBridgeService _bridge;
     private readonly ZoomRelayOptions _options;
+    private readonly ZoomRelaySettingsStore _settings;
     private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ZoomRelayRenameResultPayload>> _pendingRenames = new(StringComparer.Ordinal);
     private RelaySession? _session;
+    private long _settingsVersion;
 
     public ZoomRelayService(
         ZoomRelayClient client,
         ZoomAppBridgeService bridge,
         IOptions<ZoomRelayOptions> options,
+        ZoomRelaySettingsStore settings,
         TimeProvider timeProvider)
     {
         _client = client;
         _bridge = bridge;
         _options = options.Value;
+        _settings = settings;
         _timeProvider = timeProvider;
+        _settings.Changed += OnSettingsChanged;
     }
 
     public bool IsConfigured => _client.IsConfigured;
@@ -37,7 +42,7 @@ public sealed class ZoomRelayService : IDisposable
     {
         if (!IsConfigured)
         {
-            throw new ZoomRelayException("The fixed ZoomCheck relay is not configured in this build.");
+            throw new ZoomRelayException("The ZoomCheck relay URL is not configured.");
         }
 
         await _sessionGate.WaitAsync(cancellationToken);
@@ -45,6 +50,7 @@ public sealed class ZoomRelayService : IDisposable
         {
             for (var attempt = 0; attempt < 5; attempt++)
             {
+                var settingsVersion = Volatile.Read(ref _settingsVersion);
                 var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
                 var keyPair = ZoomRelayCryptography.CreateKeyPair();
                 try
@@ -52,8 +58,14 @@ public sealed class ZoomRelayService : IDisposable
                     var result = await _client.RegisterAsync(
                         new CreatePairingRequest(code, ZoomRelayCryptography.ExportPublicKey(keyPair)),
                         cancellationToken);
+                    if (settingsVersion != Volatile.Read(ref _settingsVersion))
+                    {
+                        keyPair.Dispose();
+                        continue;
+                    }
+
                     var created = new RelaySession(
-                        result.SessionId, result.DesktopToken, result.Salt, result.ExpiresAt, keyPair);
+                        result.SessionId, result.DesktopToken, result.Salt, result.ExpiresAt, keyPair, settingsVersion);
                     ReplaceSession(created);
                     return new ZoomAppPairingCodeResponse(
                         code, result.ExpiresAt, _client.CompanionUrl()?.AbsoluteUri);
@@ -174,9 +186,12 @@ public sealed class ZoomRelayService : IDisposable
 
     public ZoomAppBridgeStatus GetStatus()
     {
+        var currentVersion = Volatile.Read(ref _settingsVersion);
         lock (_gate)
         {
-            if (_session is null || _session.ExpiresAt <= _timeProvider.GetUtcNow())
+            if (_session is null
+                || _session.SettingsVersion != currentVersion
+                || _session.ExpiresAt <= _timeProvider.GetUtcNow())
             {
                 return EmptyStatus();
             }
@@ -207,8 +222,14 @@ public sealed class ZoomRelayService : IDisposable
         try
         {
             RelaySession? session;
+            var currentVersion = Volatile.Read(ref _settingsVersion);
             lock (_gate)
             {
+                if (_session is not null && _session.SettingsVersion != currentVersion)
+                {
+                    _session.Dispose();
+                    _session = null;
+                }
                 session = _session;
             }
             if (session is null || session.ExpiresAt <= _timeProvider.GetUtcNow())
@@ -218,6 +239,10 @@ public sealed class ZoomRelayService : IDisposable
 
             var response = await _client.PollDesktopAsync(
                 session.Id, session.Token, session.LastReceivedSequence, cancellationToken);
+            if (session.SettingsVersion != Volatile.Read(ref _settingsVersion))
+            {
+                return;
+            }
             session.ExpiresAt = response.ExpiresAt;
             if (response.Connected && session.Keys is null && !string.IsNullOrWhiteSpace(response.PeerPublicKey))
             {
@@ -296,7 +321,10 @@ public sealed class ZoomRelayService : IDisposable
 
     private RelaySession RequireConnectedSession()
     {
-        if (_session is null || _session.ExpiresAt <= _timeProvider.GetUtcNow() || _session.Keys is null)
+        if (_session is null
+            || _session.SettingsVersion != Volatile.Read(ref _settingsVersion)
+            || _session.ExpiresAt <= _timeProvider.GetUtcNow()
+            || _session.Keys is null)
         {
             throw new ZoomAppBridgeException(
                 ZoomAppBridgeError.NotConnected,
@@ -315,6 +343,12 @@ public sealed class ZoomRelayService : IDisposable
                 || string.Equals(role, "co-host", StringComparison.OrdinalIgnoreCase) ? "coHost"
             : role;
 
+    private void OnSettingsChanged()
+    {
+        Interlocked.Increment(ref _settingsVersion);
+        FailPendingRenames("The ZoomCheck relay URL changed before the rename was confirmed.");
+    }
+
     private void ReplaceSession(RelaySession session)
     {
         FailPendingRenames("The Zoom relay session changed before the rename was confirmed.");
@@ -327,6 +361,7 @@ public sealed class ZoomRelayService : IDisposable
 
     public void Dispose()
     {
+        _settings.Changed -= OnSettingsChanged;
         FailPendingRenames("The Zoom relay service stopped before the rename was confirmed.");
         lock (_gate)
         {
@@ -348,9 +383,9 @@ public sealed class ZoomRelayService : IDisposable
     private sealed class RelaySession : IDisposable
     {
         public RelaySession(
-            string id, string token, string salt, DateTimeOffset expiresAt, ECDiffieHellman keyPair)
+            string id, string token, string salt, DateTimeOffset expiresAt, ECDiffieHellman keyPair, long settingsVersion)
         {
-            Id = id; Token = token; Salt = salt; ExpiresAt = expiresAt; KeyPair = keyPair;
+            Id = id; Token = token; Salt = salt; ExpiresAt = expiresAt; KeyPair = keyPair; SettingsVersion = settingsVersion;
         }
 
         public string Id { get; }
@@ -358,6 +393,7 @@ public sealed class ZoomRelayService : IDisposable
         public string Salt { get; }
         public DateTimeOffset ExpiresAt { get; set; }
         public ECDiffieHellman KeyPair { get; }
+        public long SettingsVersion { get; }
         public RelayKeys? Keys { get; set; }
         public long LastReceivedSequence { get; set; }
         public long SendSequence { get; set; }

@@ -127,7 +127,8 @@ function harness({ autoConfirm = true, storage = new Map([['zoomcheck.tutorialSe
       setPersonExcluded, setPersonReview, matchConnection, reviewConnection, meetingScope,
       renderFreshness, renderReadiness, renderModeControls, applyAutoRefresh, applyConnectionMode,
       updateParsedCount, confidenceInfo, exportCsv, renderGroupOptions, applyGroup, installUpdate,
-      loadRelaySettings, saveRelaySettings, createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy,
+      loadRelaySettings, saveRelaySettings, checkRelayHealth, pairingDisabledReason, renderRelayHealth,
+      createPairingCode, checkZoomConnection, renderZoomAppStrip, beginBusy, endBusy,
       applyLanguage, toggleLanguage, restoreState, t,
       uploadRoster, renderRosterFeedback,
       applySort, buildStatusText, copyMeetingStatus, downloadStatusText };
@@ -759,51 +760,117 @@ test('duplicate person is an accessible button that clears filters, expands, foc
 });
 
 const activeRelay = { configured: true, baseUrl: 'https://old.example/', restartRequired: false };
+const updatedRelay = { configured: true, baseUrl: 'https://new.example/', restartRequired: false };
 const pendingRelay = { configured: true, baseUrl: 'https://new.example/', restartRequired: true };
 async function loadRelay(h, settings = activeRelay) {
   const operation = h.loadRelaySettings();
   await respond(h.requests.at(-1), settings); await operation;
 }
 
-test('initial settings read prevents pairing through an old active URL before pending state is known', async () => {
-  const h = harness(); h.state.zoomApp = { homeUrl: 'https://old.example/' };
+test('disabled pairing button always explains why it is disabled and clears the reason once relay is saved', async () => {
+  const h = harness();
   h.renderZoomAppStrip();
   assert.equal(h.el.btnCreatePairingCode.disabled, true);
-  await h.createPairingCode();
-  assert.equal(h.requests.length, 0);
-  await loadRelay(h, pendingRelay);
-  assert.equal(h.el.relayBaseUrl.value, pendingRelay.baseUrl);
-  assert.match(h.el.relaySettingsNote.textContent, /완전히 종료.*새 페어링 코드/);
-  await h.createPairingCode();
-  assert.equal(h.requests.length, 1);
+  assert.equal(h.el.pairingDisabledReason.hidden, false);
+  assert.match(h.el.pairingDisabledReason.textContent, /릴레이 설정을 확인하는 중/);
+  assert.equal(h.el.btnCreatePairingCode.getAttribute('aria-describedby'), 'pairing-disabled-reason');
+
+  await loadRelay(h, { configured: false, baseUrl: '', restartRequired: false });
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.equal(h.el.pairingDisabledReason.hidden, false);
+  assert.match(h.el.pairingDisabledReason.textContent, /HTTPS 릴레이 주소를 입력하고 저장/);
+  assert.equal(h.el.btnCopyHomeUrl.disabled, true);
+
+  h.applyLanguage('en');
+  assert.match(h.el.pairingDisabledReason.textContent, /Enter and save an HTTPS relay URL/);
+  h.applyLanguage('es');
+  assert.match(h.el.pairingDisabledReason.textContent, /URL de relay HTTPS/);
+  h.applyLanguage('ko');
+
+  h.el.relayBaseUrl.value = updatedRelay.baseUrl;
+  const save = h.saveRelaySettings();
+  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.match(h.el.pairingDisabledReason.textContent, /저장하는 중/);
+  await respond(h.requests.at(-1), updatedRelay); await save;
+
+  assert.equal(h.el.btnCreatePairingCode.disabled, false);
+  assert.equal(h.el.pairingDisabledReason.hidden, true);
+  assert.equal(h.el.btnCreatePairingCode.getAttribute('aria-describedby'), null);
+  assert.equal(h.el.zoomAppHomeUrl.textContent, 'https://new.example/zoom-app/');
+  assert.equal(h.el.btnCopyHomeUrl.disabled, false);
 });
 
-test('saved endpoint clears stale code and status polling cannot restore pairing until restart', async () => {
-  const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl };
+test('saving a new relay URL applies immediately without restart, clears stale code, and allows pairing right away', async () => {
+  const h = harness(); h.state.zoomApp = { homeUrl: 'https://old.example/zoom-app/' };
   await loadRelay(h);
   h.state.pairing = { code: '123456' };
-  h.el.relayBaseUrl.value = pendingRelay.baseUrl;
+  h.el.relayBaseUrl.value = updatedRelay.baseUrl;
   const save = h.saveRelaySettings();
-  await respond(h.requests.at(-1), pendingRelay); await save;
+  await respond(h.requests.at(-1), updatedRelay); await save;
   assert.equal(h.state.pairing, null);
-  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.equal(h.el.btnCreatePairingCode.disabled, false);
   assert.doesNotMatch(h.el.pairingCode.textContent, /1 2 3 4 5 6/);
-  const poll = h.checkZoomConnection(false);
-  await respond(h.requests.at(-1), { zoomApp: { homeUrl: activeRelay.baseUrl, pairingCodeExpiresAt: '2099-01-01T00:00:00Z' } }); await poll;
-  assert.equal(h.state.pairing, null);
-  assert.equal(h.el.btnCreatePairingCode.disabled, true);
-  const before = h.requests.length;
-  await h.createPairingCode(); assert.equal(h.requests.length, before);
-  // A new page/process receives the applied endpoint without a pending restart.
-  const restarted = harness(); restarted.state.zoomApp = { homeUrl: pendingRelay.baseUrl };
-  await loadRelay(restarted, { ...pendingRelay, restartRequired: false });
-  assert.equal(restarted.el.btnCreatePairingCode.disabled, false);
+  assert.match(h.el.relaySettingsNote.textContent, /바로 적용/);
+  assert.doesNotMatch(h.el.relaySettingsNote.textContent, /완전히 종료/);
+
+  const code = h.createPairingCode();
+  assert.equal(h.requests.at(-1).url, '/api/zoom-app/pairing-code');
+  await respond(h.requests.at(-1), { code: '654321', homeUrl: 'https://new.example/zoom-app/' }); await code;
+  assert.equal(h.state.pairing.code, '654321');
+  assert.equal(h.el.btnCopyPairingCode.disabled, false);
 });
 
-test('unconfigured relay preserves direct HTTPS pairing, while disabled relay with pending enable blocks it', async () => {
+test('relay health check tests /health and displays clear success or failure reasons', async () => {
+  const h = harness();
+  await loadRelay(h, { configured: false, baseUrl: '', restartRequired: false });
+
+  await h.checkRelayHealth();
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.el.relayHealthStatus.hidden, false);
+  assert.equal(h.el.relayHealthStatus.classList.contains('is-bad'), true);
+  assert.match(h.el.relayHealthStatus.textContent, /비어 있습니다/);
+
+  h.el.relayBaseUrl.value = 'http://insecure.example/';
+  await h.checkRelayHealth();
+  assert.equal(h.requests.length, 1);
+  assert.match(h.el.relayHealthStatus.textContent, /https:\/\//);
+
+  h.el.relayBaseUrl.value = 'https://relay.example/';
+  const okCheck = h.checkRelayHealth();
+  assert.equal(h.el.btnCheckRelayHealth.disabled, true);
+  assert.equal(h.requests.at(-1).url, '/api/settings/zoom-relay/health');
+  assert.deepEqual(JSON.parse(h.requests.at(-1).options.body), { baseUrl: 'https://relay.example/' });
+  await respond(h.requests.at(-1), { ok: true, baseUrl: 'https://relay.example/', statusCode: 200, latencyMs: 42 });
+  await okCheck;
+  assert.equal(h.el.btnCheckRelayHealth.disabled, false);
+  assert.equal(h.el.relayHealthStatus.classList.contains('is-ok'), true);
+  assert.match(h.el.relayHealthStatus.textContent, /연결 확인됨 \(42ms\)/);
+
+  const timeoutCheck = h.checkRelayHealth();
+  await respond(h.requests.at(-1), { ok: false, baseUrl: 'https://relay.example/', errorCode: 'timeout', latencyMs: 10000 });
+  await timeoutCheck;
+  assert.equal(h.el.relayHealthStatus.classList.contains('is-bad'), true);
+  assert.match(h.el.relayHealthStatus.textContent, /응답 시간이 초과/);
+
+  const http503Check = h.checkRelayHealth();
+  await respond(h.requests.at(-1), { ok: false, baseUrl: 'https://relay.example/', errorCode: 'http_error', statusCode: 503 });
+  await http503Check;
+  assert.match(h.el.relayHealthStatus.textContent, /HTTP 503/);
+
+  const invalidPayloadCheck = h.checkRelayHealth();
+  await respond(h.requests.at(-1), { ok: false, baseUrl: 'https://relay.example/', errorCode: 'invalid_response', statusCode: 200 });
+  await invalidPayloadCheck;
+  assert.match(h.el.relayHealthStatus.textContent, /\/health 응답이 아닙니다/);
+
+  h.el.relayBaseUrl.dispatch('input');
+  assert.equal(h.el.relayHealthStatus.hidden, true);
+});
+
+test('unconfigured relay preserves direct HTTPS pairing, while legacy restartRequired still blocks pairing with a reason', async () => {
   const h = harness(); h.state.zoomApp = { homeUrl: 'https://direct.example/' };
   await loadRelay(h, { configured: false, baseUrl: '', restartRequired: false });
   assert.equal(h.el.btnCreatePairingCode.disabled, false);
+  assert.equal(h.el.pairingDisabledReason.hidden, true);
   const code = h.createPairingCode();
   assert.equal(h.requests.at(-1).url, '/api/zoom-app/pairing-code');
   await respond(h.requests.at(-1), { code: '654321', homeUrl: 'https://direct.example/' }); await code;
@@ -811,6 +878,8 @@ test('unconfigured relay preserves direct HTTPS pairing, while disabled relay wi
   assert.equal(h.state.pending, 0);
   await loadRelay(h, { ...pendingRelay, configured: false });
   assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.equal(h.el.pairingDisabledReason.hidden, false);
+  assert.match(h.el.pairingDisabledReason.textContent, /다시 실행/);
   assert.equal(h.state.pairing, null);
 });
 
@@ -818,24 +887,24 @@ test('overlapping loads and saves cannot erase newly saved relay settings or sub
   const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl };
   await loadRelay(h);
   const staleLoad = h.loadRelaySettings(); const staleRequest = h.requests.at(-1);
-  h.el.relayBaseUrl.value = pendingRelay.baseUrl;
+  h.el.relayBaseUrl.value = updatedRelay.baseUrl;
   const save = h.saveRelaySettings(); const saveRequest = h.requests.at(-1);
   assert.equal(h.el.btnSaveRelayUrl.disabled, true);
   assert.equal(h.el.btnCreatePairingCode.disabled, true);
   const count = h.requests.length;
   await h.saveRelaySettings(); await h.loadRelaySettings();
   assert.equal(h.requests.length, count);
-  await respond(saveRequest, pendingRelay); await save;
+  await respond(saveRequest, updatedRelay); await save;
   await respond(staleRequest, activeRelay); await staleLoad;
-  assert.equal(h.state.relaySettings.baseUrl, pendingRelay.baseUrl);
-  assert.equal(h.el.relayBaseUrl.value, pendingRelay.baseUrl);
-  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.equal(h.state.relaySettings.baseUrl, updatedRelay.baseUrl);
+  assert.equal(h.el.relayBaseUrl.value, updatedRelay.baseUrl);
+  assert.equal(h.el.btnCreatePairingCode.disabled, false);
   assert.equal(h.el.btnSaveRelayUrl.disabled, false);
   const first = h.loadRelaySettings(); const firstRequest = h.requests.at(-1);
   const second = h.loadRelaySettings(); const secondRequest = h.requests.at(-1);
-  await respond(secondRequest, pendingRelay); await second;
+  await respond(secondRequest, updatedRelay); await second;
   await respond(firstRequest, activeRelay); await first;
-  assert.equal(h.state.relaySettings.restartRequired, true);
+  assert.equal(h.state.relaySettings.baseUrl, updatedRelay.baseUrl);
 });
 
 for (const success of [true, false]) {
@@ -843,14 +912,14 @@ for (const success of [true, false]) {
     const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl }; await loadRelay(h);
     h.state.pairing = { code: '123456' };
     const other = h.beginBusy('Other operation');
-    h.el.relayBaseUrl.value = pendingRelay.baseUrl;
+    h.el.relayBaseUrl.value = updatedRelay.baseUrl;
     const save = h.saveRelaySettings();
     assert.equal(h.state.pending, 2);
-    await respond(h.requests.at(-1), success ? pendingRelay : { title: 'Invalid relay URL' }, success ? 200 : 400); await save;
+    await respond(h.requests.at(-1), success ? updatedRelay : { title: 'Invalid relay URL' }, success ? 200 : 400); await save;
     assert.equal(h.state.pending, 1); assert.equal(h.el.busy.hidden, false);
     assert.equal(h.el.busyText.textContent, 'Other operation');
     assert.equal(h.el.btnSaveRelayUrl.disabled, false);
-    assert.equal(h.state.relaySettings.baseUrl, success ? pendingRelay.baseUrl : activeRelay.baseUrl);
+    assert.equal(h.state.relaySettings.baseUrl, success ? updatedRelay.baseUrl : activeRelay.baseUrl);
     if (!success) {
       assert.equal(h.state.pairing.code, '123456');
       assert.equal(h.el.btnCreatePairingCode.disabled, false);
@@ -871,13 +940,13 @@ test('client-invalid save leaves previous relay and code state intact without a 
 test('pairing response started before endpoint save cannot redisplay an obsolete code', async () => {
   const h = harness(); h.state.zoomApp = { homeUrl: activeRelay.baseUrl }; await loadRelay(h);
   const code = h.createPairingCode(); const codeRequest = h.requests.at(-1);
-  h.el.relayBaseUrl.value = pendingRelay.baseUrl;
+  h.el.relayBaseUrl.value = updatedRelay.baseUrl;
   const save = h.saveRelaySettings();
-  await respond(h.requests.at(-1), pendingRelay); await save;
+  await respond(h.requests.at(-1), updatedRelay); await save;
   assert.equal(h.state.pending, 1);
   await respond(codeRequest, { code: '123456', homeUrl: activeRelay.baseUrl }); await code;
   assert.equal(h.state.pairing, null); assert.equal(h.state.pending, 0);
-  assert.equal(h.el.btnCreatePairingCode.disabled, true);
+  assert.equal(h.el.btnCreatePairingCode.disabled, false);
 });
 
 test('language switching cycles through Korean, English and Spanish', () => {

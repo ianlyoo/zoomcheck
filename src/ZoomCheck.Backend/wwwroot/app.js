@@ -143,6 +143,9 @@
     relaySettings: null,
     relaySettingsRevision: 0,
     relaySettingsSaving: false,
+    relayHealth: null,
+    relayHealthChecking: false,
+    relayHealthRevision: 0,
     update: null,
     updateAnnouncedFor: null,
     updatePollId: null,
@@ -565,6 +568,23 @@
     return role ? String(role) : '권한 미확인';
   }
 
+  function effectiveZoomAppHomeUrl() {
+    if (state.relaySettings && state.relaySettings.configured && !state.relaySettings.restartRequired && state.relaySettings.baseUrl) {
+      return state.relaySettings.baseUrl.replace(/\/+$/, '') + '/zoom-app/';
+    }
+    return (state.zoomApp && state.zoomApp.homeUrl) || '';
+  }
+
+  function pairingDisabledReason() {
+    if (state.relaySettingsSaving) { return t('pairing_disabled_saving'); }
+    if (!state.relaySettings) { return t('pairing_disabled_loading'); }
+    if (state.relaySettings.restartRequired) { return t('pairing_disabled_restart'); }
+    if (!effectiveZoomAppHomeUrl()) {
+      return state.relaySettings.configured ? t('pairing_disabled_no_home') : t('pairing_disabled_no_relay');
+    }
+    return '';
+  }
+
   function renderZoomAppStrip() {
     var app = state.zoomApp || {};
     var connected = !!app.connected;
@@ -580,40 +600,104 @@
         + (app.meetingId || '–') + ' · 마지막 수신 ' + formatTime(app.lastSeenAt));
       setText(el.pairingSession, '연결 유지 중: 회의 ' + (app.meetingId || '–') + ' · Zoom 앱 신호 재확인 중');
     } else {
-      setText(el.zoomAppSettingsStatus, '연결 대기 중입니다. 코드를 만들고 회의 안의 ZoomCheck 앱에 입력하세요. 별도 터널이나 API 키는 필요 없습니다.');
-      setText(el.pairingSession, '아직 연결된 Zoom 앱이 없습니다.');
+      setText(el.zoomAppSettingsStatus, t('zoom_app_waiting_status'));
+      setText(el.pairingSession, t('pairing_session_default'));
     }
-    if (app.homeUrl) {
-      setText(el.zoomAppHomeUrl, app.homeUrl);
+    var homeUrl = effectiveZoomAppHomeUrl();
+    if (homeUrl) {
+      setText(el.zoomAppHomeUrl, homeUrl);
     } else {
-      setText(el.zoomAppHomeUrl, '릴레이 주소 미설정 — 운영자 배포가 필요합니다. 기존 직접 HTTPS 방식은 계속 사용할 수 있습니다.');
+      setText(el.zoomAppHomeUrl, t('zoom_app_home_unset'));
     }
-    if (el.btnCreatePairingCode) { el.btnCreatePairingCode.disabled = !canCreatePairingCode(); }
+    if (el.btnCopyHomeUrl) { el.btnCopyHomeUrl.disabled = !homeUrl; }
+    var disabledReason = pairingDisabledReason();
+    if (el.btnCreatePairingCode) {
+      el.btnCreatePairingCode.disabled = !!disabledReason;
+      if (disabledReason) { el.btnCreatePairingCode.setAttribute('aria-describedby', 'pairing-disabled-reason'); }
+      else { el.btnCreatePairingCode.removeAttribute('aria-describedby'); }
+    }
+    if (el.pairingDisabledReason) {
+      el.pairingDisabledReason.hidden = !disabledReason;
+      setText(el.pairingDisabledReason, disabledReason);
+    }
     renderPairingCode();
   }
 
   function canCreatePairingCode() {
-    return !!state.relaySettings && !state.relaySettings.restartRequired && !state.relaySettingsSaving
-      && !!(state.zoomApp && state.zoomApp.homeUrl);
+    return !pairingDisabledReason();
+  }
+
+  function formatRelayHealthMessage(result) {
+    if (!result) { return ''; }
+    if (result.checking) { return t('relay_checking'); }
+    if (result.ok) {
+      return t('relay_health_ok', { ms: result.latencyMs !== undefined && result.latencyMs !== null ? result.latencyMs : 0 });
+    }
+    var code = result.errorCode || '';
+    if (code === 'not_configured') { return t('relay_health_not_configured'); }
+    if (code === 'invalid_url') { return t('relay_health_invalid_url'); }
+    if (code === 'timeout') { return t('relay_health_timeout'); }
+    if (code === 'dns_error') { return t('relay_health_dns'); }
+    if (code === 'tls_error') { return t('relay_health_tls'); }
+    if (code === 'network_error') { return t('relay_health_network'); }
+    if (code === 'http_error') {
+      if (result.statusCode === 404) { return t('relay_health_http_404'); }
+      if (result.statusCode === 502 || result.statusCode === 503 || result.statusCode === 504) {
+        return t('relay_health_http_waking', { status: result.statusCode });
+      }
+      return t('relay_health_http', { status: result.statusCode || '?' });
+    }
+    if (code === 'invalid_response') { return t('relay_health_invalid_response'); }
+    if (code === 'request_failed') { return t('relay_health_request_failed', { error: result.message || '' }); }
+    return result.message || t('relay_health_network');
+  }
+
+  function renderRelayHealth() {
+    if (el.btnCheckRelayHealth) {
+      el.btnCheckRelayHealth.disabled = state.relayHealthChecking || state.relaySettingsSaving;
+    }
+    if (!el.relayHealthStatus) { return; }
+    var result = state.relayHealth;
+    if (!result) {
+      el.relayHealthStatus.hidden = true;
+      el.relayHealthStatus.classList.remove('is-ok', 'is-bad');
+      setText(el.relayHealthStatus, '');
+      return;
+    }
+    el.relayHealthStatus.hidden = false;
+    el.relayHealthStatus.classList.toggle('is-ok', !!result.ok);
+    el.relayHealthStatus.classList.toggle('is-bad', !result.checking && !result.ok);
+    setText(el.relayHealthStatus, formatRelayHealthMessage(result));
   }
 
   function renderRelaySettings() {
     var settings = state.relaySettings;
     if (settings) {
       setText(el.relaySettingsNote, settings.restartRequired
-        ? '저장 완료. ZoomCheck를 완전히 종료하고 다시 실행한 뒤 새 페어링 코드를 만드세요.'
-        : (settings.configured
-          ? '릴레이가 설정되어 있습니다. 저장한 주소는 이 PC에서 업데이트 후에도 유지됩니다.'
-          : '릴레이 주소를 저장하고 앱을 완전히 다시 시작하세요. 기존 직접 HTTPS 주소도 사용할 수 있습니다.'));
+        ? t('relay_note_restart')
+        : (settings.configured ? t('relay_note_configured') : t('relay_note_unconfigured')));
     }
     if (el.btnSaveRelayUrl) { el.btnSaveRelayUrl.disabled = state.relaySettingsSaving; }
+    renderRelayHealth();
     renderZoomAppStrip();
   }
 
   function applyRelaySettings(result) {
     var previous = state.relaySettings;
+    var urlChanged = !!previous && previous.baseUrl !== result.baseUrl;
     state.relaySettings = result;
-    if (result.restartRequired || (previous && previous.baseUrl !== result.baseUrl)) { state.pairing = null; }
+    if (result.restartRequired || urlChanged) {
+      state.pairing = null;
+      state.relayHealth = null;
+      if (state.zoomApp && urlChanged) {
+        state.zoomApp = Object.assign({}, state.zoomApp, { connected: false, sessionActive: false, pairingCodeExpiresAt: null });
+      }
+    }
+    if (result.configured && !result.restartRequired && result.baseUrl) {
+      state.zoomApp = Object.assign({}, state.zoomApp || {}, {
+        homeUrl: result.baseUrl.replace(/\/+$/, '') + '/zoom-app/'
+      });
+    }
     if (el.relayBaseUrl) { el.relayBaseUrl.value = result.baseUrl || ''; }
     renderRelaySettings();
   }
@@ -626,7 +710,7 @@
       return result;
     }, function (error) {
       if (revision === state.relaySettingsRevision) {
-        setText(el.relaySettingsNote, '릴레이 설정을 읽지 못했습니다 — ' + error.message);
+        setText(el.relaySettingsNote, t('relay_note_load_failed', { error: error.message }));
       }
       return null;
     });
@@ -636,35 +720,73 @@
     if (state.relaySettingsSaving) { return Promise.resolve(null); }
     var value = el.relayBaseUrl ? el.relayBaseUrl.value.trim() : '';
     if (value.toLowerCase().indexOf('https://') !== 0 || /\s/.test(value)) {
-      toast('warn', 'HTTPS 릴레이 주소가 필요합니다', 'Render 등에서 배포한 루트 주소를 입력하세요.');
+      toast('warn', t('relay_save_invalid_title'), t('relay_save_invalid_note'));
       if (el.relayBaseUrl) { el.relayBaseUrl.focus(); }
       return Promise.resolve(null);
     }
     ++state.relaySettingsRevision;
     state.relaySettingsSaving = true;
     renderRelaySettings();
-    var busy = beginBusy('릴레이 주소를 저장하는 중…');
+    var busy = beginBusy(t('relay_save_busy'));
     return request('/api/settings/zoom-relay', { method: 'PUT', json: { baseUrl: value } }).then(function (result) {
       endBusy(busy);
       state.relaySettingsSaving = false;
       applyRelaySettings(result);
-      toast('ok', '릴레이 주소 저장 완료', result.restartRequired
-        ? 'ZoomCheck를 완전히 종료하고 다시 실행한 뒤 새 페어링 코드를 만드세요.'
-        : '새 페어링 코드를 만들 수 있습니다.');
+      toast('ok', t('relay_save_ok_title'), result.restartRequired
+        ? t('relay_note_restart')
+        : t('relay_save_ok_note'));
       return result;
     }, function (error) {
       endBusy(busy);
       state.relaySettingsSaving = false;
       renderRelaySettings();
-      toast('bad', '릴레이 주소 저장 실패', error.message);
+      toast('bad', t('relay_save_fail_title'), error.message);
       return null;
     });
   }
 
+  function checkRelayHealth() {
+    if (state.relayHealthChecking || state.relaySettingsSaving) { return Promise.resolve(null); }
+    var value = (el.relayBaseUrl && el.relayBaseUrl.value ? el.relayBaseUrl.value.trim() : '')
+      || ((state.relaySettings && state.relaySettings.baseUrl) || '').trim();
+    if (!value) {
+      state.relayHealth = { ok: false, errorCode: 'not_configured' };
+      renderRelayHealth();
+      if (el.relayBaseUrl) { el.relayBaseUrl.focus(); }
+      return Promise.resolve(null);
+    }
+    if (value.toLowerCase().indexOf('https://') !== 0 || /\s/.test(value)) {
+      state.relayHealth = { ok: false, errorCode: 'invalid_url' };
+      renderRelayHealth();
+      if (el.relayBaseUrl) { el.relayBaseUrl.focus(); }
+      return Promise.resolve(null);
+    }
+    var revision = ++state.relayHealthRevision;
+    state.relayHealthChecking = true;
+    state.relayHealth = { checking: true };
+    renderRelayHealth();
+    return request('/api/settings/zoom-relay/health', { method: 'POST', json: { baseUrl: value } }).then(function (result) {
+      if (revision !== state.relayHealthRevision) { return null; }
+      state.relayHealthChecking = false;
+      state.relayHealth = result || { ok: false, errorCode: 'invalid_response' };
+      renderRelayHealth();
+      logSession(state.relayHealth.ok ? 'ok' : 'bad', t('btn_check_relay'), formatRelayHealthMessage(state.relayHealth));
+      return state.relayHealth;
+    }, function (error) {
+      if (revision !== state.relayHealthRevision) { return null; }
+      state.relayHealthChecking = false;
+      state.relayHealth = { ok: false, errorCode: 'request_failed', message: error.message };
+      renderRelayHealth();
+      logSession('bad', t('btn_check_relay'), formatRelayHealthMessage(state.relayHealth));
+      return state.relayHealth;
+    });
+  }
+
   function renderPairingCode() {
+    if (el.btnCopyPairingCode) { el.btnCopyPairingCode.disabled = !(state.pairing && state.pairing.code); }
     if (state.relaySettings && state.relaySettings.restartRequired) {
       setText(el.pairingCode, '– – – – – –');
-      setText(el.pairingExpiry, '앱을 완전히 다시 시작한 뒤 새 코드를 만드세요.');
+      setText(el.pairingExpiry, t('pairing_disabled_restart'));
       return;
     }
     var app = state.zoomApp || {};
@@ -676,7 +798,7 @@
     }
     if (!state.pairing) {
       setText(el.pairingCode, '– – – – – –');
-      setText(el.pairingExpiry, '코드를 생성하면 유효 시간이 표시됩니다.');
+      setText(el.pairingExpiry, t('pairing_expiry_default'));
       return;
     }
     setText(el.pairingCode, String(state.pairing.code || '').split('').join(' '));
@@ -749,9 +871,7 @@
 
   function createPairingCode() {
     if (!canCreatePairingCode()) {
-      toast('warn', '페어링 준비가 필요합니다', state.relaySettings && state.relaySettings.restartRequired
-        ? 'ZoomCheck를 완전히 종료하고 다시 실행한 뒤 새 코드를 만드세요.'
-        : '릴레이 설정 확인과 저장을 마친 뒤 앱을 다시 시작하세요.');
+      toast('warn', '페어링 준비가 필요합니다', pairingDisabledReason());
       if (el.relayBaseUrl) { el.relayBaseUrl.focus(); }
       return Promise.resolve(null);
     }
@@ -2720,6 +2840,7 @@
 
     document.title = t('app_title');
     renderModeNote();
+    renderRelaySettings();
     renderThemeControls();
     renderRosterNote();
     renderRosterFeedback();
@@ -2769,8 +2890,8 @@
       'snapshot-parsed','chk-empty-ok','btn-submit-snapshot','btn-clear-snapshot','session-log','session-log-empty','btn-clear-log',
       'toast-region','busy','busy-text',
       'zoom-app-dot','zoom-app-status','btn-zoom-app-detail','mode-note','zoom-app-settings-status','pairing-code','pairing-expiry',
-      'pairing-session','btn-create-pairing-code','btn-copy-pairing-code','btn-zoom-app-sync','zoom-app-home-url','btn-copy-home-url',
-      'relay-base-url','btn-save-relay-url','relay-settings-note',
+      'pairing-session','btn-create-pairing-code','btn-copy-pairing-code','btn-zoom-app-sync','pairing-disabled-reason','zoom-app-home-url','btn-copy-home-url',
+      'relay-base-url','btn-save-relay-url','btn-check-relay-health','relay-settings-note','relay-health-status',
       'update-current-version','update-status-text','update-progress','update-progress-bar','update-badge','update-error-text',
       'btn-check-update','btn-install-update','btn-version-chip','version-dot','version-text',
       'btn-settings-tutorial','tutorial-dialog','tutorial-progress-text','btn-close-tutorial','btn-skip-tutorial','btn-tutorial-back','btn-tutorial-next'
@@ -2842,12 +2963,21 @@
     el.btnCheckZoom.addEventListener('click', function () { checkZoomConnection(true); });
     el.btnCreatePairingCode.addEventListener('click', createPairingCode);
     el.btnSaveRelayUrl.addEventListener('click', saveRelaySettings);
+    if (el.btnCheckRelayHealth) { el.btnCheckRelayHealth.addEventListener('click', checkRelayHealth); }
+    if (el.relayBaseUrl) {
+      el.relayBaseUrl.addEventListener('input', function () {
+        if (state.relayHealth && !state.relayHealthChecking) {
+          state.relayHealth = null;
+          renderRelayHealth();
+        }
+      });
+    }
     el.btnCopyPairingCode.addEventListener('click', function () {
       copyToClipboard(state.pairing && state.pairing.code, '페어링 코드 복사됨');
     });
     el.btnZoomAppSync.addEventListener('click', function () { requestZoomAppSync({ silent: false }); });
     el.btnCopyHomeUrl.addEventListener('click', function () {
-      copyToClipboard(state.zoomApp && state.zoomApp.homeUrl, 'Home URL 복사됨');
+      copyToClipboard(effectiveZoomAppHomeUrl(), 'Home URL 복사됨');
     });
     if (el.btnCheckUpdate) { el.btnCheckUpdate.addEventListener('click', checkForUpdate); }
     if (el.btnInstallUpdate) { el.btnInstallUpdate.addEventListener('click', installUpdate); }

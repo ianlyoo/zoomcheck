@@ -27,16 +27,20 @@ public sealed class ZoomRelaySettingsStoreTests : IDisposable
         => Assert.False(ZoomRelayOptions.TryNormalizeBaseUrl(input, out _));
 
     [Fact]
-    public async Task SaveAsync_WritesOnlyPersistentRelayConfiguration()
+    public async Task SaveAsync_WritesPersistentRelayConfigurationAndAppliesImmediately()
     {
         var path = Path.Combine(_directory, ZoomRelaySettingsStore.FileName);
         var store = new ZoomRelaySettingsStore(path, activeBaseUrl: null);
+        var changedCount = 0;
+        store.Changed += () => changedCount++;
 
         var saved = await store.SaveAsync("https://relay.example/zoom-app/", CancellationToken.None);
 
-        Assert.False(saved.Configured); // Saving does not reconfigure the running relay.
-        Assert.True(saved.RestartRequired);
+        Assert.True(saved.Configured);
+        Assert.False(saved.RestartRequired);
         Assert.Equal("https://relay.example/", saved.BaseUrl);
+        Assert.Equal("https://relay.example/", store.GetActiveBaseUri()?.AbsoluteUri);
+        Assert.Equal(1, changedCount);
         var json = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
         Assert.True(json[ZoomRelayOptions.SectionName]![nameof(ZoomRelayOptions.Enabled)]!.GetValue<bool>());
         Assert.Equal(
@@ -46,39 +50,46 @@ public sealed class ZoomRelaySettingsStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task SaveAsync_SameActiveOriginDoesNotRequireRestart()
+    public async Task SaveAsync_SameActiveOriginDoesNotFireChange()
     {
         var path = Path.Combine(_directory, ZoomRelaySettingsStore.FileName);
         var store = new ZoomRelaySettingsStore(path, "https://relay.example/");
+        var changedCount = 0;
+        store.Changed += () => changedCount++;
 
         var saved = await store.SaveAsync("https://relay.example/zoom-app", CancellationToken.None);
 
+        Assert.True(saved.Configured);
         Assert.False(saved.RestartRequired);
+        Assert.Equal(0, changedCount);
     }
 
     [Fact]
-    public async Task SaveAsync_DisabledRelayRequiresRestartEvenWhenUrlIsUnchanged()
+    public async Task SaveAsync_EnablesPreviouslyDisabledRelayImmediately()
     {
         var path = Path.Combine(_directory, ZoomRelaySettingsStore.FileName);
         var store = new ZoomRelaySettingsStore(path, "https://relay.example/", activeEnabled: false);
+        var changedCount = 0;
+        store.Changed += () => changedCount++;
 
         var saved = await store.SaveAsync("https://relay.example/", CancellationToken.None);
 
-        Assert.False(saved.Configured);
-        Assert.True(saved.RestartRequired);
+        Assert.True(saved.Configured);
+        Assert.False(saved.RestartRequired);
         Assert.Equal(saved, store.Get());
+        Assert.Equal("https://relay.example/", store.GetActiveBaseUri()?.AbsoluteUri);
+        Assert.Equal(1, changedCount);
     }
 
     [Fact]
-    public async Task Get_PreservesPendingUrlAcrossDashboardReloadUntilApplicationRestart()
+    public async Task SaveAsync_AppliesNewUrlImmediatelyAndPersistsAcrossRestart()
     {
         var path = Path.Combine(_directory, ZoomRelaySettingsStore.FileName);
         var store = new ZoomRelaySettingsStore(path, "https://old.example/");
         await store.SaveAsync("https://new.example/zoom-app/", CancellationToken.None);
 
-        Assert.Equal((true, "https://new.example/", true), store.Get());
-        // Reopening a settings reader must still reflect the disk value and old runtime.
-        Assert.Equal(store.Get(), new ZoomRelaySettingsStore(path, "https://old.example/").Get());
+        Assert.Equal((true, "https://new.example/", false), store.Get());
+        Assert.Equal("https://new.example/", store.GetActiveBaseUri()?.AbsoluteUri);
 
         var configuration = LegacyConfiguration();
         ZoomRelaySettingsStore.AddUserConfiguration(configuration, path);
@@ -139,7 +150,7 @@ public sealed class ZoomRelaySettingsStoreTests : IDisposable
         var json = JsonNode.Parse(before)!;
         Assert.Equal(2000, json["ZoomRelay"]!["PollIntervalMilliseconds"]!.GetValue<int>());
         Assert.Equal("keep", json["Other"]!["Value"]!.GetValue<string>());
-        Assert.Equal((false, "https://saved.example/", true), store.Get());
+        Assert.Equal((true, "https://saved.example/", false), store.Get());
     }
 
     private static ConfigurationManager LegacyConfiguration()
