@@ -14,28 +14,135 @@ public sealed class AttendanceMatcher
         var normalizedName = NameNormalizer.Normalize(participantName);
         var normalizedEmail = participantEmail?.Trim().ToLowerInvariant();
 
+        IReadOnlyList<RosterPerson>? emailMatches = null;
         if (!string.IsNullOrWhiteSpace(normalizedEmail))
         {
-            var emailMatch = roster.FirstOrDefault(person => string.Equals(person.Email, normalizedEmail, StringComparison.OrdinalIgnoreCase));
-            if (emailMatch is not null)
-            {
-                return new MatchCandidate(emailMatch, MatchConfidence.Verified, 1.0, "Email exact match");
-            }
+            emailMatches = FindEmailMatches(roster, normalizedEmail);
         }
 
+        RosterPerson? aliasPerson = null;
         if (aliasMap.TryGetValue(normalizedName, out var aliasPersonId))
         {
-            var aliasMatch = roster.FirstOrDefault(person => person.Id == aliasPersonId);
-            if (aliasMatch is not null)
-            {
-                return new MatchCandidate(aliasMatch, MatchConfidence.AliasVerified, 0.98, "Saved alias match");
-            }
+            aliasPerson = roster.FirstOrDefault(person => person.Id == aliasPersonId);
         }
 
-        var nameMatch = roster.FirstOrDefault(person => person.NormalizedName == normalizedName);
-        if (nameMatch is not null)
+        var exactNameMatches = FindExactNameMatches(roster, normalizedName);
+
+        return MatchResolved(roster, normalizedName, normalizedEmail, emailMatches, aliasPerson, exactNameMatches);
+    }
+
+    internal static MatchCandidate MatchResolved(
+        IReadOnlyList<RosterPerson> roster,
+        string normalizedName,
+        string? normalizedEmail,
+        IReadOnlyList<RosterPerson>? emailMatches,
+        RosterPerson? aliasPerson,
+        IReadOnlyList<RosterPerson> exactNameMatches)
+    {
+        if (emailMatches is { Count: > 0 })
         {
-            return new MatchCandidate(nameMatch, MatchConfidence.NameOnly, 0.9, "Normalized name exact match");
+            if (emailMatches.Count > 1)
+            {
+                var picked = PickBestEmailCandidate(emailMatches, normalizedName);
+                return new MatchCandidate(
+                    picked,
+                    MatchConfidence.Verified,
+                    1.0,
+                    $"Ambiguous email match ({emailMatches.Count} roster candidates)",
+                    NeedsReview: true,
+                    ReviewReasonCode: MatchReviewReasons.DuplicateRosterEmail);
+            }
+
+            var emailMatch = emailMatches[0];
+            var conflictsWithAlias = aliasPerson is not null
+                && !string.Equals(aliasPerson.Id, emailMatch.Id, StringComparison.Ordinal);
+            var conflictsWithAnotherName = !string.IsNullOrEmpty(normalizedName)
+                && HasOtherPerson(exactNameMatches, emailMatch.Id);
+            if (conflictsWithAlias || conflictsWithAnotherName)
+            {
+                return new MatchCandidate(
+                    emailMatch,
+                    MatchConfidence.Verified,
+                    1.0,
+                    "Email exact match (display name matches another roster person)",
+                    NeedsReview: true,
+                    ReviewReasonCode: MatchReviewReasons.IdentifierConflict);
+            }
+
+            return new MatchCandidate(
+                emailMatch,
+                MatchConfidence.Verified,
+                1.0,
+                "Email exact match",
+                NeedsReview: false,
+                ReviewReasonCode: MatchReviewReasons.None);
+        }
+
+        if (aliasPerson is not null)
+        {
+            if (HasEmailConflict(aliasPerson.Email, normalizedEmail))
+            {
+                return new MatchCandidate(
+                    aliasPerson,
+                    MatchConfidence.AliasVerified,
+                    0.98,
+                    "Saved alias match (email differs from roster)",
+                    NeedsReview: true,
+                    ReviewReasonCode: MatchReviewReasons.EmailConflict);
+            }
+
+            return new MatchCandidate(
+                aliasPerson,
+                MatchConfidence.AliasVerified,
+                0.98,
+                "Saved alias match",
+                NeedsReview: false,
+                ReviewReasonCode: MatchReviewReasons.None);
+        }
+
+        if (exactNameMatches.Count > 0)
+        {
+            if (string.IsNullOrEmpty(normalizedName))
+            {
+                return new MatchCandidate(
+                    exactNameMatches[0],
+                    MatchConfidence.NameOnly,
+                    0.9,
+                    "Normalized name exact match",
+                    NeedsReview: true,
+                    ReviewReasonCode: MatchReviewReasons.BlankName);
+            }
+
+            if (exactNameMatches.Count > 1)
+            {
+                return new MatchCandidate(
+                    exactNameMatches[0],
+                    MatchConfidence.NameOnly,
+                    0.9,
+                    $"Ambiguous exact name match ({exactNameMatches.Count} roster candidates)",
+                    NeedsReview: true,
+                    ReviewReasonCode: MatchReviewReasons.DuplicateRosterName);
+            }
+
+            var nameMatch = exactNameMatches[0];
+            if (HasEmailConflict(nameMatch.Email, normalizedEmail))
+            {
+                return new MatchCandidate(
+                    nameMatch,
+                    MatchConfidence.NameOnly,
+                    0.9,
+                    "Normalized name exact match (email differs from roster)",
+                    NeedsReview: true,
+                    ReviewReasonCode: MatchReviewReasons.EmailConflict);
+            }
+
+            return new MatchCandidate(
+                nameMatch,
+                MatchConfidence.NameOnly,
+                0.9,
+                "Normalized name exact match",
+                NeedsReview: false,
+                ReviewReasonCode: MatchReviewReasons.None);
         }
 
         return FindBestPossibleMatch(roster, normalizedName);
@@ -44,26 +151,128 @@ public sealed class AttendanceMatcher
     internal static MatchCandidate FindBestPossibleMatch(IReadOnlyList<RosterPerson> roster, string normalizedName)
     {
         RosterPerson? bestPerson = null;
-        var bestScore = double.NegativeInfinity;
+        var bestScore = 0.0;
+        var tiedBestCount = 0;
 
         for (var i = 0; i < roster.Count; i++)
         {
             var person = roster[i];
             var score = CalculateNameScore(normalizedName, person.NormalizedName);
-            if (score > bestScore)
+            if (score < 0.72)
             {
-                bestScore = score;
+                continue;
+            }
+
+            if (bestPerson is null || score > bestScore + 1e-9)
+            {
                 bestPerson = person;
+                bestScore = score;
+                tiedBestCount = 1;
+            }
+            else if (Math.Abs(score - bestScore) <= 1e-9)
+            {
+                tiedBestCount++;
             }
         }
 
-        if (bestPerson is not null && bestScore >= 0.72)
+        if (bestPerson is not null)
         {
-            return new MatchCandidate(bestPerson, MatchConfidence.Possible, bestScore, $"Similarity score {bestScore:F2}");
+            if (tiedBestCount > 1)
+            {
+                return new MatchCandidate(
+                    bestPerson,
+                    MatchConfidence.Possible,
+                    bestScore,
+                    $"Similarity score {bestScore:F2} ({tiedBestCount} roster candidates)",
+                    NeedsReview: true,
+                    ReviewReasonCode: MatchReviewReasons.AmbiguousPossibleMatch);
+            }
+
+            return new MatchCandidate(
+                bestPerson,
+                MatchConfidence.Possible,
+                bestScore,
+                $"Similarity score {bestScore:F2}",
+                NeedsReview: true,
+                ReviewReasonCode: MatchReviewReasons.PossibleMatch);
         }
 
         return MatchCandidate.Unmatched("No roster candidate exceeded threshold");
     }
+
+    private static List<RosterPerson> FindEmailMatches(IReadOnlyList<RosterPerson> roster, string normalizedEmail)
+    {
+        var matches = new List<RosterPerson>();
+        for (var i = 0; i < roster.Count; i++)
+        {
+            var person = roster[i];
+            if (!string.IsNullOrWhiteSpace(person.Email)
+                && string.Equals(person.Email.Trim(), normalizedEmail, StringComparison.OrdinalIgnoreCase))
+            {
+                matches.Add(person);
+            }
+        }
+
+        return matches;
+    }
+
+    private static List<RosterPerson> FindExactNameMatches(IReadOnlyList<RosterPerson> roster, string normalizedName)
+    {
+        var matches = new List<RosterPerson>();
+        for (var i = 0; i < roster.Count; i++)
+        {
+            var person = roster[i];
+            if (string.Equals(person.NormalizedName, normalizedName, StringComparison.Ordinal))
+            {
+                matches.Add(person);
+            }
+        }
+
+        return matches;
+    }
+
+    private static RosterPerson PickBestEmailCandidate(IReadOnlyList<RosterPerson> emailMatches, string normalizedName)
+    {
+        if (!string.IsNullOrEmpty(normalizedName))
+        {
+            RosterPerson? uniqueNameMatch = null;
+            var nameMatchCount = 0;
+            for (var i = 0; i < emailMatches.Count; i++)
+            {
+                var person = emailMatches[i];
+                if (string.Equals(person.NormalizedName, normalizedName, StringComparison.Ordinal))
+                {
+                    uniqueNameMatch = person;
+                    nameMatchCount++;
+                }
+            }
+
+            if (nameMatchCount == 1 && uniqueNameMatch is not null)
+            {
+                return uniqueNameMatch;
+            }
+        }
+
+        return emailMatches[0];
+    }
+
+    private static bool HasOtherPerson(IReadOnlyList<RosterPerson> candidates, string matchedPersonId)
+    {
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            if (!string.Equals(candidates[i].Id, matchedPersonId, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasEmailConflict(string? rosterEmail, string? normalizedParticipantEmail)
+        => !string.IsNullOrWhiteSpace(normalizedParticipantEmail)
+            && !string.IsNullOrWhiteSpace(rosterEmail)
+            && !string.Equals(rosterEmail.Trim(), normalizedParticipantEmail, StringComparison.OrdinalIgnoreCase);
 
     private static double CalculateNameScore(string left, string right)
     {

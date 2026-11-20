@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using ZoomCheck.Core.Enums;
 
 namespace ZoomCheck.Core.Models;
@@ -23,4 +24,6 @@ public sealed record CurrentParticipantConnection(
     string MatchReason,
     bool ManualMatch = false,
     string ReviewStatus = "none",
-    string EvidenceToken = "");
+    string EvidenceToken = "",
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool NeedsReview = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string ReviewReasonCode = "");

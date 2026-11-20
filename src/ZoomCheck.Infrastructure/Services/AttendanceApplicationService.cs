@@ -94,7 +94,9 @@ public sealed partial class AttendanceApplicationService
             Source: input.Source,
             RawPayload: input.RawPayload,
             RawParticipantName: rawName,
-            CanonicalParticipantName: canonicalName);
+            CanonicalParticipantName: canonicalName,
+            NeedsReview: candidate.NeedsReview,
+            ReviewReasonCode: candidate.ReviewReasonCode);
 
         await _repository.AppendParticipantEventAsync(participantEvent, cancellationToken);
         return participantEvent;

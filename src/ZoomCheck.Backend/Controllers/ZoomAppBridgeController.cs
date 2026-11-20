@@ -79,6 +79,7 @@ public sealed class ZoomAppBridgeController : ControllerBase
         if (connection is null
             || string.IsNullOrWhiteSpace(connection.MatchedRosterPersonId)
             || string.IsNullOrWhiteSpace(connection.CanonicalName)
+            || connection.NeedsReview
             || connection.Confidence is MatchConfidence.Possible or MatchConfidence.Unmatched)
         {
             return UnsafeRename();
