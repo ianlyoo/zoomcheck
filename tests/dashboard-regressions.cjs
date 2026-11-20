@@ -1092,6 +1092,51 @@ test('copy status writes to the clipboard, falls back to a selected text box, an
   assert.equal(empty.el.btnCopyStatus.disabled, true);
 });
 
+test('connection status polls on one 5s schedule, skips hidden/overlapping ticks, refreshes active Zoom App sessions, and resumes on visibility', async () => {
+  const h = harness({ storage: new Map([['zoomcheck.tutorialSeen.v1', 'seen'], ['zoomcheck.meetingId', '111']]) });
+  h.init();
+
+  const statusTimers = [...h.intervals.values()].filter(timer => timer.delay === 5000 || timer.delay === 10000);
+  assert.equal(statusTimers.length, 1, 'only one connection-status interval is registered');
+  assert.equal(statusTimers[0].delay, 5000);
+  assert.equal(h.state.statusPollId, undefined);
+
+  // Drain initial load requests.
+  const initialCount = h.requests.length;
+  const poll = statusTimers[0];
+
+  // Overlapping tick while a status request is still in flight does not stack a second request.
+  poll.fn();
+  poll.fn();
+  const pollRequests = () => h.requests.slice(initialCount).filter(r => r.url === '/api/zoom/connection-status');
+  const boardRequests = () => h.requests.slice(initialCount).filter(r => r.url === '/api/meetings/111/board');
+  assert.equal(pollRequests().length, 1);
+
+  // Active Zoom App session triggers a silent board refresh after status resolves.
+  await respond(pollRequests()[0], { zoomApp: { sessionActive: true, connected: true, meetingId: '111' } });
+  assert.equal(boardRequests().length, 1);
+  await respond(boardRequests()[0], board('111'));
+
+  // Hidden tab pauses connection-status polling completely.
+  h.document.hidden = true;
+  poll.fn();
+  poll.fn();
+  assert.equal(pollRequests().length, 1);
+
+  // Returning to visible triggers an immediate check and restores 5s cadence (12 polls/min).
+  h.document.hidden = false;
+  h.document.dispatch('visibilitychange');
+  assert.equal(pollRequests().length, 2);
+  await respond(pollRequests()[1], { zoomApp: { sessionActive: false, connected: false } });
+  assert.equal(boardRequests().length, 1, 'inactive Zoom App session does not trigger board refresh');
+
+  for (let tick = 0; tick < 11; tick++) {
+    poll.fn();
+    await respond(pollRequests().at(-1), { zoomApp: { sessionActive: false, connected: false } });
+  }
+  assert.equal(pollRequests().length, 13, '12 polls across 60s plus visibility resume');
+});
+
 test('phone search matches phone numbers typed with or without hyphens', () => {
   const h = harness();
   h.state.roster = [
