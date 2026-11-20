@@ -13,6 +13,12 @@ def compact(response):
     except Exception: return {'body':response.text()[:500]}
 def status():
     with urllib.request.urlopen(url+'/api/update/status',timeout=5) as response: return json.load(response)
+def health():
+    with urllib.request.urlopen(url+'/health',timeout=5) as response: return response.status
+def staged(label):
+    folder=pathlib.Path(os.environ['LOCALAPPDATA'])/'ZoomCheck'/'updates'
+    file=folder/'ZoomCheck-Setup-x64.exe'
+    print('STAGED_INSTALLER='+json.dumps({'label':label,'exists':file.is_file(),'bytes':file.stat().st_size if file.is_file() else None}),flush=True)
 def summary(page,label):
     section=page.locator('#settings-update'); section.scroll_into_view_if_needed()
     info={'label':label,'current':page.locator('#update-current-version').inner_text(),'status':page.locator('#update-status-text').inner_text(),'install_visible':page.locator('#btn-install-update').is_visible(),'install_enabled':page.locator('#btn-install-update').is_enabled()}
@@ -31,12 +37,14 @@ def main():
         page=context.pages[0] if context.pages else context.new_page()
         page.goto(url,wait_until='domcontentloaded',timeout=60000)
         page.locator('#btn-open-settings').click()
+        staged('before-first-check')
         summary(page,'01-settings')
         with page.expect_response(lambda r:'/api/update/check' in r.url and r.request.method=='POST',timeout=120000) as first_wait:
             page.locator('#btn-check-update').click()
         first=first_wait.value; first_payload=compact(first)
         print('FIRST_CHECK_HTTP='+str(first.status)+' JSON='+json.dumps(first_payload,ensure_ascii=True),flush=True)
         page.wait_for_timeout(300)
+        staged('after-first-check')
         first_ui=summary(page,'02-first-check')
         page.wait_for_timeout(20000)
         after_ui=summary(page,'03-after-20-seconds')
@@ -63,11 +71,12 @@ def main():
         restarted=False; final=None
         while time.monotonic()<deadline:
             try:
-                final=status(); current_pids=backend_pids()
+                health_status=health(); final=status(); current_pids=backend_pids()
                 restarted=bool(current_pids and set(current_pids).isdisjoint(initial))
                 if (accepted and restarted) or (not accepted): break
             except Exception: pass
             time.sleep(1)
+        print('FINAL_HEALTH_STATUS='+str(health_status if final else None),flush=True)
         print('FINAL_STATUS='+json.dumps(final,ensure_ascii=True),flush=True)
         print('FINAL_BACKEND_PIDS='+json.dumps(backend_pids()),flush=True)
         print('RESTART_OBSERVED='+str(restarted).lower(),flush=True)
